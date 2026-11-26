@@ -14,6 +14,7 @@ import { abilitiesOf } from "./triggers.js";
 import { areTeammates, isActivePlayer, teamOf } from "./modes.js";
 import { applyAction } from "./reducer.js";
 import { MAX_HAND_SIZE } from "./turn.js";
+import { hasNoMaxHandSize } from "./statics.js";
 import type { CardInstance, CardInstanceId, GameState, PlayerId } from "./types.js";
 
 /** La prochaine action du bot, ou `null` s'il n'a rien à faire pour l'instant. */
@@ -38,6 +39,16 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
     ];
     const targets = specs.map((spec) => candidates.find((t) => isLegalTarget(g, spec, t, botId, waiting.instanceId)));
     if (targets.every((t) => t)) return { type: "chooseTargets", cardId: waiting.instanceId, targets: targets as Target[] };
+  }
+
+  // Ses capacités facultatives : oui, sauf s'il faut sacrifier (ou payer sans le pouvoir).
+  const deciding = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.awaitingDecision && c.controllerId === botId);
+  if (deciding) {
+    const trigger = abilitiesOf(g.cardData[deciding.cardId], deciding.ability!.faceIndex).triggers[deciding.ability!.index];
+    const sacrifice = trigger?.effects.effects.some((e) => e.type === "sacrifice");
+    const yes: GameAction = { type: "decideOptional", cardId: deciding.instanceId, accept: true };
+    if (!sacrifice && applyAction(g, { actorId: botId, action: yes }).ok) return yes;
+    return { type: "decideOptional", cardId: deciding.instanceId, accept: false };
   }
 
   // Le bot ne répond jamais : il passe la priorité (pile non vide, ou avant
@@ -71,7 +82,7 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
       return { type: "nextStep" };
     case "cleanup": {
       const excess = me.zones.hand.length - MAX_HAND_SIZE;
-      if (excess > 0) {
+      if (excess > 0 && !hasNoMaxHandSize(g, botId)) {
         // Défausse : d'abord les cartes les plus chères.
         const worst = [...me.zones.hand].sort((a, b) => manaValue(g, b) - manaValue(g, a))[0]!;
         return { type: "moveCard", cardId: worst, to: "graveyard" };

@@ -11,6 +11,9 @@ import { COMBAT_KEYWORDS, hasKeyword } from "./combat.js";
 import { manaOptions } from "./mana.js";
 import { parsePermanentAbilities } from "./triggers.js";
 import { areTeammates } from "./modes.js";
+import { keywordList, selfToTilde } from "./text.js";
+
+export { selfToTilde };
 import type { CardData, CardInstance, GameState, PlayerId } from "./types.js";
 
 /** Une cible choisie au lancement : une carte (champ de bataille ou pile) ou un joueur. */
@@ -49,10 +52,10 @@ export interface SpellFilter {
  * Un nombre : fixe, X (choisi au lancement), ou « that much » d'une capacité
  * déclenchée (la quantité de l'événement : PV gagnés ou perdus).
  */
-export type Amount = number | "X" | "-X" | "event" | "-event";
+export type Amount = number | "X" | "-X" | "event" | "-event" | "dealt" | "hand";
 
 /** Qui subit l'effet : « you », une cible, ou le joueur de l'événement déclencheur (« that player », « they »). */
-export type Who = "you" | "opponents" | "event" | { target: number };
+export type Who = "you" | "opponents" | "all" | "event" | { target: number } | { controllerOf: number };
 
 export type Effect =
   | { type: "draw"; who: Who; count: Amount }
@@ -68,7 +71,19 @@ export type Effect =
   | { type: "counter"; target: number }
   | { type: "mana"; mana: string[] }
   /** Marqueurs sur la source de la capacité (« put a +1/+1 counter on ~ »). */
-  | { type: "counterSelf"; kind: string; count: number };
+  | { type: "counterSelf"; kind: string; count: number }
+  /** Mana d'une couleur au choix (« Add one mana of any color »), choisie à l'activation. */
+  | { type: "manaAny"; count: number }
+  /** « Return ~ from your graveyard to your hand. » */
+  | { type: "returnSelf" }
+  /** « ~ gets +1/+1 until end of turn. » */
+  | { type: "pumpSelf"; power: number; toughness: number }
+  /** « Creatures you control gain lifelink until end of turn. » */
+  | { type: "grantAll"; filter: PermanentFilter; keywords: string[] }
+  /** Équiper : attache la source à la cible. */
+  | { type: "attach"; target: number }
+  /** « Sacrifice a creature » (au choix du contrôleur, à la résolution). */
+  | { type: "sacrifice"; filter: PermanentFilter };
 
 export interface TokenSpec {
   power: string;
@@ -82,6 +97,8 @@ export interface TokenSpec {
 
 export interface SpellEffects {
   targets: TargetSpec[];
+  /** Coût supplémentaire : sacrifier un permanent (« As an additional cost to cast this spell, sacrifice a creature »). */
+  sacrifice?: PermanentFilter;
   effects: Effect[];
   /** Phrases que le moteur ne sait pas appliquer. */
   unknown: string[];
@@ -113,7 +130,8 @@ const COLORS: Record<string, string> = { white: "W", blue: "U", black: "B", red:
 const CARD_TYPES = ["artifact", "battle", "creature", "enchantment", "land", "planeswalker"];
 
 /** Phrases sans effet de jeu à appliquer (rappels, précisions). */
-const HARMLESS = [/^(it|they) can't be regenerated\.?$/i, /^this spell can't be countered\.?$/i];
+const HARMLESS = [/^(it|they) can't be regenerated\.?$/i, /^~ can't be countered\.?$/i];
+
 
 /**
  * « creature », « nonland permanent an opponent controls », « artifact or
@@ -162,7 +180,12 @@ function parsePermanentFilter(text: string): PermanentFilter | null {
   return filter;
 }
 
-function permanentLabel(f: PermanentFilter): string {
+/** « creature », « artifact or land »… ; `null` si le texte n'est pas compris. */
+export function parsePermanentFilterText(text: string): PermanentFilter | null {
+  return parsePermanentFilter(text);
+}
+
+export function permanentLabel(f: PermanentFilter): string {
   const labels: Record<string, string> = {
     artifact: "artefact",
     battle: "bataille",
@@ -191,7 +214,7 @@ const neg = (a: Amount): Amount => (a === "X" ? "-X" : a === "event" ? "-event" 
  * (« they lose 2 life », « you gain that much life »…). `null` si la phrase
  * n'en est pas une.
  */
-function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number): Effect[] | null {
+function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, lastTarget: () => number): Effect[] | null {
   const much = (text: string): Amount => (/that much/i.test(text) ? "event" : amount(text));
   const AMT = `(${NUM.slice(1, -1)}|that much)`;
   let m: RegExpExecArray | null;
@@ -218,6 +241,31 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number): 
     const effects: Effect[] = [{ type: "life", who, amount: neg(much(m[2]!)) }];
     if (m[3]) effects.push({ type: "life", who: "you", amount: much(m[3]) });
     return effects;
+  }
+  if (/^you gain life equal to the damage dealt this way$/i.test(s)) return [{ type: "life", who: "you", amount: "dealt" }];
+  if (/^you gain 1 life for each card in your hand$/i.test(s)) return [{ type: "life", who: "you", amount: "hand" }];
+  if ((m = new RegExp(`^(each opponent|each player) draws ${NUM} cards?$`, "i").exec(s))) {
+    return [{ type: "draw", who: /opponent/i.test(m[1]!) ? "opponents" : "all", count: amount(m[2]!) }];
+  }
+  if ((m = new RegExp(`^its controller draws ${NUM} cards?$`, "i").exec(s)) && lastTarget() >= 0) {
+    return [{ type: "draw", who: { controllerOf: lastTarget() }, count: amount(m[1]!) }];
+  }
+  if (/^return ~ from your graveyard to your hand$/i.test(s)) return [{ type: "returnSelf" }];
+  if ((m = /^~ gets ([+-]\d+)\/([+-]\d+) until end of turn$/i.exec(s))) {
+    return [{ type: "pumpSelf", power: parseInt(m[1]!, 10), toughness: parseInt(m[2]!, 10) }];
+  }
+  if ((m = /^(other )?creatures you control gain (.+) until end of turn$/i.exec(s))) {
+    const keywords = keywordList(m[2]!);
+    if (keywords.every((k) => KEYWORD_HELP[k])) {
+      return [{ type: "grantAll", filter: { types: ["creature"], notTypes: [], controller: "you" }, keywords }];
+    }
+  }
+  if ((m = /^add (one|two|three) mana of any (?:one )?color$/i.exec(s))) {
+    return [{ type: "manaAny", count: amount(m[1]!) as number }];
+  }
+  if ((m = /^sacrifice (?:a|an) (.+)$/i.exec(s))) {
+    const filter = parsePermanentFilter(m[1]!);
+    if (filter) return [{ type: "sacrifice", filter: { ...filter, controller: "you" } }];
   }
   if ((m = new RegExp(`^put ${NUM} (\\+1/\\+1|-1/-1) counters? on ~$`, "i").exec(s))) {
     return [{ type: "counterSelf", kind: m[2]!, count: amount(m[1]!) as number }];
@@ -265,9 +313,7 @@ export function parseSpellEffects(oracleText: string, cardName: string): SpellEf
   const target = (spec: TargetSpec) => result.targets.push(spec) - 1;
   // Texte de rappel entre parenthèses, nom de la carte remplacé par « ~ ».
   // Nom complet, faces d'une carte double, et nom court d'un légendaire (« Vito » pour « Vito, Thorn of the Dusk Rose »).
-  const names = [cardName, ...cardName.split(" // "), cardName.split(",")[0]!].filter(Boolean);
-  let text = oracleText.replace(/\([^)]*\)/g, "");
-  for (const n of names) text = text.split(n).join("~");
+  const text = selfToTilde(oracleText, cardName);
   const sentences = text
     .split("\n")
     .flatMap((line) => line.split(/(?<=\.)\s+/))
@@ -281,7 +327,13 @@ export function parseSpellEffects(oracleText: string, cardName: string): SpellEf
     if (HARMLESS.some((re) => re.test(sentence))) continue;
     let m: RegExpExecArray | null;
 
-    const triggered = parseTriggerSentence(s, target);
+    const additional = /^as an additional cost to cast ~, sacrifice (?:a|an) (.+)$/i.exec(s);
+    const sacrificed = additional && parsePermanentFilter(additional[1]!);
+    if (sacrificed) {
+      result.sacrifice = { ...sacrificed, controller: "you" };
+      continue;
+    }
+    const triggered = parseTriggerSentence(s, target, () => result.targets.length - 1);
     if (triggered) {
       result.effects.push(...triggered);
       continue;
@@ -488,7 +540,9 @@ export function spellEffectsOf(g: GameState, card: CardInstance, faceIndex = car
 }
 
 /** Valeur d'un nombre d'effet, avec la valeur de X choisie au lancement. */
-export function resolveAmount(a: Amount, x: number, eventAmount = 0): number {
+export function resolveAmount(a: Amount, x: number, eventAmount = 0, context: { dealt?: number; hand?: number } = {}): number {
+  if (a === "dealt") return context.dealt ?? 0;
+  if (a === "hand") return context.hand ?? 0;
   if (a === "X") return x;
   if (a === "-X") return -x;
   if (a === "event") return eventAmount;
@@ -504,16 +558,39 @@ export interface CardSupport {
   unknown: string[];
 }
 
-const HANDLED_KEYWORDS = new Set([...COMBAT_KEYWORDS, "Flash"].map((k) => k.toLowerCase()));
+const HANDLED_KEYWORDS = new Set([...COMBAT_KEYWORDS, "Flash", "Exploit"].map((k) => k.toLowerCase()));
+
+/** Ce que le moteur fait d'une ligne de texte d'un permanent. */
+interface LineStatus {
+  title: string;
+  status: "auto" | "partial" | "manual";
+  manual?: string[];
+}
+
+function permanentLineStatus(line: string, typeLine: string, name: string): LineStatus {
+  const abilities = parsePermanentAbilities(line, name, typeLine);
+  if (/^\{T\}: Add /.test(line) && manaOptions(typeLine, line).length > 0) return { title: "Capacité de mana", status: "auto" };
+  if (abilities.triggers.length > 0) return { title: "Capacité déclenchée", status: "auto" };
+  const activated = abilities.activated[0];
+  if (activated) {
+    const title = activated.equip ? "Équipement" : activated.cost.loyalty !== undefined ? "Capacité de loyauté" : activated.mana ? "Capacité de mana" : "Capacité activée";
+    const { effects, unknown } = activated.effects;
+    if (unknown.length === 0 && effects.length > 0) return { title, status: "auto" };
+    // Le coût est payé par le moteur ; l'effet (ou une partie) reste à faire à la main.
+    return { title, status: "partial", manual: unknown };
+  }
+  if (abilities.statics.length > 0) return { title: "Effet statique", status: "auto" };
+  const title = /^(When|Whenever|At) /.test(line) ? "Capacité déclenchée" : /^[^"]*:/.test(line) ? "Capacité activée" : "Capacité";
+  return { title, status: "manual" };
+}
 
 function faceSupport(typeLine: string, oracleText: string, name: string): { known: number; unknown: string[] } {
   if (/\b(Instant|Sorcery)\b/.test(typeLine)) {
     const parsed = parseSpellEffects(oracleText, name);
-    return { known: parsed.effects.length, unknown: parsed.unknown };
+    return { known: parsed.effects.length + (parsed.sacrifice ? 1 : 0), unknown: parsed.unknown };
   }
   let known = 0;
   const unknown: string[] = [];
-  const triggers = new Set(parsePermanentAbilities(oracleText, name).triggers.map((t) => t.text));
   for (const raw of oracleText.split("\n")) {
     const line = raw.replace(/\([^)]*\)/g, "").trim();
     if (!line) continue;
@@ -522,15 +599,12 @@ function faceSupport(typeLine: string, oracleText: string, name: string): { know
       known++;
       continue;
     }
-    if (/^\{T\}: Add /.test(line) && manaOptions(typeLine, line).length > 0) {
+    const st = permanentLineStatus(line, typeLine, name);
+    if (st.status === "auto") known++;
+    else if (st.status === "partial") {
       known++;
-      continue;
-    }
-    if (triggers.has(line)) {
-      known++;
-      continue;
-    }
-    unknown.push(line);
+      unknown.push(line);
+    } else unknown.push(line);
   }
   return { known, unknown };
 }
@@ -579,6 +653,7 @@ export const KEYWORD_HELP: Record<string, { name: string; help: string }> = {
   indestructible: { name: "Indestructible", help: "Ni « détruire » ni les blessures mortelles ne la détruisent." },
   hexproof: { name: "Défense talismanique", help: "Les adversaires ne peuvent pas la cibler." },
   shroud: { name: "Linceul", help: "Personne ne peut la cibler." },
+  exploit: { name: "Exploitation", help: "En arrivant, tu peux sacrifier une créature (le moteur te le demande)." },
   flash: { name: "Flash", help: "Peut se lancer à tout moment où l'on a la priorité." },
 };
 
@@ -593,7 +668,6 @@ export function abilityReport(data: CardData, faceIndex = 0): AbilityReportItem[
   const name = face?.name ?? data.name;
   const items: AbilityReportItem[] = [];
   const spell = /\b(Instant|Sorcery)\b/.test(typeLine);
-  const triggers = spell ? new Set<string>() : new Set(parsePermanentAbilities(oracleText, name).triggers.map((t) => t.text));
   for (const raw of oracleText.split("\n")) {
     const line = raw.replace(/\([^)]*\)/g, "").trim();
     if (!line) continue;
@@ -603,32 +677,26 @@ export function abilityReport(data: CardData, faceIndex = 0): AbilityReportItem[
     if (isKeywordLine) {
       for (const part of parts) {
         const help = KEYWORD_HELP[part.toLowerCase()];
+        const other = help ? null : permanentLineStatus(part, typeLine, name);
         items.push(
           help
             ? { title: help.name, text: help.help, status: "auto" }
-            : { title: part.charAt(0).toUpperCase() + part.slice(1), text: "Mot-clé que le moteur n'applique pas encore.", status: "manual" },
+            : other && other.status !== "manual"
+              ? { title: other.title, text: part, status: other.status }
+              : { title: part.charAt(0).toUpperCase() + part.slice(1), text: "Mot-clé que le moteur n'applique pas encore.", status: "manual" },
         );
       }
       continue;
     }
     if (spell) {
       const parsed = parseSpellEffects(line, name);
-      const status = parsed.effects.length === 0 ? "manual" : parsed.unknown.length === 0 ? "auto" : "partial";
-      items.push({ title: "Effet du sort", text: line, status, ...(status === "partial" ? { manual: parsed.unknown } : {}) });
+      const known = parsed.effects.length + (parsed.sacrifice ? 1 : 0);
+      const status = known === 0 ? "manual" : parsed.unknown.length === 0 ? "auto" : "partial";
+      items.push({ title: parsed.sacrifice && parsed.effects.length === 0 ? "Coût supplémentaire" : "Effet du sort", text: line, status, ...(status === "partial" ? { manual: parsed.unknown } : {}) });
       continue;
     }
-    if (/^\{T\}: Add /.test(line) && manaOptions(typeLine, line).length > 0) {
-      items.push({ title: "Capacité de mana", text: line, status: "auto" });
-    } else if (triggers.has(line)) {
-      items.push({ title: "Capacité déclenchée", text: line, status: "auto" });
-    } else {
-      const title = /^(When|Whenever|At) /.test(line)
-        ? "Capacité déclenchée"
-        : /^[^"]*:/.test(line)
-          ? "Capacité activée"
-          : "Capacité";
-      items.push({ title, text: line, status: "manual" });
-    }
+    const st = permanentLineStatus(line, typeLine, name);
+    items.push({ title: st.title, text: line, status: st.status, ...(st.manual && st.manual.length > 0 ? { manual: st.manual } : {}) });
   }
   return items;
 }

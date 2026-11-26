@@ -65,7 +65,31 @@ export type GameAction =
    * manquent sont engagés automatiquement. `face` : la moitié lancée (cartes
    * scindées ou modales), `x` : la valeur de X.
    */
-  | { type: "castSpell"; cardId: CardInstanceId; face?: number; x?: number; targets?: Target[] }
+  | {
+      type: "castSpell";
+      cardId: CardInstanceId;
+      face?: number;
+      x?: number;
+      targets?: Target[];
+      /** Le permanent sacrifié pour un coût supplémentaire (« As an additional cost… sacrifice a creature »). */
+      sacrifice?: CardInstanceId;
+    }
+  /**
+   * Active la capacité n° `index` (parmi les capacités activées reconnues de
+   * la face visible) d'un permanent, ou d'une carte de son cimetière.
+   */
+  | {
+      type: "activateAbility";
+      cardId: CardInstanceId;
+      index: number;
+      targets?: Target[];
+      /** Le permanent sacrifié pour le coût (« Sacrifice a creature »). */
+      sacrifice?: CardInstanceId;
+      /** La couleur pour « Add one mana of any color ». */
+      color?: ManaType;
+    }
+  /** Répond à une capacité facultative (« you may ») sur la pile ; `choice` : le permanent choisi (sacrifice). */
+  | { type: "decideOptional"; cardId: CardInstanceId; accept: boolean; choice?: CardInstanceId }
   /** Choisit les cibles d'une capacité déclenchée qu'on contrôle, sur la pile. */
   | { type: "chooseTargets"; cardId: CardInstanceId; targets: Target[] }
   /** Déclare les attaquants (étape des attaquants), chacun vers un joueur adverse. Une liste vide : pas d'attaque. */

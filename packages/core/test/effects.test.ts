@@ -109,7 +109,7 @@ describe("Lecture des effets", () => {
     );
     expect(sheoldred).toEqual({ level: "full", unknown: [] });
     expect(cardSupport(spell("Village Rites", "As an additional cost to cast this spell, sacrifice a creature.\nDraw two cards.")).level).toBe(
-      "partial",
+      "full",
     );
     expect(cardSupport(spell("Bubbling Muck", "Until end of turn, whenever a player taps a Swamp for mana, that player adds an additional {B}.")).level).toBe(
       "manual",
@@ -129,7 +129,7 @@ describe("Détail par capacité", () => {
       ["Lien de vie", "auto"],
       ["Ward {2}", "manual"],
       ["Capacité déclenchée", "auto"],
-      ["Capacité activée", "manual"],
+      ["Capacité activée", "auto"],
     ]);
     expect(abilityReport(bear("Banehound", { oracleText: "Lifelink, haste" })).map((r) => [r.title, r.status])).toEqual([
       ["Lien de vie", "auto"],
