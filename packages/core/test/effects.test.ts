@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GameAction } from "../src/actions.js";
-import { cardSupport, parseSpellEffects, type Target } from "../src/effects.js";
+import { abilityReport, cardSupport, parseSpellEffects, type Target } from "../src/effects.js";
 import { applyAction } from "../src/reducer.js";
 import type { CardData, GameState } from "../src/types.js";
 import { fakeCard, newTestGame } from "./helpers.js";
@@ -114,6 +114,33 @@ describe("Lecture des effets", () => {
     expect(cardSupport(spell("Bubbling Muck", "Until end of turn, whenever a player taps a Swamp for mana, that player adds an additional {B}.")).level).toBe(
       "manual",
     );
+  });
+});
+
+describe("Détail par capacité", () => {
+  it("dit, capacité par capacité, ce qui est automatique", () => {
+    const report = abilityReport(
+      bear("Vito", {
+        oracleText:
+          "Lifelink, ward {2}\nWhenever you gain life, target opponent loses that much life.\n{3}{B}{B}: Creatures you control gain lifelink until end of turn.",
+      }),
+    );
+    expect(report.map((r) => [r.title, r.status])).toEqual([
+      ["Lien de vie", "auto"],
+      ["Ward {2}", "manual"],
+      ["Capacité déclenchée", "auto"],
+      ["Capacité activée", "manual"],
+    ]);
+    expect(abilityReport(bear("Banehound", { oracleText: "Lifelink, haste" })).map((r) => [r.title, r.status])).toEqual([
+      ["Lien de vie", "auto"],
+      ["Célérité", "auto"],
+    ]);
+    const swarm = abilityReport(
+      spell("Feed the Swarm", "Destroy target creature or enchantment an opponent controls. You lose life equal to that permanent's mana value.", "Sorcery"),
+    );
+    expect(swarm).toEqual([
+      expect.objectContaining({ status: "partial", manual: ["You lose life equal to that permanent's mana value."] }),
+    ]);
   });
 });
 
