@@ -1237,3 +1237,68 @@ textarea:focus {
 .deck-support p {
   margin: 4px 0;
 }
+
+/* Ce que le moteur fait de chaque capacité (à côté de la carte agrandie et dans l'aperçu). */
+.ability-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+.ability-panel.zoom-abilities {
+  position: fixed;
+  z-index: 70;
+  pointer-events: none;
+  animation: zoom-in 0.12s ease-out;
+}
+.ability-item {
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  background: rgb(16 18 23 / 0.94);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--ok);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.4);
+}
+.ability-item.partial {
+  border-left-color: var(--warn);
+}
+.ability-item.manual {
+  border-left-color: var(--danger);
+}
+.ability-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ability-icon {
+  width: 16px;
+  text-align: center;
+  font-weight: 700;
+  color: var(--ok);
+}
+.ability-item.partial .ability-icon {
+  color: var(--warn);
+}
+.ability-item.manual .ability-icon {
+  color: var(--danger);
+}
+.ability-status {
+  margin-left: auto;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.ability-text {
+  margin-top: 3px;
+  color: var(--text-dim);
+  line-height: 1.35;
+}
+.ability-manual {
+  margin-top: 3px;
+  color: var(--warn);
+}
+.ability-note {
+  color: var(--text-dim);
+  font-style: italic;
+}

@@ -548,3 +548,87 @@ export function cardSupport(data: CardData): CardSupport {
   const level = unknown.length === 0 ? "full" : known > 0 ? "partial" : "manual";
   return { level, unknown };
 }
+
+/** Une capacité de la carte, et ce que le moteur en fait. */
+export interface AbilityReportItem {
+  /** Titre court (mot-clé en français, ou genre de capacité). */
+  title: string;
+  /** Texte de la capacité (anglais, tel que lu par le moteur). */
+  text: string;
+  /** « auto » : appliquée par le moteur ; « partial » : en partie ; « manual » : à faire à la main. */
+  status: "auto" | "partial" | "manual";
+  /** Ce qui reste à faire à la main, pour « partial ». */
+  manual?: string[];
+}
+
+/** Noms français des mots-clés gérés, avec ce que fait le moteur. */
+export const KEYWORD_HELP: Record<string, { name: string; help: string }> = {
+  flying: { name: "Vol", help: "Ne peut être bloquée que par des créatures avec le vol ou la portée." },
+  reach: { name: "Portée", help: "Peut bloquer les créatures avec le vol." },
+  vigilance: { name: "Vigilance", help: "Attaquer ne la fait pas s'engager." },
+  haste: { name: "Célérité", help: "Peut attaquer et s'engager dès son arrivée." },
+  "first strike": { name: "Initiative", help: "Inflige ses blessures de combat avant les créatures sans initiative." },
+  "double strike": { name: "Double initiative", help: "Inflige des blessures de combat deux fois." },
+  deathtouch: { name: "Contact mortel", help: "Toute blessure qu'elle inflige à une créature est mortelle." },
+  lifelink: { name: "Lien de vie", help: "Ses blessures font gagner autant de PV à son contrôleur." },
+  trample: { name: "Piétinement", help: "Les blessures en trop passent au joueur attaqué." },
+  menace: { name: "Menace", help: "Ne peut être bloquée que par deux créatures ou plus." },
+  infect: { name: "Infection", help: "Blesse les créatures avec des marqueurs -1/-1 et les joueurs avec des marqueurs poison." },
+  wither: { name: "Flétrissure", help: "Blesse les créatures avec des marqueurs -1/-1." },
+  defender: { name: "Défenseur", help: "Ne peut pas attaquer." },
+  indestructible: { name: "Indestructible", help: "Ni « détruire » ni les blessures mortelles ne la détruisent." },
+  hexproof: { name: "Défense talismanique", help: "Les adversaires ne peuvent pas la cibler." },
+  shroud: { name: "Linceul", help: "Personne ne peut la cibler." },
+  flash: { name: "Flash", help: "Peut se lancer à tout moment où l'on a la priorité." },
+};
+
+/**
+ * Le détail, capacité par capacité, de ce que le moteur applique pour la
+ * face visible d'une carte (pour l'encart à côté de la carte agrandie).
+ */
+export function abilityReport(data: CardData, faceIndex = 0): AbilityReportItem[] {
+  const face = data.faces?.[faceIndex];
+  const typeLine = face?.typeLine ?? data.typeLine;
+  const oracleText = face?.oracleText ?? data.oracleText;
+  const name = face?.name ?? data.name;
+  const items: AbilityReportItem[] = [];
+  const spell = /\b(Instant|Sorcery)\b/.test(typeLine);
+  const triggers = spell ? new Set<string>() : new Set(parsePermanentAbilities(oracleText, name).triggers.map((t) => t.text));
+  for (const raw of oracleText.split("\n")) {
+    const line = raw.replace(/\([^)]*\)/g, "").trim();
+    if (!line) continue;
+    const parts = line.split(/,\s*/).map((p) => p.trim());
+    // « Lifelink, ward {2} » : une liste de mots-clés (avec un coût éventuel).
+    const isKeywordLine = !spell && !line.includes(".") && !line.includes(":") && parts.every((p) => /^[A-Za-z]+( [a-z]+)?( \{[^}]+\})*$/.test(p));
+    if (isKeywordLine) {
+      for (const part of parts) {
+        const help = KEYWORD_HELP[part.toLowerCase()];
+        items.push(
+          help
+            ? { title: help.name, text: help.help, status: "auto" }
+            : { title: part.charAt(0).toUpperCase() + part.slice(1), text: "Mot-clé que le moteur n'applique pas encore.", status: "manual" },
+        );
+      }
+      continue;
+    }
+    if (spell) {
+      const parsed = parseSpellEffects(line, name);
+      const status = parsed.effects.length === 0 ? "manual" : parsed.unknown.length === 0 ? "auto" : "partial";
+      items.push({ title: "Effet du sort", text: line, status, ...(status === "partial" ? { manual: parsed.unknown } : {}) });
+      continue;
+    }
+    if (/^\{T\}: Add /.test(line) && manaOptions(typeLine, line).length > 0) {
+      items.push({ title: "Capacité de mana", text: line, status: "auto" });
+    } else if (triggers.has(line)) {
+      items.push({ title: "Capacité déclenchée", text: line, status: "auto" });
+    } else {
+      const title = /^(When|Whenever|At) /.test(line)
+        ? "Capacité déclenchée"
+        : /^[^"]*:/.test(line)
+          ? "Capacité activée"
+          : "Capacité";
+      items.push({ title, text: line, status: "manual" });
+    }
+  }
+  return items;
+}
