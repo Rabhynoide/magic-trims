@@ -14,6 +14,8 @@ export interface DeckImportResult {
   /** Lignes illisibles. */
   parseErrors: { line: number; text: string }[];
   issues: DeckIssue[];
+  /** Nom du deck sur le site d'origine (import par lien). */
+  name?: string;
 }
 
 export type CardToLocalize = Pick<CardData, "id" | "oracleId" | "set" | "collectorNumber">;
