@@ -145,6 +145,7 @@ export function createGame(options: NewGameOptions): GameState {
       mulligans: 0,
       mulliganBottom: 0,
       manaPool: emptyPool(),
+      landsPlayed: 0,
       hasConceded: false,
     };
     g.players[p.id] = player;
@@ -234,6 +235,7 @@ export function upgradeGame(g: GameState): GameState {
   for (const p of Object.values(g.players)) {
     p.mulliganBottom ??= 0;
     p.manaPool ??= emptyPool();
+    p.landsPlayed ??= 0;
   }
   g.priority ??= g.stack.length > 0 ? { playerId: g.turn.activePlayerId, passed: [] } : null;
   return g;

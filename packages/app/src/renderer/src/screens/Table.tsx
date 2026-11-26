@@ -22,7 +22,7 @@ import { Overlays } from "../components/Overlays";
 import { cardData, cardImage, cardManaOptions, cardName, cardText, isLand, manaSymbolUrl } from "../cards";
 import { CardLanguageSelect } from "../components/CardLanguage";
 import { CardZoom } from "../components/CardZoom";
-import { cardMenu, libraryMenu, manaItems } from "../menus";
+import { cardMenu, libraryMenu, manaItems, playItems } from "../menus";
 import { session, useSession } from "../session";
 import { ui, useUi } from "../ui-store";
 
@@ -94,10 +94,19 @@ function findCard(view: GameView, id: string): CardView | undefined {
  */
 function tapOrProduce(e: React.MouseEvent, view: GameView, card: CardView) {
   const id = card.instanceId!;
+  if (card.zone === "command") return playCard(e, view, card);
   const options = card.tapped || card.controllerId !== view.viewerId ? [] : cardManaOptions(view, card);
   if (options.length === 1) return void act({ type: "tapForMana", cardId: id });
   if (options.length > 1) return ui.openMenu(e.clientX, e.clientY, manaItems(view, card));
   void act({ type: "setTapped", cardIds: [id], tapped: !card.tapped });
+}
+
+/** Double-clic dans la main (ou sur son commandant) : jouer le terrain ou lancer le sort. */
+function playCard(e: React.MouseEvent, view: GameView, card: CardView) {
+  if (card.ownerId !== view.viewerId) return;
+  const items = playItems(view, card);
+  if (items.length === 1) return void items[0]!.onClick?.();
+  if (items.length > 1) ui.openMenu(e.clientX, e.clientY, items);
 }
 
 function openCardMenu(e: React.MouseEvent, view: GameView, card: CardView) {
@@ -488,10 +497,7 @@ function Hand(props: { view: GameView }) {
             onMenu={(e) => openCardMenu(e, view, c)}
             {...(toBottom > 0 && c.instanceId
               ? { selected: chosen.includes(c.instanceId), onSelect: () => toggle(c.instanceId!) }
-              : {
-                  onDoubleClick: () =>
-                    c.instanceId && void act({ type: "moveCard", cardId: c.instanceId, to: "battlefield" }),
-                })}
+              : { onDoubleClick: (e: React.MouseEvent) => playCard(e, view, c) })}
           />
         ))}
       </div>
