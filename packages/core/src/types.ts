@@ -1,0 +1,154 @@
+/**
+ * Données et état d'une partie de Commander.
+ *
+ * L'état est un objet JSON simple (sérialisable tel quel) : il peut être
+ * envoyé sur le réseau, sauvegardé sur disque et rejoué.
+ */
+
+/** Données d'une carte, issues de Scryfall (sous-ensemble utile au jeu). */
+export interface CardData {
+  /** Identifiant Scryfall de l'impression. */
+  id: string;
+  /** Identifiant Oracle (identique pour toutes les impressions d'une carte). */
+  oracleId: string;
+  name: string;
+  /** Nom imprimé dans la langue de l'impression, si différent. */
+  printedName?: string;
+  manaCost: string;
+  manaValue: number;
+  typeLine: string;
+  oracleText: string;
+  power?: string;
+  toughness?: string;
+  loyalty?: string;
+  colors: string[];
+  colorIdentity: string[];
+  keywords: string[];
+  /** Légalité en Commander d'après Scryfall ("legal", "banned", "not_legal"…). */
+  commanderLegality: string;
+  set: string;
+  collectorNumber: string;
+  image?: CardImages;
+  /** Faces des cartes double face, scindées, à aventure… */
+  faces?: CardFace[];
+}
+
+export interface CardFace {
+  name: string;
+  manaCost: string;
+  typeLine: string;
+  oracleText: string;
+  power?: string;
+  toughness?: string;
+  loyalty?: string;
+  image?: CardImages;
+}
+
+export interface CardImages {
+  small: string;
+  normal: string;
+  large: string;
+  artCrop?: string;
+}
+
+export type PlayerId = string;
+export type CardInstanceId = string;
+
+/** Zones propres à chaque joueur. */
+export const PLAYER_ZONES = [
+  "library",
+  "hand",
+  "battlefield",
+  "graveyard",
+  "exile",
+  "command",
+] as const;
+export type PlayerZone = (typeof PLAYER_ZONES)[number];
+
+/** La pile est partagée par toute la table. */
+export type Zone = PlayerZone | "stack";
+
+/** Zones dont le contenu est visible par tous les joueurs. */
+export const PUBLIC_ZONES: ReadonlySet<Zone> = new Set<Zone>([
+  "battlefield",
+  "graveyard",
+  "exile",
+  "command",
+  "stack",
+]);
+
+/** Un exemplaire physique d'une carte dans la partie. */
+export interface CardInstance {
+  instanceId: CardInstanceId;
+  /** Référence vers `GameState.cardData`. */
+  cardId: string;
+  ownerId: PlayerId;
+  controllerId: PlayerId;
+  /** Zone actuelle (redondant avec les listes de zones, pratique pour l'interface). */
+  zone: Zone;
+  tapped: boolean;
+  faceDown: boolean;
+  /** Index de la face visible pour les cartes double face (0 = recto). */
+  faceIndex: number;
+  counters: Record<string, number>;
+  isToken: boolean;
+  isCommander: boolean;
+  /** Carte à laquelle celle-ci est attachée (aura, équipement). */
+  attachedTo?: CardInstanceId;
+  /** Joueurs qui ont vu cette carte alors qu'elle était cachée (révélée). */
+  revealedTo: PlayerId[];
+}
+
+export interface PlayerState {
+  id: PlayerId;
+  name: string;
+  life: number;
+  poison: number;
+  /** Blessures reçues de chaque commandant adverse (clé : instanceId du commandant). */
+  commanderDamage: Record<CardInstanceId, number>;
+  /** Autres marqueurs de joueur (énergie, expérience…). */
+  counters: Record<string, number>;
+  zones: Record<PlayerZone, CardInstanceId[]>;
+  /** Nombre de fois où chaque commandant a été lancé depuis la zone de commandement. */
+  commanderCasts: Record<CardInstanceId, number>;
+  /** Mulligans pris pendant la mise en place. */
+  mulligans: number;
+  hasConceded: boolean;
+}
+
+export interface LogEntry {
+  seq: number;
+  actorId: PlayerId | null;
+  /** Texte en français, déjà expurgé des informations cachées. */
+  message: string;
+}
+
+export interface GameSettings {
+  startingLife: number;
+  /** Blessures de commandant mortelles. */
+  commanderDamageLimit: number;
+  poisonLimit: number;
+  /** Le premier mulligan est gratuit en Commander multijoueur. */
+  freeFirstMulligan: boolean;
+}
+
+export interface GameState {
+  id: string;
+  /** Incrémenté à chaque action appliquée. */
+  version: number;
+  settings: GameSettings;
+  /** Ordre du tour. */
+  turnOrder: PlayerId[];
+  players: Record<PlayerId, PlayerState>;
+  cards: Record<CardInstanceId, CardInstance>;
+  /** Données Scryfall des cartes présentes, indexées par `CardData.id`. */
+  cardData: Record<string, CardData>;
+  stack: CardInstanceId[];
+  turn: {
+    number: number;
+    activePlayerId: PlayerId;
+  };
+  /** État du générateur aléatoire (mélanges), pour des parties rejouables. */
+  rngState: number;
+  log: LogEntry[];
+}

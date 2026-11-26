@@ -1,0 +1,19 @@
+{
+  "name": "@magic-trims/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Modèle de partie Commander, actions, import de decks et données Scryfall. Sans dépendance à l'interface ni au réseau.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.0"
+  }
+}
