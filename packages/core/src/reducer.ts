@@ -66,14 +66,32 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       moveCardTo(g, actor.zones.library[0]!, "hand", "top");
     }
     actor.mulligans += 1;
-    const toBottom = Math.max(0, actor.mulligans - (g.settings.freeFirstMulligan ? 1 : 0));
+    const toBottom = Math.min(
+      actor.zones.hand.length,
+      Math.max(0, actor.mulligans - (g.settings.freeFirstMulligan ? 1 : 0)),
+    );
+    actor.mulliganBottom = toBottom;
     log(
       g,
       actor.id,
       toBottom > 0
-        ? `${actor.name} prend un mulligan et devra mettre ${plural(toBottom, "carte")} au-dessous de sa bibliothèque.`
+        ? `${actor.name} prend un mulligan et doit mettre ${plural(toBottom, "carte")} au-dessous de sa bibliothèque.`
         : `${actor.name} prend un mulligan gratuit.`,
     );
+  },
+
+  bottomMulligan(g, actor, { cardIds }) {
+    const count = actor.mulliganBottom;
+    if (count === 0) throw new ActionError("Tu n'as pas de cartes à mettre au-dessous après un mulligan.");
+    if (new Set(cardIds).size !== cardIds.length || cardIds.length !== count) {
+      throw new ActionError(`Choisis exactement ${plural(count, "carte")} de ta main.`);
+    }
+    for (const id of cardIds) {
+      if (!actor.zones.hand.includes(id)) throw new ActionError("Choisis des cartes de ta main.");
+    }
+    for (const id of cardIds) moveCardTo(g, id, "library", "bottom");
+    actor.mulliganBottom = 0;
+    log(g, actor.id, `${actor.name} garde sa main et met ${plural(count, "carte")} au-dessous de sa bibliothèque.`);
   },
 
   moveTopOfLibrary(g, actor, { count, to, faceDown }) {
@@ -278,6 +296,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
   nextStep(g, actor, { to }) {
     assertActive(g, actor);
     assertStackEmpty(g);
+    assertMulligansDone(g);
     if (to === undefined && g.turn.step === "cleanup") return passTurn(g, actor);
     if (to !== undefined && !isTurnStep(to)) throw new ActionError("Étape inconnue.");
     const target = to ?? TURN_STEPS[stepIndex(g.turn.step) + 1]!;
@@ -291,6 +310,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
   passTurn(g, actor) {
     assertActive(g, actor);
     assertStackEmpty(g);
+    assertMulligansDone(g);
     passTurn(g, actor);
   },
 
@@ -609,6 +629,15 @@ function nextActivePlayer(g: GameState, from: PlayerId): PlayerId | null {
     if (!g.players[candidate]!.hasConceded) return candidate;
   }
   return null;
+}
+
+/** Tant qu'un joueur n'a pas fini son mulligan, la partie n'avance pas. */
+function assertMulligansDone(g: GameState): void {
+  const waiting = Object.values(g.players).filter((p) => !p.hasConceded && p.mulliganBottom > 0);
+  if (waiting.length === 0) return;
+  throw new ActionError(
+    `${names(waiting)} ${waiting.length > 1 ? "doivent" : "doit"} d'abord mettre des cartes au-dessous de ${waiting.length > 1 ? "leur" : "sa"} bibliothèque (mulligan).`,
+  );
 }
 
 function assertStackEmpty(g: GameState): void {

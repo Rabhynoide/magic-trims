@@ -1011,3 +1011,18 @@ textarea:focus {
     transform: scale(0.96);
   }
 }
+
+.mulligan-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0 8px;
+  color: var(--warn);
+}
+.card.selectable {
+  cursor: pointer;
+}
+.card.selected {
+  outline: 3px solid var(--warn);
+  outline-offset: -3px;
+}

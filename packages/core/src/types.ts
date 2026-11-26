@@ -170,6 +170,11 @@ export interface PlayerState {
   commanderCasts: Record<CardInstanceId, number>;
   /** Mulligans pris pendant la mise en place. */
   mulligans: number;
+  /**
+   * Cartes que le joueur doit encore mettre au-dessous de sa bibliothèque
+   * après ses mulligans (règle 103.5) : la partie n'avance pas avant.
+   */
+  mulliganBottom: number;
   hasConceded: boolean;
 }
 

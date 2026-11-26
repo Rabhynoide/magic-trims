@@ -13,6 +13,9 @@ export function Card(props: {
   onDoubleClick?: () => void;
   draggable?: boolean;
   attachments?: CardView[];
+  /** Mode sélection (par exemple pour un mulligan) : un clic choisit la carte. */
+  selected?: boolean;
+  onSelect?: () => void;
 }) {
   const { view, card } = props;
   const img = cardImage(view, card, props.size === "medium" ? "normal" : "small");
@@ -21,7 +24,7 @@ export function Card(props: {
   const id = card.instanceId;
   return (
     <div
-      className={`card card-${props.size ?? "small"} ${card.tapped ? "tapped" : ""}`}
+      className={`card card-${props.size ?? "small"} ${card.tapped ? "tapped" : ""} ${props.onSelect ? "selectable" : ""} ${props.selected ? "selected" : ""}`}
       draggable={Boolean(props.draggable && id)}
       onDragStart={(e) => {
         if (!id) return;
@@ -35,7 +38,10 @@ export function Card(props: {
         e.preventDefault();
         props.onMenu(e);
       }}
-      onClick={(e) => props.onMenu && e.button === 0 && e.altKey && props.onMenu(e)}
+      onClick={(e) => {
+        if (props.onSelect && e.button === 0) return props.onSelect();
+        if (props.onMenu && e.button === 0 && e.altKey) props.onMenu(e);
+      }}
       onDoubleClick={props.onDoubleClick}
       onMouseEnter={(e) => {
         if (card.hidden) return;

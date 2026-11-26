@@ -401,9 +401,33 @@ function Hand(props: { view: GameView }) {
   const { view } = props;
   const me = view.players[view.viewerId]!;
   const drop = useDrop({ zone: "hand", playerId: view.viewerId }, view);
+  // Après un mulligan : choisir les cartes à mettre au-dessous de la bibliothèque.
+  const toBottom = me.mulliganBottom ?? 0;
+  const [chosen, setChosen] = useState<string[]>([]);
+  useEffect(() => setChosen([]), [toBottom, me.mulligans]);
+  const toggle = (id: string) =>
+    setChosen((list) =>
+      list.includes(id) ? list.filter((x) => x !== id) : list.length < toBottom ? [...list, id] : list,
+    );
   return (
     <div className={`hand ${drop.className}`} {...drop.handlers}>
-      <span className="zone-label">Main ({me.zones.hand.length})</span>
+      {toBottom > 0 ? (
+        <div className="mulligan-bar">
+          <span>
+            Mulligan : clique sur {toBottom > 1 ? `les ${toBottom} cartes` : "la carte"} à mettre au-dessous de ta
+            bibliothèque ({chosen.length}/{toBottom}).
+          </span>
+          <button
+            className="primary"
+            disabled={chosen.length !== toBottom}
+            onClick={() => void act({ type: "bottomMulligan", cardIds: chosen })}
+          >
+            Garder cette main
+          </button>
+        </div>
+      ) : (
+        <span className="zone-label">Main ({me.zones.hand.length})</span>
+      )}
       <div className="hand-cards">
         {me.zones.hand.map((c) => (
           <Card
@@ -411,11 +435,14 @@ function Hand(props: { view: GameView }) {
             view={view}
             card={c}
             size="medium"
-            draggable
+            draggable={toBottom === 0}
             onMenu={(e) => openCardMenu(e, view, c)}
-            onDoubleClick={() =>
-              c.instanceId && void act({ type: "moveCard", cardId: c.instanceId, to: "battlefield" })
-            }
+            {...(toBottom > 0 && c.instanceId
+              ? { selected: chosen.includes(c.instanceId), onSelect: () => toggle(c.instanceId!) }
+              : {
+                  onDoubleClick: () =>
+                    c.instanceId && void act({ type: "moveCard", cardId: c.instanceId, to: "battlefield" }),
+                })}
           />
         ))}
       </div>

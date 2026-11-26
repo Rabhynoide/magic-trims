@@ -14,6 +14,8 @@ export type GameAction =
   | { type: "draw"; count: number }
   | { type: "shuffleLibrary" }
   | { type: "mulligan" }
+  /** Après un mulligan : met les cartes choisies de la main au-dessous de la bibliothèque (dans cet ordre). */
+  | { type: "bottomMulligan"; cardIds: CardInstanceId[] }
   /** Déplace les N cartes du dessus de la bibliothèque (meule, exil…). */
   | { type: "moveTopOfLibrary"; count: number; to: Zone; faceDown?: boolean }
   /** Regarde les N cartes du dessus (regard, surveillance…). */
