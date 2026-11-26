@@ -12,7 +12,7 @@ Deck
 1 Command Tower
 …`;
 
-/** Importer un deck depuis Moxfield : coller la liste, vérifier, enregistrer. */
+/** Importer un deck (Moxfield, deckstats, Archidekt…) : coller la liste ou un lien, vérifier, enregistrer. */
 export function DeckImport(props: { onClose: () => void; onSaved: (deck: SavedDeck) => void; initial?: SavedDeck }) {
   const [text, setText] = useState(props.initial?.text ?? "");
   const [name, setName] = useState(props.initial?.name ?? "");
@@ -26,7 +26,8 @@ export function DeckImport(props: { onClose: () => void; onSaved: (deck: SavedDe
     try {
       const r = await api.importDeck(text);
       setResult(r);
-      if (!name && r.deck.commanders[0]) setName(r.deck.commanders.map((c) => c.name).join(" & "));
+      if (!name && r.name) setName(r.name);
+      else if (!name && r.deck.commanders[0]) setName(r.deck.commanders.map((c) => c.name).join(" & "));
     } catch (err) {
       session.toast(`Import impossible : ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -54,8 +55,10 @@ export function DeckImport(props: { onClose: () => void; onSaved: (deck: SavedDe
     <Modal title="Importer un deck" onClose={props.onClose} wide>
       <p className="hint">
         <strong>Moxfield</strong> : ouvre ton deck puis <strong>Export</strong> → <strong>Copy for Moxfield</strong>.{" "}
-        <strong>deckstats.net</strong> : <strong>Exporter</strong> → <strong>Texte</strong>. Colle la liste ici. Le
-        commandant doit être dans une section « Commander » (ou marqué « # !Commander » sur deckstats).
+        <strong>deckstats.net</strong> : <strong>Exporter</strong> → <strong>Texte</strong>.{" "}
+        <strong>Archidekt</strong> : colle simplement le lien du deck (public), ou son export texte. Colle la liste ici.
+        Le commandant doit être dans une section « Commander » (ou marqué « # !Commander » sur deckstats, ou dans la
+        catégorie « Commander » sur Archidekt).
       </p>
       <textarea
         className="deck-text"

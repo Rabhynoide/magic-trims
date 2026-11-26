@@ -11,6 +11,9 @@
  *   MTGO : commandant isolé après une ligne vide à la fin de la liste
  *   deckstats.net : « 1 [C21#263] Sol Ring », commandant marqué « # !Commander »,
  *                   sections « //Main », « //Sideboard »
+ *   Archidekt : « 1x Sol Ring (c21) 263 [Ramp] », catégories entre crochets ;
+ *               « [Commander{top}] » désigne le commandant, « {noDeck} »
+ *               (Maybeboard, Sideboard…) une carte hors du deck
  */
 
 export interface DeckEntry {
@@ -91,6 +94,19 @@ export function parseDeckList(text: string): ParsedDeck {
     if (comment) {
       if (/!commander/i.test(comment[1]!)) forced = "commander";
       body = body.slice(0, comment.index).trim();
+    }
+
+    // Catégories Archidekt en fin de ligne : « [Commander{top}] », « [Maybeboard{noDeck}{noPrice},Ramp] ».
+    // Les étiquettes « ^Have,#37d67a^ » sont ignorées.
+    body = body.replace(/\s*\^[^^]*\^\s*$/, "");
+    const categories = /\s\[([^\]]*)\]\s*$/.exec(body);
+    if (categories && !DECKSTATS_RE.test(body)) {
+      const list = categories[1]!.split(",").map((c) => c.trim());
+      if (list.some((c) => /^commanders?\b/i.test(c))) forced = "commander";
+      else if (list.some((c) => /\{noDeck\}/i.test(c) || /^(maybeboard|sideboard|considering)\b/i.test(c))) {
+        forced = "other";
+      }
+      body = body.slice(0, categories.index).trim();
     }
 
     const m = DECKSTATS_RE.exec(body) ?? LINE_RE.exec(body);

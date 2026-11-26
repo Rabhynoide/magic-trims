@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { app, BrowserWindow, ipcMain, shell } from "electron";
 import {
+  archidektDeckId,
+  fetchArchidektDeck,
   parseDeckList,
   resolveDeck,
   ScryfallClient,
@@ -69,10 +71,24 @@ ipcMain.handle("host:hasSavedGame", async () => {
 });
 
 ipcMain.handle("deck:import", async (_e, text: string): Promise<DeckImportResult> => {
+  // Un lien Archidekt : on va chercher le deck directement.
+  const archidektId = archidektDeckId(text);
+  let name: string | undefined;
+  if (archidektId) {
+    const fetched = await fetchArchidektDeck(archidektId);
+    name = fetched.name || undefined;
+    text = fetched.text;
+  }
   const parsed = parseDeckList(text);
   const { deck, unresolved } = await resolveDeck(parsed, scryfall);
   await cardCache.flush();
-  return { deck, unresolved, parseErrors: parsed.errors, issues: validateCommanderDeck(deck) };
+  return {
+    deck,
+    unresolved,
+    parseErrors: parsed.errors,
+    issues: validateCommanderDeck(deck),
+    ...(name ? { name } : {}),
+  };
 });
 
 ipcMain.handle("cards:search", async (_e, query: string) => {

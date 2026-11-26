@@ -2,7 +2,7 @@
 
 Une table de jeu **Magic: The Gathering Commander** pour jouer entre amis à distance, jusqu'à 5 joueurs en multijoueur libre, sous Windows.
 
-Projet privé, entre amis. Les données et images des cartes viennent de [Scryfall](https://scryfall.com) ; les decks s'importent depuis [Moxfield](https://moxfield.com).
+Projet privé, entre amis. Les données et images des cartes viennent de [Scryfall](https://scryfall.com) ; les decks s'importent depuis [Moxfield](https://moxfield.com), [deckstats.net](https://deckstats.net) ou [Archidekt](https://archidekt.com).
 
 ## Feuille de route
 
@@ -45,7 +45,7 @@ L'installateur est aussi fabriqué automatiquement par GitHub Actions à chaque 
 ### Jouer
 
 - **Accueil** : ton pseudo, héberger une partie ou en rejoindre une avec un code, et tes decks.
-- **Importer un deck** : colle la liste exportée depuis Moxfield (*Export → Copy for Moxfield*) ou deckstats.net (*Exporter → Texte*). L'appli retrouve les cartes sur Scryfall et signale les problèmes de construction.
+- **Importer un deck** : colle la liste exportée depuis Moxfield (*Export → Copy for Moxfield*) ou deckstats.net (*Exporter → Texte*), ou le lien d'un deck Archidekt. L'appli retrouve les cartes sur Scryfall et signale les problèmes de construction.
 - **Salon** : chacun choisit son deck ; l'hôte choisit le mode, les équipes, les points de vie, Planechase, et s'il accepte les decks non légaux pour le mode.
 - **Table** :
   - glisser-déposer les cartes entre la main, le champ de bataille, le cimetière, l'exil, la bibliothèque, la zone de commandement et la pile ; déposer une carte sur le champ de bataille d'un autre joueur lui en donne le contrôle ;
@@ -110,5 +110,6 @@ npm run typecheck  # vérification des types
 
 - **Moxfield** : sur la page du deck, **Export** → **Copy for Moxfield** (ou « Copy for MTGO / Arena »).
 - **deckstats.net** : **Exporter** → **Texte**. Le commandant est repéré par la mention `# !Commander`.
+- **Archidekt** : colle le lien du deck (`https://archidekt.com/decks/…`, le deck doit être public), ou son export texte (**Export** → **Text**). Le commandant est la carte de la catégorie « Commander » ; les catégories hors du deck (Maybeboard, Sideboard) sont ignorées.
 
 Ni l'un ni l'autre n'a d'API publique officielle, d'où le copier-coller.
