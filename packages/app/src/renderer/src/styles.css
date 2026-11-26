@@ -927,3 +927,12 @@ textarea:focus {
   white-space: pre-wrap;
   color: var(--text-dim);
 }
+
+.card-lang {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin: 6px 0;
+}
+.card-lang select {
+  width: auto;
+}

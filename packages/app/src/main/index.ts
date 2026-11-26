@@ -1,14 +1,22 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { app, BrowserWindow, ipcMain, shell } from "electron";
-import { parseDeckList, resolveDeck, ScryfallClient, validateCommanderDeck } from "@magic-trims/core";
+import {
+  parseDeckList,
+  resolveDeck,
+  ScryfallClient,
+  validateCommanderDeck,
+  type LocalizedCard,
+} from "@magic-trims/core";
 import { loadSnapshot, startHostServer, type HostServer } from "@magic-trims/host";
-import type { DeckImportResult, HostInfo } from "../shared/api.js";
-import { FileCardCache } from "./scryfall-cache.js";
+import type { CardToLocalize, DeckImportResult, HostInfo } from "../shared/api.js";
+import { FileCache, FileCardCache } from "./scryfall-cache.js";
 
 const userData = app.getPath("userData");
 const savePath = join(userData, "partie-en-cours.json");
 const cardCache = new FileCardCache(join(userData, "cache-scryfall.json"));
+/** Traductions déjà cherchées (`null` : pas imprimée dans cette langue). */
+const localizedCache = new FileCache<LocalizedCard | null>(join(userData, "cache-traductions.json"));
 const scryfall = new ScryfallClient({ cache: cardCache, userAgent: `MagicTrims/${app.getVersion()}` });
 
 let server: HostServer | null = null;
@@ -71,6 +79,28 @@ ipcMain.handle("cards:search", async (_e, query: string) => {
   return scryfall.search(query);
 });
 
+ipcMain.handle(
+  "cards:localize",
+  async (_e, cards: CardToLocalize[], lang: string): Promise<Record<string, LocalizedCard | null>> => {
+    const result: Record<string, LocalizedCard | null> = {};
+    const missing: CardToLocalize[] = [];
+    for (const card of cards) {
+      const cached = await localizedCache.get(`${lang}:${card.id}`);
+      if (cached !== undefined) result[card.id] = cached;
+      else missing.push(card);
+    }
+    if (missing.length > 0) {
+      const found = await scryfall.localize(missing, lang);
+      for (const card of missing) {
+        const value = found.get(card.id) ?? null;
+        result[card.id] = value;
+        await localizedCache.set(`${lang}:${card.id}`, value);
+      }
+    }
+    return result;
+  },
+);
+
 app.whenReady().then(() => {
   createWindow();
   app.on("activate", () => {
@@ -82,6 +112,7 @@ app.on("window-all-closed", () => {
   void (async () => {
     await server?.close();
     await cardCache.flush();
+    await localizedCache.flush();
     app.quit();
   })();
 });
