@@ -31,6 +31,8 @@ export interface TargetSpec {
   player?: boolean;
   /** Seulement un adversaire du lanceur. */
   opponent?: boolean;
+  /** Un choix (sacrifice…) et non une cible : le linceul et la défense talismanique ne comptent pas. */
+  choice?: boolean;
 }
 
 export interface PermanentFilter {

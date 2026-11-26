@@ -1311,3 +1311,9 @@ textarea:focus {
   vertical-align: -0.18em;
   margin: 0 1px;
 }
+
+.decision-buttons {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}

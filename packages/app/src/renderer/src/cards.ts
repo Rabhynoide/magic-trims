@@ -1,4 +1,4 @@
-import { cardSupport, creatureStats, isCreature, manaOptions, type CardSupport, type GameState, type CardData, type CardView, type GameView, type ManaType, type VisibleCardView } from "@magic-trims/core";
+import { cardSupport, creatureStats, stateFromView, isCreature, manaOptions, type CardSupport, type CardData, type CardView, type GameView, type ManaType, type VisibleCardView } from "@magic-trims/core";
 
 export function cardData(view: GameView, card: CardView): CardData | undefined {
   return card.hidden ? undefined : view.cardData[card.cardId];
@@ -98,8 +98,7 @@ export function manaSymbolUrl(mana: string): string {
 /** Force et endurance actuelles d'une créature sur le champ de bataille (null sinon). */
 export function creaturePT(view: GameView, card: CardView): { power: number; toughness: number; base: boolean } | null {
   if (card.hidden || card.zone !== "battlefield") return null;
-  // Les fonctions du moteur ne lisent que les données des cartes, que la vue contient.
-  const g = view as unknown as GameState;
+  const g = stateFromView(view);
   const c = card as VisibleCardView;
   if (!isCreature(g, c)) return null;
   const stats = creatureStats(g, c);

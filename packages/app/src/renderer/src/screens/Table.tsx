@@ -6,6 +6,9 @@ import {
   RESPONSE_STEPS,
   STEP_LABELS,
   abilitiesOf,
+  hasKeyword,
+  stateFromView,
+  permanentLabel,
   permanentMatches,
   priorityStopsOf,
   spellMatches,
@@ -326,9 +329,11 @@ function canTargetCard(view: GameView, spec: TargetSpec, card: CardView, sourceI
     card.hidden || card.faceDown ? "Creature" : (data?.faces?.[(card as VisibleCardView).faceIndex]?.typeLine ?? data?.typeLine ?? "");
   if (card.zone === "battlefield") {
     if (!spec.permanent) return false;
-    const keywords = data?.keywords ?? [];
-    if (keywords.includes("Shroud")) return false;
-    if (keywords.includes("Hexproof") && !sameSide(view, card.controllerId, view.viewerId)) return false;
+    const g = stateFromView(view);
+    const instance = g.cards[id];
+    const has = (k: "Shroud" | "Hexproof") => (instance ? hasKeyword(g, instance, k) : (data?.keywords ?? []).includes(k));
+    if (!spec.choice && has("Shroud")) return false;
+    if (!spec.choice && has("Hexproof") && !sameSide(view, card.controllerId, view.viewerId)) return false;
     return permanentMatches(
       {
         typeLine,
@@ -384,6 +389,54 @@ function useTriggerTargets(view: GameView): { waitingName: string | null; reopen
   };
 }
 
+/**
+ * Une de mes capacités facultatives (« you may ») attend ma réponse : Oui ou
+ * Non (avec le choix de la créature à sacrifier pour l'exploitation).
+ */
+function DecisionBanner(props: { view: GameView }) {
+  const { view } = props;
+  const waiting = view.stack.find(
+    (c): c is VisibleCardView => !c.hidden && Boolean(c.ability?.awaitingDecision) && c.controllerId === view.viewerId,
+  );
+  const others = view.stack.find((c): c is VisibleCardView => !c.hidden && Boolean(c.ability?.awaitingDecision) && c.controllerId !== view.viewerId);
+  if (!waiting) {
+    if (!others) return null;
+    return (
+      <div className="targeting-banner" role="status">
+        <span>
+          {view.players[others.controllerId]?.name} décide pour la capacité de <strong>{others.ability!.sourceName}</strong>.
+        </span>
+      </div>
+    );
+  }
+  const ability = waiting.ability!;
+  const trigger = abilitiesOf(view.cardData[waiting.cardId], ability.faceIndex).triggers[ability.index];
+  const sacrifice = trigger?.effects.effects.find((e) => e.type === "sacrifice");
+  const id = waiting.instanceId!;
+  const accept = async () => {
+    if (sacrifice && sacrifice.type === "sacrifice") {
+      const chosen = await ui.chooseTargets(ability.sourceName, id, [
+        { label: `${permanentLabel(sacrifice.filter)} à sacrifier`, permanent: sacrifice.filter, choice: true },
+      ]);
+      if (!chosen) return;
+      return void act({ type: "decideOptional", cardId: id, accept: true, choice: chosen[0]!.id });
+    }
+    void act({ type: "decideOptional", cardId: id, accept: true });
+  };
+  return (
+    <div className="targeting-banner" role="status">
+      <span>
+        <strong>{ability.sourceName}</strong> :{" "}
+        {ability.text === "Exploit" ? "exploitation, sacrifier une créature ?" : `« ${ability.text} »${trigger?.payMana ? ` (payer ${trigger.payMana})` : ""}. Tu le fais ?`}
+      </span>
+      <span className="decision-buttons">
+        <button onClick={() => void accept()}>Oui</button>
+        <button onClick={() => void act({ type: "decideOptional", cardId: id, accept: false })}>Non</button>
+      </span>
+    </div>
+  );
+}
+
 /** Bandeau du choix des cibles, avec Annuler (ou Échap). */
 function TargetingBanner() {
   const { targeting } = useUi();
@@ -402,7 +455,8 @@ function TargetingBanner() {
   return (
     <div className="targeting-banner" role="status">
       <span>
-        <strong>{targeting.sourceName}</strong> : choisis {spec.label === "n'importe quelle cible" ? "n'importe quelle cible" : `une cible (${spec.label})`}
+        <strong>{targeting.sourceName}</strong> : choisis{" "}
+        {spec.choice ? `un(e) ${spec.label}` : spec.label === "n'importe quelle cible" ? "n'importe quelle cible" : `une cible (${spec.label})`}
         {targeting.specs.length > 1 ? `, cible ${index + 1} sur ${targeting.specs.length}` : ""}. Clique sur {where}.
       </span>
       <button onClick={() => ui.cancelTargeting()}>Annuler</button>
@@ -442,6 +496,7 @@ export function Table() {
     <div className={`table ${targeting ? "targeting" : ""}`}>
       <div className="table-main">
         <TargetingBanner />
+        {!targeting && <DecisionBanner view={view} />}
         {trigger.waitingName && !targeting && (
           <div className="targeting-banner" role="status">
             <span>
