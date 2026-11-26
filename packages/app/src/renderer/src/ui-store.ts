@@ -17,13 +17,24 @@ export interface PromptRequest {
   resolve: (value: string | null) => void;
 }
 
+/** Carte agrandie près du curseur, avec la position de la carte survolée. */
+export interface Zoom {
+  card: CardView;
+  rect: { left: number; top: number; right: number; bottom: number };
+}
+
+/** Délai avant le zoom, proche de celui de l'infobulle de Windows. */
+export const ZOOM_DELAY_MS = 500;
+
 interface UiState {
   preview: CardView | null;
+  zoom: Zoom | null;
   menu: { x: number; y: number; items: MenuItem[] } | null;
   prompt: PromptRequest | null;
 }
 
-let state: UiState = { preview: null, menu: null, prompt: null };
+let state: UiState = { preview: null, zoom: null, menu: null, prompt: null };
+let zoomTimer: ReturnType<typeof setTimeout> | null = null;
 const listeners = new Set<() => void>();
 
 function set(patch: Partial<UiState>) {
@@ -33,7 +44,25 @@ function set(patch: Partial<UiState>) {
 
 export const ui = {
   setPreview: (preview: CardView | null) => set({ preview }),
-  openMenu: (x: number, y: number, items: MenuItem[]) => set({ menu: { x, y, items } }),
+  /** Affiche la carte agrandie si le curseur reste dessus. */
+  hoverCard(card: CardView, element: HTMLElement) {
+    ui.cancelZoom();
+    zoomTimer = setTimeout(() => {
+      zoomTimer = null;
+      if (state.menu || !element.isConnected) return;
+      const r = element.getBoundingClientRect();
+      set({ zoom: { card, rect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom } } });
+    }, ZOOM_DELAY_MS);
+  },
+  cancelZoom() {
+    if (zoomTimer) clearTimeout(zoomTimer);
+    zoomTimer = null;
+    if (state.zoom) set({ zoom: null });
+  },
+  openMenu: (x: number, y: number, items: MenuItem[]) => {
+    ui.cancelZoom();
+    set({ menu: { x, y, items } });
+  },
   closeMenu: () => set({ menu: null }),
   /** Remplace window.prompt (absent d'Electron). */
   ask(title: string, initial = "", kind: PromptRequest["kind"] = "text"): Promise<string | null> {

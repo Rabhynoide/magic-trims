@@ -49,6 +49,7 @@ L'installateur est aussi fabriqué automatiquement par GitHub Actions à chaque 
 - **Salon** : chacun choisit son deck ; l'hôte choisit le mode, les équipes, les points de vie, Planechase, et s'il accepte les decks non légaux pour le mode.
 - **Table** :
   - glisser-déposer les cartes entre la main, le champ de bataille, le cimetière, l'exil, la bibliothèque, la zone de commandement et la pile ; déposer une carte sur le champ de bataille d'un autre joueur lui en donne le contrôle ;
+  - **survol** : la carte s'agrandit à côté du curseur après une demi-seconde (et dans le panneau de droite) ;
   - **double-clic** : engager / dégager (sur le champ de bataille), jouer la carte (dans la main) ;
   - **clic droit** sur une carte : marqueurs, face cachée, transformer, déplacer, donner le contrôle, révéler ;
   - **clic sur la bibliothèque** : piocher, mélanger, regarder ou révéler le dessus, meuler, exiler ;

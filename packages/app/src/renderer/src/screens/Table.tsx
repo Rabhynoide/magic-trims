@@ -16,6 +16,7 @@ import { Modal } from "../components/Modal";
 import { Overlays } from "../components/Overlays";
 import { cardData, cardImage, cardName, cardText, isLand } from "../cards";
 import { CardLanguageSelect } from "../components/CardLanguage";
+import { CardZoom } from "../components/CardZoom";
 import { cardMenu, libraryMenu } from "../menus";
 import { session, useSession } from "../session";
 import { ui, useUi } from "../ui-store";
@@ -122,6 +123,7 @@ export function Table() {
       )}
       {zoneViewer && <ZoneViewer view={view} target={zoneViewer} onClose={() => setZoneViewer(null)} />}
       {tokens && <TokenPicker onClose={() => setTokens(false)} />}
+      <CardZoom view={view} />
       <Overlays />
     </div>
   );
