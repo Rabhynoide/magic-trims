@@ -19,7 +19,13 @@ export interface LobbyPlayer {
   isHost: boolean;
   connected: boolean;
   /** Résumé du deck choisi, ou `null` s'il n'a pas encore été envoyé. */
-  deck: { commanders: string[]; cardCount: number; issues: DeckIssue[] } | null;
+  deck: {
+    commanders: string[];
+    cardCount: number;
+    /** Problèmes de construction pour le mode choisi. */
+    issues: DeckIssue[];
+    legal: boolean;
+  } | null;
   /** Nombre de machinations (mode Archenemy). */
   schemeCount: number;
 }
@@ -30,6 +36,8 @@ export interface LobbyConfig {
   teams?: PlayerId[][];
   archenemyId?: PlayerId;
   settings?: Partial<GameSettings>;
+  /** Accepter les decks non légaux pour le mode (vrai par défaut, entre amis). */
+  allowIllegalDecks?: boolean;
 }
 
 export interface LobbyState {

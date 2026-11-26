@@ -69,7 +69,7 @@ describe("salon", () => {
     const { conns } = setup(2);
     conns[1]!.send({ type: "setDeck", deck: fakeDeck("Bruno") });
     const deck = conns[0]!.last("lobby").lobby.players[1]!.deck;
-    expect(deck).toEqual({ commanders: ["Bruno Commander"], cardCount: 100, issues: [] });
+    expect(deck).toEqual({ commanders: ["Bruno Commander"], cardCount: 100, issues: [], legal: true });
   });
 
   it("réserve les réglages et le lancement à l'hôte", () => {
@@ -93,6 +93,21 @@ describe("salon", () => {
     conns[0]!.send({ type: "configure", config: { mode: "star" } });
     conns[0]!.send({ type: "start" });
     expect(conns[0]!.last("error").message).toBe("Le mode Étoile (Pentacle) se joue à 5 joueurs.");
+  });
+
+  it("refuse les decks non légaux si l'hôte le demande", () => {
+    const { conns } = setup(2);
+    const short = fakeDeck("Bruno");
+    short.cards = short.cards.slice(0, 50);
+    conns[0]!.send({ type: "setDeck", deck: fakeDeck("Alice") });
+    conns[1]!.send({ type: "setDeck", deck: short });
+    expect(conns[0]!.last("lobby").lobby.players[1]!.deck!.legal).toBe(false);
+    conns[0]!.send({ type: "configure", config: { mode: "freeForAll", allowIllegalDecks: false } });
+    conns[0]!.send({ type: "start" });
+    expect(conns[0]!.last("error").message).toMatch(/^Decks non légaux pour ce mode : Bruno\./);
+    conns[0]!.send({ type: "configure", config: { mode: "freeForAll", allowIllegalDecks: true } });
+    conns[0]!.send({ type: "start" });
+    expect(conns[0]!.last("lobby").lobby.started).toBe(true);
   });
 
   it("permet à l'hôte d'exclure un joueur avant la partie", () => {

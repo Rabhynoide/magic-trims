@@ -1,4 +1,4 @@
-import type { CardData } from "../types.js";
+import type { CardData, GameModeType } from "../types.js";
 import type { ResolvedDeck } from "./resolve.js";
 
 export interface DeckIssue {
@@ -9,8 +9,20 @@ export interface DeckIssue {
 
 export const COMMANDER_DECK_SIZE = 100;
 
-/** Vérifie les règles de construction Commander. */
-export function validateCommanderDeck(deck: ResolvedDeck): DeckIssue[] {
+/** Liste de bannies à appliquer : Commander multijoueur ou Duel Commander. */
+export type DeckFormat = "commander" | "duel";
+
+export function formatForMode(mode: GameModeType): DeckFormat {
+  return mode === "duel" ? "duel" : "commander";
+}
+
+/** Un deck est légal s'il ne présente aucun problème, même mineur. */
+export function isDeckLegal(issues: DeckIssue[]): boolean {
+  return issues.length === 0;
+}
+
+/** Vérifie les règles de construction Commander (ou Duel Commander). */
+export function validateCommanderDeck(deck: ResolvedDeck, format: DeckFormat = "commander"): DeckIssue[] {
   const issues: DeckIssue[] = [];
   const { commanders, cards } = deck;
 
@@ -63,8 +75,12 @@ export function validateCommanderDeck(deck: ResolvedDeck): DeckIssue[] {
   }
 
   for (const card of [...commanders, ...cards.map((c) => c.card)]) {
-    if (card.commanderLegality === "banned") {
-      issues.push({ level: "warning", message: `${card.name} est bannie en Commander.` });
+    const legality = format === "duel" ? card.duelLegality : card.commanderLegality;
+    if (legality === "banned") {
+      issues.push({
+        level: "warning",
+        message: `${card.name} est bannie en ${format === "duel" ? "Duel Commander" : "Commander"}.`,
+      });
     }
   }
 

@@ -26,6 +26,8 @@ export interface CardData {
   keywords: string[];
   /** Légalité en Commander d'après Scryfall ("legal", "banned", "not_legal"…). */
   commanderLegality: string;
+  /** Légalité en Duel Commander (liste de bannies différente). */
+  duelLegality?: string;
   set: string;
   collectorNumber: string;
   image?: CardImages;

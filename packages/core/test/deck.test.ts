@@ -49,6 +49,28 @@ Sideboard
   });
 });
 
+describe("lecture d'une liste deckstats.net", () => {
+  it("lit les éditions entre crochets, le commandant marqué et les sections //", () => {
+    const deck = parseDeckList(`//Main
+1 [C21#263] Sol Ring
+1 [CMM] Arcane Signet
+10 Forest
+1 [M13#141] Krenko, Mob Boss # !Commander
+
+//Sideboard
+1 [2XM] Swords to Plowshares
+SB: 1 Path to Exile`);
+    expect(deck.errors).toEqual([]);
+    expect(deck.commanders).toEqual([{ quantity: 1, name: "Krenko, Mob Boss", set: "m13", collectorNumber: "141", line: 5 }]);
+    expect(deck.mainboard.map((e) => [e.name, e.set, e.collectorNumber])).toEqual([
+      ["Sol Ring", "c21", "263"],
+      ["Arcane Signet", "cmm", undefined],
+      ["Forest", undefined, undefined],
+    ]);
+    expect(deck.other.map((e) => e.name).sort()).toEqual(["Path to Exile", "Swords to Plowshares"]);
+  });
+});
+
 function scryfallCard(name: string, extra: Partial<ScryfallCard> = {}): ScryfallCard {
   return {
     id: `sf-${name}`,
@@ -171,6 +193,13 @@ describe("validation Commander", () => {
       "Counterspell sort de l'identité couleur du commandant (U).",
       "Mana Crypt est bannie en Commander.",
     ]);
+  });
+
+  it("applique la liste de bannies du Duel Commander en duel", () => {
+    const deck = fakeDeck("A");
+    deck.cards[0] = { card: fakeCard("Sol Ring", { duelLegality: "banned" }), quantity: 1 };
+    expect(validateCommanderDeck(deck)).toEqual([]);
+    expect(validateCommanderDeck(deck, "duel")).toEqual([{ level: "warning", message: "Sol Ring est bannie en Duel Commander." }]);
   });
 
   it("exige un commandant", () => {

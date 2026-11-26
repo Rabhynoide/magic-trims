@@ -2,7 +2,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import {
   applyAction,
   createGame,
+  formatForMode,
   GAME_MODES,
+  isDeckLegal,
   MAX_PLAYERS,
   PROTOCOL_VERSION,
   validateCommanderDeck,
@@ -245,6 +247,15 @@ export class GameHost {
     if (missing.length > 0) {
       throw new HostError(`En attente du deck de ${missing.map((p) => p.name).join(", ")}.`);
     }
+    if (this.config.allowIllegalDecks === false) {
+      const format = formatForMode(this.config.mode);
+      const illegal = this.players.filter((p) => !isDeckLegal(validateCommanderDeck(p.deck!, format)));
+      if (illegal.length > 0) {
+        throw new HostError(
+          `Decks non légaux pour ce mode : ${illegal.map((p) => p.name).join(", ")}. Corrigez-les ou autorisez les decks non légaux.`,
+        );
+      }
+    }
     try {
       const options: Parameters<typeof createGame>[0] = {
         id: this.gameId,
@@ -316,21 +327,26 @@ export class GameHost {
   // -------------------------------------------------------------------------
 
   private lobbyState(): LobbyState {
+    const format = formatForMode(this.config.mode);
     return {
-      players: this.players.map((p) => ({
-        id: p.id,
-        name: p.name,
-        isHost: p.isHost,
-        connected: p.connId !== null,
-        deck: p.deck
-          ? {
-              commanders: p.deck.commanders.map((c) => c.name),
-              cardCount: p.deck.commanders.length + p.deck.cards.reduce((n, c) => n + c.quantity, 0),
-              issues: validateCommanderDeck(p.deck),
-            }
-          : null,
-        schemeCount: p.schemes.length,
-      })),
+      players: this.players.map((p) => {
+        const issues = p.deck ? validateCommanderDeck(p.deck, format) : [];
+        return {
+          id: p.id,
+          name: p.name,
+          isHost: p.isHost,
+          connected: p.connId !== null,
+          deck: p.deck
+            ? {
+                commanders: p.deck.commanders.map((c) => c.name),
+                cardCount: p.deck.commanders.length + p.deck.cards.reduce((n, c) => n + c.quantity, 0),
+                issues,
+                legal: isDeckLegal(issues),
+              }
+            : null,
+          schemeCount: p.schemes.length,
+        };
+      }),
       config: structuredClone(this.config),
       planeCount: this.planarDeck.length,
       started: this.started,

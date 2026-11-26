@@ -1,0 +1,31 @@
+{
+  "name": "@magic-trims/app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Magic Trims : table de jeu Commander entre amis",
+  "author": "Magic Trims",
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "dist": "electron-vite build && electron-builder --win --publish never",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json"
+  },
+  "devDependencies": {
+    "@magic-trims/core": "0.1.0",
+    "@magic-trims/host": "0.1.0",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.3.3",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "electron": "45.5.0",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^5.9.3",
+    "vite": "^8.4.0"
+  }
+}
