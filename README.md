@@ -26,7 +26,7 @@ L'hôte choisit le mode en créant la partie (`createGame({ mode, ... })`) :
 
 **Planechase** (pioche de plans partagée, dé planaire) se combine avec n'importe quel mode.
 
-Tous les réglages (points de vie, poison, partage entre coéquipiers…) restent modifiables par l'hôte. Pas retenus, faute de place à 5 joueurs : Empereur (6 joueurs) et Grande Mêlée (10 et plus).
+Tous les réglages (points de vie, poison, partage entre coéquipiers…) restent modifiables par l'hôte. Mis de côté pour plus tard : Empereur (6 joueurs) et Grande Mêlée (10 et plus), qui demandent de relever la limite de 5 joueurs.
 
 `evaluateOutcome()` indique les joueurs éliminés (points de vie, poison, blessures de commandant, abandon) et les vainqueurs selon le mode.
 
