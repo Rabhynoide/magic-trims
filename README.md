@@ -38,6 +38,8 @@ npm run app     # lance l'appli en mode développement
 npm run dist    # fabrique l'installateur Windows dans packages/app/release/
 ```
 
+Si `npm run app` affiche « Electron uninstall », lance `node scripts/install-electron.mjs` (téléchargement du binaire d'Electron, normalement fait par `npm install`).
+
 L'installateur est aussi fabriqué automatiquement par GitHub Actions à chaque modification de `main` : onglet **Actions** du dépôt → dernier passage → **MagicTrims-installateur-windows**.
 
 ### Jouer

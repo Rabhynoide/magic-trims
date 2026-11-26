@@ -10,7 +10,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "host": "npm run host -w @magic-trims/host --",
     "app": "npm run dev -w @magic-trims/app",
-    "dist": "npm run dist -w @magic-trims/app"
+    "dist": "npm run dist -w @magic-trims/app",
+    "postinstall": "node scripts/install-electron.mjs"
   },
   "engines": {
     "node": ">=20"
