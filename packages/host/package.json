@@ -1,0 +1,27 @@
+{
+  "name": "@magic-trims/host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Hébergement d'une partie depuis l'appli d'un joueur : salon, serveur WebSocket, sauvegarde, ouverture du port de la box.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p .",
+    "host": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@magic-trims/core": "0.1.0",
+    "@runonflux/nat-upnp": "^3.1.1",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.0",
+    "tsx": "^4.20.0"
+  }
+}
