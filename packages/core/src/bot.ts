@@ -8,7 +8,7 @@
  * encore) : il lance donc surtout des permanents.
  */
 import type { GameAction } from "./actions.js";
-import { creatureStats, hasKeyword, isCreature } from "./combat.js";
+import { canAttack, cantBlock, creatureStats, hasKeyword, isCreature } from "./combat.js";
 import { isLegalTarget, type Target } from "./effects.js";
 import { abilitiesOf } from "./triggers.js";
 import { areTeammates, isActivePlayer, teamOf } from "./modes.js";
@@ -142,13 +142,7 @@ function chooseAttacks(g: GameState, botId: PlayerId): { cardId: CardInstanceId;
 function attackersOf(g: GameState, botId: PlayerId): CardInstance[] {
   return g.players[botId]!.zones.battlefield
     .map((id) => g.cards[id]!)
-    .filter(
-      (c) =>
-        isCreature(g, c) &&
-        !c.tapped &&
-        (!c.summoningSick || hasKeyword(g, c, "Haste")) &&
-        !hasKeyword(g, c, "Defender"),
-    );
+    .filter((c) => canAttack(g, c));
 }
 
 function untappedCreatures(g: GameState, playerId: PlayerId): CardInstance[] {
@@ -189,7 +183,7 @@ function chooseBlocks(g: GameState, botId: PlayerId): { cardId: CardInstanceId; 
     .filter(([id, defender]) => g.cards[id]?.zone === "battlefield" && defendingSide(g, defender).includes(botId))
     .map(([id]) => g.cards[id]!)
     .sort((a, b) => creatureStats(g, b).power - creatureStats(g, a).power);
-  const available = untappedCreatures(g, botId);
+  const available = untappedCreatures(g, botId).filter((c) => !cantBlock(g, c));
   const blocks: { cardId: CardInstanceId; attackerId: CardInstanceId }[] = [];
   const canBlock = (blocker: CardInstance, attacker: CardInstance) =>
     !hasKeyword(g, attacker, "Flying") || hasKeyword(g, blocker, "Flying") || hasKeyword(g, blocker, "Reach");

@@ -24,7 +24,7 @@ import {
   type Who,
 } from "./effects.js";
 import { abilitiesOf, conditionMatches, type TriggerEvent } from "./triggers.js";
-import { creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatState } from "./combat.js";
+import { canAttack, canBlock, cantAttack, cantBlock, creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatState } from "./combat.js";
 import { MAX_HAND_SIZE, STEP_LABELS, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
 import {
   HIDDEN_ORDERED_ZONES,
@@ -229,6 +229,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
         throw new ActionError(`${name} vient d'arriver : mal d'invocation.`);
       }
       if (hasKeyword(g, card, "Defender")) throw new ActionError(`${name} a le défenseur et ne peut pas attaquer.`);
+      if (cantAttack(g, card)) throw new ActionError(`${name} ne peut pas attaquer.`);
       const target = getPlayer(g, defender);
       if (target.hasConceded) throw new ActionError(`${target.name} a abandonné.`);
       if (isActivePlayer(g, defender)) throw new ActionError("On n'attaque pas son propre camp.");
@@ -272,6 +273,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       }
       if (!isCreature(g, card)) throw new ActionError(`${name} n'est pas une créature.`);
       if (card.tapped) throw new ActionError(`${name} est engagé et ne peut pas bloquer.`);
+      if (cantBlock(g, card)) throw new ActionError(`${name} ne peut pas bloquer.`);
       const attacker = getCard(g, attackerId);
       const defender = combat.attackers[attackerId];
       if (!defender || attacker.zone !== "battlefield") throw new ActionError(`${cardName(g, attacker)} n'attaque pas.`);
@@ -1509,7 +1511,7 @@ function openResponseWindow(g: GameState, request: PendingAdvance): boolean {
  * l'étape en cours a déjà eu lieu).
  */
 function advanceTurn(g: GameState, actor: PlayerState, request: PendingAdvance, resumed = false): void {
-  const target: TurnStep = request.type === "passTurn" ? "cleanup" : request.to ?? TURN_STEPS[stepIndex(g.turn.step) + 1]!;
+  let target: TurnStep = request.type === "passTurn" ? "cleanup" : request.to ?? followingStep(g);
   const start = g.turn.step;
   while (stepIndex(g.turn.step) < stepIndex(target)) {
     const first = g.turn.step === start;
@@ -1523,7 +1525,12 @@ function advanceTurn(g: GameState, actor: PlayerState, request: PendingAdvance, 
       if (!first) log(g, actor.id, `${actor.name} passe à ${STEP_PHRASES[g.turn.step]}.`);
       return;
     }
-    enterStep(g, TURN_STEPS[stepIndex(g.turn.step) + 1]!);
+    enterStep(g, followingStep(g));
+    // Personne ne peut attaquer : le combat est sans objet, on va jusqu'à la seconde phase principale.
+    if (g.turn.step === "declareAttackers" && noAttack(g) && request.type === "nextStep" && stepIndex(target) <= stepIndex("declareAttackers")) {
+      target = "main2";
+      request = { type: "nextStep", to: target };
+    }
     // Des capacités se déclenchent (entretien, blessures, fin du tour…) : on s'arrête là pour les résoudre.
     checkStateBasedActions(g);
     if (flushTriggers(g)) {
@@ -1561,9 +1568,23 @@ function advanceTo(g: GameState, target: TurnStep): TurnStep {
       }
       break;
     }
-    enterStep(g, TURN_STEPS[stepIndex(g.turn.step) + 1]!);
+    enterStep(g, followingStep(g));
   }
   return g.turn.step;
+}
+
+/**
+ * L'étape suivante. Sans attaquant, les étapes des bloqueurs et des blessures
+ * de combat n'ont pas lieu (règle 508.8).
+ */
+function followingStep(g: GameState): TurnStep {
+  if (g.turn.step === "declareAttackers" && noAttack(g)) return "endCombat";
+  return TURN_STEPS[stepIndex(g.turn.step) + 1]!;
+}
+
+/** Les attaquants sont déclarés, et il n'y en a aucun. */
+function noAttack(g: GameState): boolean {
+  return !!g.combat?.attackersDeclared && Object.keys(g.combat.attackers).length === 0;
 }
 
 function logWaitingBlockers(g: GameState): void {
@@ -1870,16 +1891,33 @@ function enterStep(g: GameState, step: TurnStep): void {
     case "beginCombat":
       g.combat = newCombat();
       break;
+    case "declareAttackers": {
+      // Aucune créature ne peut attaquer : la déclaration (vide) se fait d'office.
+      const combat = g.combat;
+      if (!combat || !g.settings.enforceRules) break;
+      const players = activePlayers(g);
+      const able = players.some((p) => p.zones.battlefield.some((id) => canAttack(g, g.cards[id]!)));
+      const foes = g.turnOrder.some((id) => !g.players[id]!.hasConceded && !isActivePlayer(g, id));
+      if (!able || !foes) {
+        combat.attackersDeclared = true;
+        log(g, null, `${names(players)} n'${players.length > 1 ? "ont" : "a"} aucune créature pouvant attaquer.`);
+      }
+      break;
+    }
     case "declareBlockers": {
-      // Ceux qui n'ont aucune créature dégagée n'ont rien à déclarer.
+      // Ceux qui n'ont aucune créature capable de bloquer un attaquant n'ont rien à déclarer.
       const combat = g.combat;
       if (!combat) break;
       for (const p of pendingBlockers(g)) {
-        const canBlock = p.zones.battlefield.some((id) => {
-          const card = g.cards[id]!;
-          return !card.tapped && isCreature(g, card);
-        });
-        if (!canBlock) combat.blocksDeclared.push(p.id);
+        const attackers = Object.entries(combat.attackers)
+          .filter(([, d]) => defendingSide(g, d).includes(p.id))
+          .map(([id]) => g.cards[id]!)
+          .filter((c) => c?.zone === "battlefield");
+        const able = p.zones.battlefield.some((id) => attackers.some((a) => canBlock(g, g.cards[id]!, a)));
+        if (!able) {
+          combat.blocksDeclared.push(p.id);
+          if (g.settings.enforceRules) log(g, null, `${p.name} n'a aucune créature pouvant bloquer.`);
+        }
       }
       break;
     }

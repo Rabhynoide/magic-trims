@@ -107,3 +107,51 @@ export function hasLethalDamage(g: GameState, card: CardInstance): boolean {
   if (hasKeyword(g, card, "Indestructible")) return false;
   return (card.damage ?? 0) >= toughness || (card.deathtouched === true && (card.damage ?? 0) > 0);
 }
+
+/** Une ligne du texte de la face visible dit-elle « ~ can't block » / « ~ can't attack » ? */
+function hasRestriction(g: GameState, card: CardInstance, what: "attack" | "block"): boolean {
+  if (card.faceDown) return false;
+  const data = g.cardData[card.cardId];
+  const name = data?.faces?.[card.faceIndex]?.name ?? data?.name ?? "";
+  const subject = `(?:this creature|${escapeRe(name)}|${escapeRe(name.split(",")[0]!)})`;
+  const re = new RegExp(`^${subject} can't (attack|block)(?: or (attack|block))?\\.?$`, "i");
+  return faceOf(g, card)
+    .oracleText.split("\n")
+    .some((line) => {
+      const m = re.exec(line.replace(/\([^)]*\)/g, "").trim());
+      return !!m && (m[1]!.toLowerCase() === what || m[2]?.toLowerCase() === what);
+    });
+}
+
+function escapeRe(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** « This creature can't block. » */
+export function cantBlock(g: GameState, card: CardInstance): boolean {
+  return hasRestriction(g, card, "block");
+}
+
+/** « This creature can't attack. » */
+export function cantAttack(g: GameState, card: CardInstance): boolean {
+  return hasRestriction(g, card, "attack");
+}
+
+/** La créature peut-elle attaquer maintenant (dégagée, sans mal d'invocation, sans défenseur) ? */
+export function canAttack(g: GameState, card: CardInstance): boolean {
+  return (
+    card.zone === "battlefield" &&
+    isCreature(g, card) &&
+    !card.tapped &&
+    (!card.summoningSick || hasKeyword(g, card, "Haste")) &&
+    !hasKeyword(g, card, "Defender") &&
+    !cantAttack(g, card)
+  );
+}
+
+/** La créature peut-elle bloquer cet attaquant ? Sans attaquant : peut-elle bloquer tout court ? */
+export function canBlock(g: GameState, card: CardInstance, attacker?: CardInstance): boolean {
+  if (card.zone !== "battlefield" || !isCreature(g, card) || card.tapped || cantBlock(g, card)) return false;
+  if (!attacker) return true;
+  return !hasKeyword(g, attacker, "Flying") || hasKeyword(g, card, "Flying") || hasKeyword(g, card, "Reach");
+}

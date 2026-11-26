@@ -59,8 +59,8 @@ describe("Tours et phases", () => {
 
   it("saute plusieurs étapes en faisant les actions obligatoires", () => {
     let g = newTestGame();
-    g = act(g, "p1", { type: "nextStep", to: "declareAttackers" });
-    expect(g.turn.step).toBe("declareAttackers");
+    g = act(g, "p1", { type: "nextStep", to: "beginCombat" });
+    expect(g.turn.step).toBe("beginCombat");
     expect(g.players.p1!.zones.hand).toHaveLength(8);
     expect(refuse(g, "p1", { type: "nextStep", to: "main1" })).toMatch(/arrière/);
     expect(refuse(g, "p2", { type: "nextStep" })).toMatch(/pas ton tour/);
