@@ -29,7 +29,7 @@ function inHand(g: GameState, playerId: string, card: CardData, n = 0): [GameSta
 function onBattlefield(g: GameState, playerId: string, card: CardData, n = 0): [GameState, string] {
   let id: string;
   [g, id] = inHand(g, playerId, card, n);
-  g = act(g, playerId, { type: "moveCard", cardId: id, to: "battlefield" });
+  g = act(g, playerId, { type: "moveCard", cardId: id, to: "battlefield", force: true });
   return [g, id];
 }
 
@@ -189,5 +189,33 @@ describe("Lancer un sort", () => {
     g = act(g, "p1", { type: "castSpell", cardId: id, face: 1 });
     expect(g.cards[id]!.faceIndex).toBe(1);
     expect(g.log.at(-1)!.message).toMatch(/lance Ice/);
+  });
+});
+
+describe("Respect des règles pour jouer ses cartes", () => {
+  it("refuse de poser une carte de sa main sans la jouer, sauf déplacement forcé", () => {
+    let g = newTestGame(3);
+    let id: string;
+    [g, id] = inHand(g, "p1", forest);
+    // Pendant l'entretien, glisser un terrain sur le champ de bataille est refusé.
+    expect(refuse(g, "p1", { type: "moveCard", cardId: id, to: "battlefield" })).toMatch(/double-clic/);
+    expect(refuse(g, "p1", { type: "moveCard", cardId: id, to: "stack" })).toMatch(/double-clic/);
+    expect(refuse(g, "p1", { type: "playLand", cardId: id })).toMatch(/phase principale/);
+    const commander = g.players.p1!.zones.command[0]!;
+    expect(refuse(g, "p1", { type: "moveCard", cardId: commander, to: "stack" })).toMatch(/double-clic/);
+    // Un effet (« mets un terrain de ta main sur le champ de bataille ») passe en forçant.
+    g = act(g, "p1", { type: "moveCard", cardId: id, to: "battlefield", force: true });
+    expect(g.players.p1!.zones.battlefield).toContain(id);
+    // Les autres déplacements restent libres.
+    g = act(g, "p1", { type: "moveCard", cardId: g.players.p1!.zones.hand[0]!, to: "graveyard" });
+  });
+
+  it("l'hôte peut désactiver cette vérification", () => {
+    let g = newTestGame(3);
+    g.settings.enforceRules = false;
+    let id: string;
+    [g, id] = inHand(g, "p1", forest);
+    g = act(g, "p1", { type: "moveCard", cardId: id, to: "battlefield" });
+    expect(g.players.p1!.zones.battlefield).toContain(id);
   });
 });

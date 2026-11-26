@@ -66,6 +66,13 @@ function useDrop(target: ZoneTarget, view: GameView) {
           void act({ type: "changeControl", cardId, controllerId: target.playerId });
           return;
         }
+        // Avec les règles : glisser une carte de sa main sur son champ de bataille ou la pile, c'est la jouer.
+        const playing =
+          view.settings.enforceRules !== false &&
+          (card.zone === "hand" || card.zone === "command") &&
+          card.ownerId === view.viewerId &&
+          (target.zone === "stack" || (target.zone === "battlefield" && target.playerId === view.viewerId));
+        if (playing) return playCard(e, view, card);
         void act({
           type: "moveCard",
           cardId,

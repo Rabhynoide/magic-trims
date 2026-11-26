@@ -6,17 +6,24 @@ import { ui, type MenuItem } from "./ui-store";
 
 const act = session.act.bind(session);
 
-function moveItems(card: CardView, from: Zone): MenuItem[] {
+function moveItems(view: GameView, card: CardView, from: Zone): MenuItem[] {
   const id = card.instanceId!;
+  // Avec les règles, poser une carte de sa main ou de sa zone de commandement
+  // sans la jouer est un effet : on le dit, et on force le déplacement.
+  const effect =
+    view.settings.enforceRules !== false && (from === "hand" || from === "command");
   const to = (
     label: string,
     zone: Zone,
     extra: { position?: "top" | "bottom"; faceDown?: boolean } = {},
-  ): MenuItem => ({
-    label,
-    disabled: from === zone && zone !== "library",
-    onClick: () => void act({ type: "moveCard", cardId: id, to: zone, ...extra }),
-  });
+  ): MenuItem => {
+    const forced = effect && (zone === "battlefield" || zone === "stack");
+    return {
+      label: forced ? `${label} (effet, sans payer)` : label,
+      disabled: from === zone && zone !== "library",
+      onClick: () => void act({ type: "moveCard", cardId: id, to: zone, ...extra, ...(forced ? { force: true } : {}) }),
+    };
+  };
   return [
     to("Sur le champ de bataille", "battlefield"),
     to("Sur la pile", "stack"),
@@ -113,14 +120,14 @@ export function cardMenu(view: GameView, card: CardView): MenuItem[] {
     items.push(
       {
         label: "Jouer face cachée",
-        onClick: () => void act({ type: "moveCard", cardId: id, to: "battlefield", faceDown: true }),
+        onClick: () => void act({ type: "moveCard", cardId: id, to: "battlefield", faceDown: true, force: true }),
       },
       { label: "Révéler à tous", onClick: () => void act({ type: "revealCards", cardIds: [id], to: "all" }) },
       { separator: true, label: "" },
     );
   }
 
-  items.push(...moveItems(card, zone));
+  items.push(...moveItems(view, card, zone));
   return items;
 }
 

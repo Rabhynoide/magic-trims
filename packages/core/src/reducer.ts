@@ -139,11 +139,21 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     );
   },
 
-  moveCard(g, actor, { cardId, to, controllerId, position, tapped, faceDown }) {
+  moveCard(g, actor, { cardId, to, controllerId, position, tapped, faceDown, force }) {
     const card = getCard(g, cardId);
     assertCanHandle(g, actor, card);
     if (controllerId !== undefined) getPlayer(g, controllerId);
     const from = card.zone;
+    if (
+      g.settings.enforceRules &&
+      !force &&
+      (from === "hand" || from === "command") &&
+      (to === "battlefield" || to === "stack")
+    ) {
+      throw new ActionError(
+        "Joue cette carte avec un double-clic : le moteur vérifie le moment et paie le coût. Pour un effet qui la met directement en jeu, passe par son menu (clic droit).",
+      );
+    }
     const wasVisible = isVisibleToAll(card);
     const moved = moveCardTo(g, cardId, to, position ?? "top", { controllerId, tapped, faceDown });
     const nowVisible = g.cards[moved.instanceId] ? isVisibleToAll(moved) : PUBLIC_ZONES.has(to);

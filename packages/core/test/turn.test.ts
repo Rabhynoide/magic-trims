@@ -68,8 +68,8 @@ describe("Tours et phases", () => {
 
   it("dégage les permanents du joueur suivant au début de son tour", () => {
     let g = newTestGame();
-    g = act(g, "p2", { type: "moveCard", cardId: g.players.p2!.zones.hand[0]!, to: "battlefield", tapped: true });
-    g = act(g, "p1", { type: "moveCard", cardId: g.players.p1!.zones.hand[0]!, to: "battlefield", tapped: true });
+    g = act(g, "p2", { type: "moveCard", cardId: g.players.p2!.zones.hand[0]!, to: "battlefield", force: true, tapped: true });
+    g = act(g, "p1", { type: "moveCard", cardId: g.players.p1!.zones.hand[0]!, to: "battlefield", force: true, tapped: true });
     const mine = g.players.p1!.zones.battlefield[0]!;
     const theirs = g.players.p2!.zones.battlefield[0]!;
     g = act(g, "p1", { type: "passTurn" });

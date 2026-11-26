@@ -216,6 +216,13 @@ export interface GameSettings {
    * de main au nettoyage.
    */
   autoTurnActions: boolean;
+  /**
+   * Faire respecter les règles pour jouer ses cartes : une carte de la main
+   * ou de la zone de commandement ne va sur le champ de bataille ou la pile
+   * qu'en étant jouée (terrain) ou lancée (sort). Un déplacement « forcé »
+   * reste possible pour les effets que le moteur ne connaît pas.
+   */
+  enforceRules: boolean;
 }
 
 export interface PriorityState {
