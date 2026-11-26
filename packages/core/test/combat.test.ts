@@ -77,8 +77,8 @@ describe("Combat", () => {
     let g = newTestGame(3);
     let a: string;
     [g, a] = creature(g, "p1", bear());
-    g.cards[a]!.summoningSick = true;
     g = toAttackers(g);
+    g.cards[a]!.summoningSick = true;
     expect(refuse(g, "p1", { type: "declareAttackers", attackers: [{ cardId: a, defender: "p2" }] })).toMatch(/mal d'invocation/);
     g.cards[a]!.summoningSick = false;
     expect(refuse(g, "p1", { type: "declareAttackers", attackers: [{ cardId: a, defender: "p1" }] })).toMatch(/propre camp/);
@@ -209,5 +209,31 @@ describe("Combat", () => {
     g = act(g, d2!, { type: "declareBlockers", blocks: [{ cardId: blk, attackerId: att }] });
     g = act(g, a1!, { type: "nextStep" });
     expect(g.cards[att]!.zone).toBe("graveyard");
+  });
+
+  it("sans créature pouvant attaquer, la déclaration se fait d'office et on va à la seconde phase principale", () => {
+    let g = newTestGame(3);
+    let a: string;
+    [g, a] = creature(g, "p1", bear());
+    g.cards[a]!.summoningSick = true;
+    g = toAttackers(g);
+    expect(g.turn.step).toBe("main2");
+    expect(g.log.some((l) => /aucune créature pouvant attaquer/.test(l.message))).toBe(true);
+    expect(g.combat).toBeNull();
+  });
+
+  it("sans créature pouvant bloquer (engagée, « can't block », pas de vol contre un volant), rien à déclarer", () => {
+    let g = newTestGame(3);
+    let a: string, b: string, c: string;
+    [g, a] = creature(g, "p1", bear("Oiseau", { oracleText: "Flying", keywords: ["Flying"] }));
+    [g, b] = creature(g, "p2", bear("Squelette", { oracleText: "This creature can't block." }));
+    [g, c] = creature(g, "p2", bear("Ours"), 1);
+    g = toAttackers(g);
+    g = act(g, "p1", { type: "declareAttackers", attackers: [{ cardId: a, defender: "p2" }] });
+    g = act(g, "p1", { type: "nextStep" });
+    expect(g.turn.step).toBe("declareBlockers");
+    expect(g.combat!.blocksDeclared).toContain("p2");
+    expect(refuse(g, "p2", { type: "declareBlockers", blocks: [{ cardId: c, attackerId: a }] })).toMatch(/pas de bloqueurs/);
+    void b;
   });
 });
