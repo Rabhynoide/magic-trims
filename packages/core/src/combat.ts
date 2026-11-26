@@ -17,7 +17,7 @@ export interface CombatState {
   blocksDeclared: PlayerId[];
 }
 
-/** Mots-clés de combat gérés par le moteur (noms anglais de Scryfall). */
+/** Mots-clés gérés par le moteur (noms anglais de Scryfall). */
 export const COMBAT_KEYWORDS = [
   "Flying",
   "Reach",
@@ -33,6 +33,8 @@ export const COMBAT_KEYWORDS = [
   "Wither",
   "Defender",
   "Indestructible",
+  "Hexproof",
+  "Shroud",
 ] as const;
 export type CombatKeyword = (typeof COMBAT_KEYWORDS)[number];
 

@@ -1,5 +1,5 @@
 import type { CardView, GameView } from "@magic-trims/core";
-import { cardImage, cardName, creaturePT } from "../cards";
+import { cardData, cardImage, cardName, creaturePT, supportHint, supportOf } from "../cards";
 import { ui } from "../ui-store";
 
 export const DRAG_TYPE = "application/x-magic-card";
@@ -63,6 +63,16 @@ export function Card(props: {
         <div className="card-back">{card.hidden ? "" : name}</div>
       )}
       {card.faceDown && !card.hidden && <span className="card-flag">face cachée</span>}
+      {(() => {
+        const data = card.faceDown ? undefined : cardData(view, card);
+        const support = data && supportOf(data);
+        if (!support || support.level === "full") return null;
+        return (
+          <span className={`card-support ${support.level}`} title={supportHint(support)}>
+            {support.level === "manual" ? "main" : "½"}
+          </span>
+        );
+      })()}
       {props.combat && <span className={`card-combat ${props.combat.kind}`}>{props.combat.label}</span>}
       {(() => {
         const pt = creaturePT(view, card);

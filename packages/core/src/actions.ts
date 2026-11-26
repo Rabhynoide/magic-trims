@@ -1,5 +1,6 @@
 import type { ManaType } from "./mana.js";
 import type { TurnStep } from "./turn.js";
+import type { Target } from "./effects.js";
 import type { CardData, CardInstanceId, PlayerId, PriorityStops, Zone } from "./types.js";
 
 /**
@@ -64,7 +65,7 @@ export type GameAction =
    * manquent sont engagés automatiquement. `face` : la moitié lancée (cartes
    * scindées ou modales), `x` : la valeur de X.
    */
-  | { type: "castSpell"; cardId: CardInstanceId; face?: number; x?: number }
+  | { type: "castSpell"; cardId: CardInstanceId; face?: number; x?: number; targets?: Target[] }
   /** Déclare les attaquants (étape des attaquants), chacun vers un joueur adverse. Une liste vide : pas d'attaque. */
   | { type: "declareAttackers"; attackers: { cardId: CardInstanceId; defender: PlayerId }[] }
   /** Déclare ses bloqueurs (étape des bloqueurs), chacun contre un attaquant. Une liste vide : pas de blocage. */

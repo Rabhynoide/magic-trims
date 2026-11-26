@@ -1,7 +1,28 @@
-import { creatureStats, isCreature, manaOptions, type GameState, type CardData, type CardView, type GameView, type ManaType, type VisibleCardView } from "@magic-trims/core";
+import { cardSupport, creatureStats, isCreature, manaOptions, type CardSupport, type GameState, type CardData, type CardView, type GameView, type ManaType, type VisibleCardView } from "@magic-trims/core";
 
 export function cardData(view: GameView, card: CardView): CardData | undefined {
   return card.hidden ? undefined : view.cardData[card.cardId];
+}
+
+const supportCache = new Map<string, CardSupport>();
+
+/** Ce que le moteur gère de la carte (mis en cache par carte). */
+export function supportOf(data: CardData): CardSupport {
+  let support = supportCache.get(data.id);
+  if (!support) {
+    support = cardSupport(data);
+    supportCache.set(data.id, support);
+  }
+  return support;
+}
+
+/** Texte d'aide d'une carte que le moteur ne gère pas entièrement. */
+export function supportHint(support: CardSupport): string {
+  const head =
+    support.level === "manual"
+      ? "Le moteur ne gère pas cette carte : applique ses effets à la main."
+      : "Le moteur gère une partie de cette carte. À faire à la main :";
+  return support.level === "manual" ? head : `${head}\n• ${support.unknown.join("\n• ")}`;
 }
 
 /** Image de la face visible d'une carte. */

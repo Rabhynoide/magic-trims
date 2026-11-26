@@ -5,7 +5,10 @@ import {
   MANA_TYPES,
   RESPONSE_STEPS,
   STEP_LABELS,
+  permanentMatches,
   priorityStopsOf,
+  spellMatches,
+  type TargetSpec,
   TURN_PHASES,
   starEnemies,
   type CardData,
@@ -26,7 +29,7 @@ import { CardLanguageSelect } from "../components/CardLanguage";
 import { CardZoom } from "../components/CardZoom";
 import { cardMenu, libraryMenu, manaItems, playItems } from "../menus";
 import { session, useSession } from "../session";
-import { ui, useUi } from "../ui-store";
+import { ui, useUi, type Targeting } from "../ui-store";
 
 const act = session.act.bind(session);
 
@@ -313,6 +316,69 @@ function tapOrProduce(e: React.MouseEvent, view: GameView, card: CardView) {
 }
 
 /** Double-clic dans la main (ou sur son commandant) : jouer le terrain ou lancer le sort. */
+/** La carte peut-elle être choisie comme cible ? (le moteur revérifie au lancement) */
+function canTargetCard(view: GameView, spec: TargetSpec, card: CardView, sourceId: string): boolean {
+  const id = card.instanceId;
+  if (!id || id === sourceId) return false;
+  const data = card.hidden ? undefined : cardData(view, card);
+  const typeLine =
+    card.hidden || card.faceDown ? "Creature" : (data?.faces?.[(card as VisibleCardView).faceIndex]?.typeLine ?? data?.typeLine ?? "");
+  if (card.zone === "battlefield") {
+    if (!spec.permanent) return false;
+    const keywords = data?.keywords ?? [];
+    if (keywords.includes("Shroud")) return false;
+    if (keywords.includes("Hexproof") && !sameSide(view, card.controllerId, view.viewerId)) return false;
+    return permanentMatches(
+      {
+        typeLine,
+        controllerId: card.controllerId,
+        tapped: card.tapped,
+        attacking: Boolean(view.combat?.attackers[id]),
+        blocking: Boolean(view.combat?.blockers[id]),
+      },
+      spec.permanent,
+      view.viewerId,
+    );
+  }
+  if (card.zone === "stack") return Boolean(spec.spell) && spellMatches(typeLine, spec.spell!);
+  return false;
+}
+
+/** Pendant le choix des cibles : les cartes qu'on peut cibler deviennent cliquables. */
+function targetProps(view: GameView, targeting: Targeting, card: CardView): Partial<Parameters<typeof Card>[0]> {
+  const id = card.instanceId;
+  const spec = targeting.specs[targeting.chosen.length];
+  const selected = targeting.chosen.some((t) => t.kind === "card" && t.id === id);
+  if (!id || !spec || !canTargetCard(view, spec, card, targeting.sourceId)) return { selected };
+  return { selected, onSelect: () => ui.pickTarget({ kind: "card", id }) };
+}
+
+/** Bandeau du choix des cibles, avec Annuler (ou Échap). */
+function TargetingBanner() {
+  const { targeting } = useUi();
+  useEffect(() => {
+    if (!targeting) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") ui.cancelTargeting();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [targeting]);
+  if (!targeting) return null;
+  const index = targeting.chosen.length;
+  const spec = targeting.specs[index]!;
+  const where = spec.player ? (spec.permanent ? "une carte ou sur « Cibler » à côté d'un joueur" : "« Cibler » à côté d'un joueur") : spec.spell ? "un sort de la pile" : "une carte";
+  return (
+    <div className="targeting-banner" role="status">
+      <span>
+        <strong>{targeting.sourceName}</strong> : choisis {spec.label === "n'importe quelle cible" ? "n'importe quelle cible" : `une cible (${spec.label})`}
+        {targeting.specs.length > 1 ? `, cible ${index + 1} sur ${targeting.specs.length}` : ""}. Clique sur {where}.
+      </span>
+      <button onClick={() => ui.cancelTargeting()}>Annuler</button>
+    </div>
+  );
+}
+
 function playCard(e: React.MouseEvent, view: GameView, card: CardView) {
   if (card.ownerId !== view.viewerId) return;
   const items = playItems(view, card);
@@ -338,10 +404,12 @@ export function Table() {
   const isActive = sameSide(view, view.turn.activePlayerId, me);
   const combatUi = useCombatUi(view, isActive);
   const winners = view.outcome.winners;
+  const { targeting } = useUi();
 
   return (
-    <div className="table">
+    <div className={`table ${targeting ? "targeting" : ""}`}>
       <div className="table-main">
+        <TargetingBanner />
         <div className={`opponents opponents-${others.length}`}>
           {others.map((id) => (
             <PlayerArea key={id} view={view} playerId={id} compact onOpenZone={setZoneViewer} combat={combatUi} />
@@ -397,6 +465,8 @@ function PlayerArea(props: {
   const priority = hasPriority(view, playerId);
   const eliminated = view.outcome.eliminated[playerId];
   const size = props.compact ? "tiny" : "small";
+  const { targeting } = useUi();
+  const playerTarget = targeting?.specs[targeting.chosen.length]?.player && !p.hasConceded;
 
   const battlefield = p.zones.battlefield.filter((c) => !c.attachedTo);
   const attachmentsOf = (id: string | null) => (id ? p.zones.battlefield.filter((c) => c.attachedTo === id) : []);
@@ -414,7 +484,7 @@ function PlayerArea(props: {
       attachments={attachmentsOf(c.instanceId)}
       onMenu={(e) => openCardMenu(e, view, c)}
       onDoubleClick={(e) => c.instanceId && tapOrProduce(e, view, c)}
-      {...props.combat.cardProps(c)}
+      {...(targeting ? targetProps(view, targeting, c) : props.combat.cardProps(c))}
     />
   );
 
@@ -424,6 +494,11 @@ function PlayerArea(props: {
     >
       <header className="player-header">
         <strong className="player-name">{p.name}</strong>
+        {playerTarget && (
+          <button className="primary small" onClick={() => ui.pickTarget({ kind: "player", id: playerId })}>
+            Cibler
+          </button>
+        )}
         {active && <span className="badge badge-turn">son tour · {STEP_LABELS[view.turn.step]}</span>}
         {priority && <span className="badge badge-priority">priorité</span>}
         <PlayerTags view={view} playerId={playerId} />
@@ -943,6 +1018,7 @@ function Preview(props: { view: GameView }) {
 function SharedZones(props: { view: GameView }) {
   const { view } = props;
   const stackDrop = useDrop({ zone: "stack", playerId: view.viewerId }, view);
+  const { targeting } = useUi();
   return (
     <div className="shared-zones">
       {view.plane.length > 0 && (
@@ -967,6 +1043,7 @@ function SharedZones(props: { view: GameView }) {
               size="tiny"
               draggable
               onMenu={(e) => openCardMenu(e, view, c)}
+              {...(targeting ? targetProps(view, targeting, c) : {})}
             />
           ))}
         </div>
