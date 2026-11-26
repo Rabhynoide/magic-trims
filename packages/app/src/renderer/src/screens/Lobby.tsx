@@ -285,6 +285,16 @@ export function Lobby() {
           <label className="check">
             <input
               type="checkbox"
+              checked={config.settings?.autoTurnActions !== false}
+              disabled={!s.isHost}
+              onChange={(e) => configure({ settings: { ...config.settings, autoTurnActions: e.target.checked } })}
+            />
+            Dégagement et pioche automatiques
+          </label>
+
+          <label className="check">
+            <input
+              type="checkbox"
               checked={Boolean(config.settings?.planechase) && lobby.planeCount > 0}
               disabled={!s.isHost || loadingExtras}
               onChange={(e) => {

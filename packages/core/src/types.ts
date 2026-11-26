@@ -5,6 +5,8 @@
  * envoyé sur le réseau, sauvegardé sur disque et rejoué.
  */
 
+import type { TurnStep } from "./turn.js";
+
 /** Données d'une carte, issues de Scryfall (sous-ensemble utile au jeu). */
 export interface CardData {
   /** Identifiant Scryfall de l'impression. */
@@ -198,6 +200,12 @@ export interface GameSettings {
   teammatesSeeHands: boolean;
   /** Variante Planechase : pioche de plans partagée et dé planaire. */
   planechase: boolean;
+  /**
+   * Le moteur fait les actions obligatoires du tour : dégager les permanents
+   * au début du tour, piocher à l'étape de pioche, rappeler la taille maximale
+   * de main au nettoyage.
+   */
+  autoTurnActions: boolean;
 }
 
 export interface GameState {
@@ -225,6 +233,8 @@ export interface GameState {
     number: number;
     /** Joueur actif (en tours partagés : le premier joueur actif de l'équipe). */
     activePlayerId: PlayerId;
+    /** Étape en cours du tour. */
+    step: TurnStep;
     /** Jets de dé planaire déjà faits ce tour (le suivant coûte autant de mana générique). */
     planarDieRolls: number;
   };

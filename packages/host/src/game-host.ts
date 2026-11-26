@@ -7,6 +7,7 @@ import {
   isDeckLegal,
   MAX_PLAYERS,
   PROTOCOL_VERSION,
+  upgradeGame,
   validateCommanderDeck,
   viewFor,
   type CardData,
@@ -90,7 +91,7 @@ export class GameHost {
     host.players = snapshot.players.map((p) => ({ ...p, connId: null }));
     host.config = snapshot.config;
     host.planarDeck = snapshot.planarDeck;
-    host.game = snapshot.game;
+    host.game = snapshot.game ? upgradeGame(snapshot.game) : snapshot.game;
     return host;
   }
 

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
   GAME_MODES,
+  STEP_LABELS,
+  TURN_PHASES,
   starEnemies,
   type CardData,
   type CardView,
@@ -102,6 +104,7 @@ export function Table() {
         </div>
         <PlayerArea view={view} playerId={me} onOpenZone={setZoneViewer} />
         <Hand view={view} />
+        <PhaseBar view={view} isActive={isActive} />
         <Toolbar view={view} isActive={isActive} onTokens={() => setTokens(true)} />
       </div>
 
@@ -173,7 +176,7 @@ function PlayerArea(props: {
     >
       <header className="player-header">
         <strong className="player-name">{p.name}</strong>
-        {active && <span className="badge badge-turn">son tour</span>}
+        {active && <span className="badge badge-turn">son tour · {STEP_LABELS[view.turn.step]}</span>}
         <PlayerTags view={view} playerId={playerId} />
         {eliminated && <span className="badge badge-warn">éliminé ({eliminated})</span>}
         <Stepper
@@ -411,6 +414,59 @@ function Hand(props: { view: GameView }) {
   );
 }
 
+/**
+ * Les phases et étapes du tour. Le joueur actif clique sur une étape plus loin
+ * pour y aller directement (les étapes traversées ont lieu quand même).
+ */
+function PhaseBar(props: { view: GameView; isActive: boolean }) {
+  const { view, isActive } = props;
+  const current = view.turn.step;
+  const order = TURN_PHASES.flatMap((p) => p.steps);
+  const currentIndex = order.indexOf(current);
+
+  // Entrée : étape suivante, quand on ne tape pas dans un champ.
+  useEffect(() => {
+    if (!isActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (e.key !== "Enter" || e.repeat || target?.closest("input, textarea, select, button")) return;
+      e.preventDefault();
+      void act({ type: "nextStep" });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isActive]);
+
+  return (
+    <div className="phase-bar" aria-label="Étapes du tour">
+      {TURN_PHASES.map((phase) => (
+        <div key={phase.label} className="phase">
+          {phase.steps.length > 1 && <span className="phase-label">{phase.label}</span>}
+          <div className="phase-steps">
+            {phase.steps.map((step) => {
+              const index = order.indexOf(step);
+              const state = index < currentIndex ? "past" : index === currentIndex ? "current" : "future";
+              // Pas de priorité pendant le dégagement : on ne peut pas s'y arrêter.
+              const reachable = isActive && state === "future" && step !== "untap";
+              return (
+                <button
+                  key={step}
+                  className={`phase-step ${state}`}
+                  disabled={!reachable}
+                  title={reachable ? `Aller à : ${STEP_LABELS[step]}` : undefined}
+                  onClick={() => void act({ type: "nextStep", to: step })}
+                >
+                  {STEP_LABELS[step]}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function Toolbar(props: { view: GameView; isActive: boolean; onTokens: () => void }) {
   const { view } = props;
   const me = view.players[view.viewerId]!;
@@ -419,8 +475,16 @@ function Toolbar(props: { view: GameView; isActive: boolean; onTokens: () => voi
       <span className="turn-info">
         Tour {view.turn.number} · {GAME_MODES[view.settings.mode].label}
       </span>
-      <button className="primary" disabled={!props.isActive} onClick={() => void act({ type: "passTurn" })}>
-        Passer le tour
+      <button
+        className="primary"
+        disabled={!props.isActive}
+        title="Passe à l'étape suivante (Entrée)"
+        onClick={() => void act({ type: "nextStep" })}
+      >
+        Étape suivante
+      </button>
+      <button disabled={!props.isActive} onClick={() => void act({ type: "passTurn" })}>
+        Finir le tour
       </button>
       <button onClick={() => void act({ type: "untapAll" })}>Tout dégager</button>
       <button onClick={() => void act({ type: "draw", count: 1 })}>Piocher</button>

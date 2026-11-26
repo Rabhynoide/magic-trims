@@ -8,8 +8,8 @@ Projet privé, entre amis. Les données et images des cartes viennent de [Scryfa
 
 1. **Fondations et decks** : modèle de partie, système d'actions, import Moxfield + Scryfall. *(fait)*
 2. **Multijoueur** : chaque joueur peut héberger la partie depuis l'appli, sans serveur à payer. *(fait)*
-3. **Table virtuelle jouable (v1)** : interface, glisser-déposer, installateur Windows. *(en cours)*
-4. **Moteur de règles** : tours et phases, mana, pile, puis effets des cartes courantes, petit à petit.
+3. **Table virtuelle jouable (v1)** : interface, glisser-déposer, installateur Windows. *(fait)*
+4. **Moteur de règles** : tours et phases, mana, pile, puis effets des cartes courantes, petit à petit. *(en cours : tours et phases)* Le mode manuel reste toujours disponible pour ce que le moteur ne gère pas.
 
 ## Modes de jeu
 
@@ -48,6 +48,7 @@ L'installateur est aussi fabriqué automatiquement par GitHub Actions à chaque 
 - **Importer un deck** : colle la liste exportée depuis Moxfield (*Export → Copy for Moxfield*) ou deckstats.net (*Exporter → Texte*). L'appli retrouve les cartes sur Scryfall et signale les problèmes de construction.
 - **Salon** : chacun choisit son deck ; l'hôte choisit le mode, les équipes, les points de vie, Planechase, et s'il accepte les decks non légaux pour le mode.
 - **Table** :
+  - **tour et phases** : la barre au-dessus des boutons montre l'étape en cours. **Étape suivante** (ou Entrée) avance d'une étape ; un clic sur une étape plus loin y va directement ; **Finir le tour** passe au joueur suivant. Le dégagement au début du tour et la pioche à l'étape de pioche sont automatiques (pas de pioche au premier tour d'une partie à deux ni pour l'équipe qui commence en Géant à deux têtes), et le nettoyage rappelle s'il faut défausser au-delà de 7 cartes. L'hôte peut couper ces automatismes dans le salon ;
   - glisser-déposer les cartes entre la main, le champ de bataille, le cimetière, l'exil, la bibliothèque, la zone de commandement et la pile ; déposer une carte sur le champ de bataille d'un autre joueur lui en donne le contrôle ;
   - **survol** : la carte s'agrandit à côté du curseur après une demi-seconde (et dans le panneau de droite) ;
   - **double-clic** : engager / dégager (sur le champ de bataille), jouer la carte (dans la main) ;
