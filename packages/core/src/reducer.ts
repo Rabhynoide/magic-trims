@@ -1,6 +1,7 @@
 import type { ActionEnvelope, GameAction } from "./actions.js";
 import { nextRandom, shuffleInPlace } from "./rng.js";
 import { isActivePlayer, lifeSharers, areTeammates, teamOf } from "./modes.js";
+import { MANA_LABELS, emptyPool, formatMana, isManaType, manaOptions } from "./mana.js";
 import { MAX_HAND_SIZE, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
 import {
   HIDDEN_ORDERED_ZONES,
@@ -152,6 +153,34 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       names.push(cardName(g, card));
     }
     log(g, actor.id, `${actor.name} ${tapped ? "engage" : "dégage"} ${names.join(", ")}.`);
+  },
+
+  tapForMana(g, actor, { cardId, choice }) {
+    const card = getCard(g, cardId);
+    assertCanHandle(g, actor, card);
+    if (card.zone !== "battlefield") throw new ActionError("Seuls les permanents produisent du mana.");
+    if (card.tapped) throw new ActionError(`${cardName(g, card)} est déjà engagé.`);
+    const options = cardManaOptions(g, card);
+    if (options.length === 0) {
+      throw new ActionError(`Le moteur ne sait pas quel mana produit ${cardName(g, card)} : ajoute-le à la main.`);
+    }
+    const index = choice ?? 0;
+    if (options.length > 1 && choice === undefined) throw new ActionError("Choisis le mana à produire.");
+    const mana = options[index];
+    if (!mana) throw new ActionError("Choix de mana invalide.");
+    card.tapped = true;
+    const pool = g.players[card.controllerId]!.manaPool;
+    for (const m of mana) pool[m] += 1;
+    log(g, actor.id, `${actor.name} engage ${cardName(g, card)} pour ${formatMana(mana)}.`);
+  },
+
+  adjustMana(g, actor, { mana, delta }) {
+    if (!isManaType(mana)) throw new ActionError("Type de mana inconnu.");
+    if (!Number.isInteger(delta) || delta === 0 || Math.abs(delta) > 100) throw new ActionError("Quantité invalide.");
+    const value = actor.manaPool[mana] + delta;
+    if (value < 0) throw new ActionError(`Tu n'as pas assez de mana ${MANA_LABELS[mana]}.`);
+    actor.manaPool[mana] = value;
+    log(g, actor.id, `${actor.name} ${delta > 0 ? "ajoute" : "dépense"} ${formatMana(Array(Math.abs(delta)).fill(mana))}.`);
   },
 
   untapAll(g, actor) {
@@ -705,6 +734,14 @@ function resolveTop(g: GameState): void {
   }
 }
 
+/** Mana que la carte (sur sa face visible) peut produire en s'engageant. */
+export function cardManaOptions(g: GameState, card: CardInstance) {
+  const data = g.cardData[card.cardId];
+  if (!data) return [];
+  const face = data.faces?.[card.faceIndex];
+  return manaOptions(face?.typeLine ?? data.typeLine, face?.oracleText ?? data.oracleText);
+}
+
 function currentTypeLine(g: GameState, card: CardInstance): string {
   const data = g.cardData[card.cardId];
   if (!data) return "";
@@ -745,6 +782,8 @@ function startTurn(g: GameState, playerId: PlayerId): void {
 /** Entre dans une étape et fait ses actions obligatoires (actions de tour). */
 function enterStep(g: GameState, step: TurnStep): void {
   g.turn.step = step;
+  // Le mana inutilisé disparaît entre deux étapes (règle 500.4).
+  for (const p of Object.values(g.players)) p.manaPool = emptyPool();
   if (!g.settings.autoTurnActions) return;
   const players = activePlayers(g);
   switch (step) {

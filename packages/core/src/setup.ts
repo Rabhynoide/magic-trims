@@ -1,4 +1,5 @@
 import type { ResolvedDeck } from "./deck/resolve.js";
+import { emptyPool } from "./mana.js";
 import { GAME_MODES } from "./modes.js";
 import { log, moveCardTo, newInstance, shuffleZone } from "./reducer.js";
 import { randomSeed, shuffleInPlace } from "./rng.js";
@@ -143,6 +144,7 @@ export function createGame(options: NewGameOptions): GameState {
       commanderCasts: {},
       mulligans: 0,
       mulliganBottom: 0,
+      manaPool: emptyPool(),
       hasConceded: false,
     };
     g.players[p.id] = player;
@@ -229,7 +231,10 @@ export function upgradeGame(g: GameState): GameState {
   g.settings = { ...DEFAULT_SETTINGS, ...g.settings };
   // Les anciennes parties n'avaient pas d'étapes : on reprend en phase principale.
   g.turn.step ??= "main1";
-  for (const p of Object.values(g.players)) p.mulliganBottom ??= 0;
+  for (const p of Object.values(g.players)) {
+    p.mulliganBottom ??= 0;
+    p.manaPool ??= emptyPool();
+  }
   g.priority ??= g.stack.length > 0 ? { playerId: g.turn.activePlayerId, passed: [] } : null;
   return g;
 }

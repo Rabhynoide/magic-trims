@@ -1,5 +1,6 @@
 import type { CardView, GameView, PlayerId, VisibleCardView, Zone } from "@magic-trims/core";
-import { cardData } from "./cards";
+import { formatMana } from "@magic-trims/core";
+import { cardData, cardManaOptions } from "./cards";
 import { session } from "./session";
 import { ui, type MenuItem } from "./ui-store";
 
@@ -46,6 +47,7 @@ export function cardMenu(view: GameView, card: CardView): MenuItem[] {
 
   if (zone === "battlefield") {
     const data = cardData(view, card);
+    if (!card.tapped) items.push(...manaItems(view, card));
     items.push(
       {
         label: card.tapped ? "Dégager" : "Engager",
@@ -155,4 +157,15 @@ export function libraryMenu(view: GameView, ownerId: PlayerId): MenuItem[] {
       onClick: () => void act({ type: "moveTopOfLibrary", count: 1, to: "exile", faceDown: true }),
     },
   ];
+}
+
+/** « Engager pour {G} », un choix par sorte de mana que la carte peut produire. */
+export function manaItems(view: GameView, card: CardView): MenuItem[] {
+  const id = card.instanceId;
+  if (!id) return [];
+  const options = cardManaOptions(view, card);
+  return options.map((mana, i) => ({
+    label: `Engager pour ${formatMana(mana)}`,
+    onClick: () => void act({ type: "tapForMana", cardId: id, ...(options.length > 1 ? { choice: i } : {}) }),
+  }));
 }

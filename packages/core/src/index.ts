@@ -4,6 +4,7 @@ export { applyAction, ActionError, canSee, type ActionResult } from "./reducer.j
 export * from "./setup.js";
 export * from "./modes.js";
 export * from "./turn.js";
+export * from "./mana.js";
 export * from "./view.js";
 export * from "./rng.js";
 export * from "./deck/parse.js";

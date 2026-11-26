@@ -1,4 +1,4 @@
-import type { CardData, CardView, GameView, VisibleCardView } from "@magic-trims/core";
+import { manaOptions, type CardData, type CardView, type GameView, type ManaType, type VisibleCardView } from "@magic-trims/core";
 
 export function cardData(view: GameView, card: CardView): CardData | undefined {
   return card.hidden ? undefined : view.cardData[card.cardId];
@@ -45,4 +45,17 @@ export function isLand(view: GameView, card: CardView): boolean {
   const data = cardData(view, card);
   const type = data?.faces?.[0]?.typeLine ?? data?.typeLine ?? "";
   return /\bLand\b/.test(type);
+}
+
+/** Mana que la carte peut produire en s'engageant (texte anglais, celui que lit le moteur). */
+export function cardManaOptions(view: GameView, card: CardView): ManaType[][] {
+  const data = cardData(view, card);
+  if (!data || card.hidden) return [];
+  const face = data.faces?.[(card as VisibleCardView).faceIndex];
+  return manaOptions(face?.typeLine ?? data.typeLine, face?.oracleText ?? data.oracleText);
+}
+
+/** Image Scryfall d'un symbole de mana. */
+export function manaSymbolUrl(mana: string): string {
+  return `https://svgs.scryfall.io/card-symbols/${mana}.svg`;
 }

@@ -1,3 +1,4 @@
+import type { ManaType } from "./mana.js";
 import type { TurnStep } from "./turn.js";
 import type { CardData, CardInstanceId, PlayerId, Zone } from "./types.js";
 
@@ -41,6 +42,13 @@ export type GameAction =
   | { type: "setTapped"; cardIds: CardInstanceId[]; tapped: boolean }
   /** Dégage tous les permanents de l'acteur. */
   | { type: "untapAll" }
+  /**
+   * Engage un permanent pour son mana. `choice` : index du choix dans
+   * `manaOptions` quand la carte peut produire plusieurs sortes de mana.
+   */
+  | { type: "tapForMana"; cardId: CardInstanceId; choice?: number }
+  /** Ajoute (ou retire, si négatif) du mana dans la réserve de l'acteur, à la main. */
+  | { type: "adjustMana"; mana: ManaType; delta: number }
   | { type: "setFaceDown"; cardId: CardInstanceId; faceDown: boolean }
   /** Passe à la face suivante d'une carte double face. */
   | { type: "transform"; cardId: CardInstanceId }
