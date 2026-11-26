@@ -1,5 +1,5 @@
 import type { CardView, GameView } from "@magic-trims/core";
-import { cardImage, cardName } from "../cards";
+import { cardImage, cardName, creaturePT } from "../cards";
 import { ui } from "../ui-store";
 
 export const DRAG_TYPE = "application/x-magic-card";
@@ -16,6 +16,8 @@ export function Card(props: {
   /** Mode sélection (par exemple pour un mulligan) : un clic choisit la carte. */
   selected?: boolean;
   onSelect?: () => void;
+  /** Étiquette de combat (« attaque Bruno », « bloque Ours »…). */
+  combat?: { kind: "attacking" | "blocking"; label: string };
 }) {
   const { view, card } = props;
   const img = cardImage(view, card, props.size === "medium" ? "normal" : "small");
@@ -24,7 +26,7 @@ export function Card(props: {
   const id = card.instanceId;
   return (
     <div
-      className={`card card-${props.size ?? "small"} ${card.tapped ? "tapped" : ""} ${props.onSelect ? "selectable" : ""} ${props.selected ? "selected" : ""}`}
+      className={`card card-${props.size ?? "small"} ${card.tapped ? "tapped" : ""} ${props.onSelect ? "selectable" : ""} ${props.selected ? "selected" : ""} ${props.combat ? props.combat.kind : ""}`}
       draggable={Boolean(props.draggable && id)}
       onDragStart={(e) => {
         if (!id) return;
@@ -61,6 +63,17 @@ export function Card(props: {
         <div className="card-back">{card.hidden ? "" : name}</div>
       )}
       {card.faceDown && !card.hidden && <span className="card-flag">face cachée</span>}
+      {props.combat && <span className={`card-combat ${props.combat.kind}`}>{props.combat.label}</span>}
+      {(() => {
+        const pt = creaturePT(view, card);
+        if (!pt) return null;
+        const damage = card.damage ?? 0;
+        return (
+          <span className={`card-pt ${pt.base ? "" : "modified"} ${damage > 0 ? "damaged" : ""}`} title={damage > 0 ? `${damage} blessure(s)` : undefined}>
+            {pt.power}/{pt.toughness - damage}
+          </span>
+        );
+      })()}
       {counters.length > 0 && (
         <div className="card-counters">
           {counters.map(([kind, n]) => (

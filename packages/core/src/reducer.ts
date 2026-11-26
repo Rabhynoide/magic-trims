@@ -12,6 +12,7 @@ import {
   type ManaNeed,
   type ManaType,
 } from "./mana.js";
+import { creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatState } from "./combat.js";
 import { MAX_HAND_SIZE, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
 import {
   HIDDEN_ORDERED_ZONES,
@@ -188,6 +189,116 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     tapForMana(g, actor, card, choice ?? 0);
   },
 
+  declareAttackers(g, actor, { attackers }) {
+    assertActive(g, actor);
+    if (g.turn.step !== "declareAttackers" || !g.combat) {
+      throw new ActionError("Les attaquants se déclarent à l'étape de déclaration des attaquants.");
+    }
+    if (g.combat.attackersDeclared) throw new ActionError("Les attaquants sont déjà déclarés.");
+    assertStackEmpty(g);
+    const seen = new Set<CardInstanceId>();
+    for (const { cardId, defender } of attackers) {
+      const card = getCard(g, cardId);
+      const name = cardName(g, card);
+      if (seen.has(cardId)) throw new ActionError(`${name} est déclaré deux fois.`);
+      seen.add(cardId);
+      if (card.zone !== "battlefield" || !isActivePlayer(g, card.controllerId)) {
+        throw new ActionError(`${name} n'est pas une de tes créatures sur le champ de bataille.`);
+      }
+      if (!isCreature(g, card)) throw new ActionError(`${name} n'est pas une créature.`);
+      if (card.tapped) throw new ActionError(`${name} est engagé.`);
+      if (card.summoningSick && !hasKeyword(g, card, "Haste")) {
+        throw new ActionError(`${name} vient d'arriver : mal d'invocation.`);
+      }
+      if (hasKeyword(g, card, "Defender")) throw new ActionError(`${name} a le défenseur et ne peut pas attaquer.`);
+      const target = getPlayer(g, defender);
+      if (target.hasConceded) throw new ActionError(`${target.name} a abandonné.`);
+      if (isActivePlayer(g, defender)) throw new ActionError("On n'attaque pas son propre camp.");
+    }
+    const combat = g.combat;
+    combat.attackersDeclared = true;
+    for (const { cardId, defender } of attackers) {
+      combat.attackers[cardId] = defender;
+      const card = g.cards[cardId]!;
+      if (!hasKeyword(g, card, "Vigilance")) card.tapped = true;
+    }
+    if (attackers.length === 0) {
+      log(g, actor.id, `${actor.name} n'attaque pas.`);
+      return;
+    }
+    const byDefender = new Map<PlayerId, string[]>();
+    for (const { cardId, defender } of attackers) {
+      byDefender.set(defender, [...(byDefender.get(defender) ?? []), cardName(g, g.cards[cardId]!)]);
+    }
+    const parts = [...byDefender].map(([d, list]) => `${g.players[d]!.name} avec ${list.join(", ")}`);
+    log(g, actor.id, `${actor.name} attaque ${parts.join(" ; ")}.`);
+  },
+
+  declareBlockers(g, actor, { blocks }) {
+    const combat = g.combat;
+    if (g.turn.step !== "declareBlockers" || !combat) {
+      throw new ActionError("Les bloqueurs se déclarent à l'étape de déclaration des bloqueurs.");
+    }
+    if (!pendingBlockers(g).some((p) => p.id === actor.id)) {
+      throw new ActionError("Tu n'as pas de bloqueurs à déclarer.");
+    }
+    assertStackEmpty(g);
+    const seen = new Set<CardInstanceId>();
+    for (const { cardId, attackerId } of blocks) {
+      const card = getCard(g, cardId);
+      const name = cardName(g, card);
+      if (seen.has(cardId)) throw new ActionError(`${name} ne peut bloquer qu'une créature.`);
+      seen.add(cardId);
+      if (card.zone !== "battlefield" || card.controllerId !== actor.id) {
+        throw new ActionError(`${name} n'est pas une de tes créatures sur le champ de bataille.`);
+      }
+      if (!isCreature(g, card)) throw new ActionError(`${name} n'est pas une créature.`);
+      if (card.tapped) throw new ActionError(`${name} est engagé et ne peut pas bloquer.`);
+      const attacker = getCard(g, attackerId);
+      const defender = combat.attackers[attackerId];
+      if (!defender || attacker.zone !== "battlefield") throw new ActionError(`${cardName(g, attacker)} n'attaque pas.`);
+      if (!defendingSide(g, defender).includes(actor.id)) {
+        throw new ActionError(`${cardName(g, attacker)} n'attaque pas ton camp.`);
+      }
+      if (hasKeyword(g, attacker, "Flying") && !hasKeyword(g, card, "Flying") && !hasKeyword(g, card, "Reach")) {
+        throw new ActionError(`${name} ne peut pas bloquer ${cardName(g, attacker)}, qui vole.`);
+      }
+    }
+    for (const { cardId, attackerId } of blocks) combat.blockers[cardId] = attackerId;
+    // La menace : bloquée par deux créatures ou plus, ou pas du tout.
+    for (const attackerId of Object.keys(combat.attackers)) {
+      const count = Object.values(combat.blockers).filter((a) => a === attackerId).length;
+      if (count === 1 && hasKeyword(g, g.cards[attackerId]!, "Menace")) {
+        throw new ActionError(`${cardName(g, g.cards[attackerId]!)} a la menace : il faut au moins deux bloqueurs.`);
+      }
+    }
+    for (const { attackerId } of blocks) if (!combat.blocked.includes(attackerId)) combat.blocked.push(attackerId);
+    combat.blocksDeclared.push(actor.id);
+    if (blocks.length === 0) {
+      log(g, actor.id, `${actor.name} ne bloque pas.`);
+    } else {
+      const list = blocks.map((b) => `${cardName(g, g.cards[b.cardId]!)} bloque ${cardName(g, g.cards[b.attackerId]!)}`);
+      log(g, actor.id, `${actor.name} : ${list.join(", ")}.`);
+    }
+  },
+
+  boostCreature(g, actor, { cardId, power, toughness }) {
+    const card = getCard(g, cardId);
+    assertCanHandle(g, actor, card);
+    if (card.zone !== "battlefield") throw new ActionError("Seules les créatures sur le champ de bataille reçoivent un bonus.");
+    if (![power, toughness].every((n) => Number.isInteger(n) && Math.abs(n) <= 100)) {
+      throw new ActionError("Bonus invalide.");
+    }
+    const boost = card.ptBoost ?? { power: 0, toughness: 0 };
+    boost.power += power;
+    boost.toughness += toughness;
+    if (boost.power === 0 && boost.toughness === 0) delete card.ptBoost;
+    else card.ptBoost = boost;
+    const sign = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
+    log(g, actor.id, `${cardName(g, card)} reçoit ${sign(power)}/${sign(toughness)} jusqu'à la fin du tour.`);
+    destroyLethal(g);
+  },
+
   playLand(g, actor, { cardId, face }) {
     const card = getCard(g, cardId);
     if (card.ownerId !== actor.id || card.zone !== "hand") throw new ActionError("Joue un terrain de ta main.");
@@ -322,6 +433,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const newController = getPlayer(g, controllerId);
     removeFromZone(g, card);
     card.controllerId = controllerId;
+    card.summoningSick = true;
     newController.zones.battlefield.push(card.instanceId);
     log(g, actor.id, `${newController.name} prend le contrôle de ${cardName(g, card)}.`);
   },
@@ -409,8 +521,9 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     if (stepIndex(target) <= stepIndex(g.turn.step)) {
       throw new ActionError("On ne revient pas en arrière dans le tour.");
     }
-    while (g.turn.step !== target) enterStep(g, TURN_STEPS[stepIndex(g.turn.step) + 1]!);
-    log(g, actor.id, `${actor.name} passe à ${STEP_PHRASES[target]}.`);
+    const reached = advanceTo(g, target);
+    log(g, actor.id, `${actor.name} passe à ${STEP_PHRASES[reached]}.`);
+    if (reached !== target) logWaitingBlockers(g);
   },
 
   passTurn(g, actor) {
@@ -592,7 +705,16 @@ export function moveCardTo(
   const wasPublic = isVisibleToAll(card);
   removeFromZone(g, card);
 
+  if (to === "battlefield" && from !== "battlefield") card.summoningSick = true;
   if (from === "battlefield" && to !== "battlefield") {
+    delete card.summoningSick;
+    delete card.damage;
+    delete card.deathtouched;
+    delete card.ptBoost;
+    if (g.combat) {
+      delete g.combat.attackers[card.instanceId];
+      delete g.combat.blockers[card.instanceId];
+    }
     card.tapped = false;
     card.counters = {};
     delete card.attachedTo;
@@ -665,6 +787,7 @@ export function newInstance(g: GameState, cardId: string, ownerId: PlayerId, zon
     isCommander: false,
     revealedTo: [],
   };
+  if (zone === "battlefield") instance.summoningSick = true;
   g.cards[instance.instanceId] = instance;
   return instance;
 }
@@ -886,8 +1009,167 @@ function passTurn(g: GameState, actor: PlayerState): void {
   const next = nextActivePlayer(g, g.turn.activePlayerId);
   if (next === null) throw new ActionError("Plus aucun joueur en lice.");
   // Les étapes restantes ont lieu (le nettoyage rappelle la taille de main).
-  while (g.turn.step !== "cleanup") enterStep(g, TURN_STEPS[stepIndex(g.turn.step) + 1]!);
+  if (advanceTo(g, "cleanup") !== "cleanup") {
+    log(g, actor.id, `${actor.name} passe à ${STEP_PHRASES[g.turn.step]}.`);
+    logWaitingBlockers(g);
+    return;
+  }
   startTurn(g, next);
+}
+
+/**
+ * Avance d'étape en étape jusqu'à `target`, en s'arrêtant à l'étape des
+ * bloqueurs tant que des joueurs attaqués n'ont pas déclaré leurs bloqueurs.
+ * Retourne l'étape atteinte.
+ */
+function advanceTo(g: GameState, target: TurnStep): TurnStep {
+  const start = g.turn.step;
+  while (g.turn.step !== target) {
+    if (g.turn.step === "declareBlockers" && pendingBlockers(g).length > 0) {
+      if (start === "declareBlockers") {
+        throw new ActionError(`En attente des bloqueurs de ${names(pendingBlockers(g))}.`);
+      }
+      break;
+    }
+    enterStep(g, TURN_STEPS[stepIndex(g.turn.step) + 1]!);
+  }
+  return g.turn.step;
+}
+
+function logWaitingBlockers(g: GameState): void {
+  log(g, null, `En attente des bloqueurs de ${names(pendingBlockers(g))}.`);
+}
+
+/** Les joueurs qui peuvent bloquer pour `playerId` (lui, ou son équipe en tours partagés). */
+function defendingSide(g: GameState, playerId: PlayerId): PlayerId[] {
+  return g.settings.sharedTurns ? teamOf(g, playerId) : [playerId];
+}
+
+/** Joueurs attaqués (ou leurs coéquipiers en tours partagés) qui n'ont pas encore déclaré leurs bloqueurs. */
+function pendingBlockers(g: GameState): PlayerState[] {
+  const combat = g.combat;
+  if (!combat) return [];
+  const attacked = new Set(
+    Object.entries(combat.attackers)
+      .filter(([id]) => g.cards[id]?.zone === "battlefield")
+      .flatMap(([, defender]) => defendingSide(g, defender)),
+  );
+  return [...attacked]
+    .filter((id) => !combat.blocksDeclared.includes(id))
+    .map((id) => g.players[id]!)
+    .filter((p) => !p.hasConceded);
+}
+
+function newCombat(): CombatState {
+  return { attackersDeclared: false, attackers: {}, blockers: {}, blocked: [], blocksDeclared: [] };
+}
+
+function onBattlefield(g: GameState, id: CardInstanceId): boolean {
+  return g.cards[id]?.zone === "battlefield";
+}
+
+/**
+ * Blessures de combat (règle 510) : d'abord les créatures avec l'initiative
+ * ou la double initiative, puis les autres (et de nouveau la double initiative).
+ */
+function dealCombatDamage(g: GameState): void {
+  const combat = g.combat;
+  if (!combat) return;
+  const attackers = Object.keys(combat.attackers).filter((id) => onBattlefield(g, id));
+  if (attackers.length === 0) return;
+  const blockersOf = (attackerId: CardInstanceId) =>
+    Object.entries(combat.blockers)
+      .filter(([blocker, attacker]) => attacker === attackerId && onBattlefield(g, blocker))
+      .map(([blocker]) => blocker);
+  const kw = (id: CardInstanceId, k: Parameters<typeof hasKeyword>[2]) => hasKeyword(g, g.cards[id]!, k);
+  const firstStriker = (id: CardInstanceId) => kw(id, "First strike") || kw(id, "Double strike");
+  const participants = [...attackers, ...Object.keys(combat.blockers).filter((id) => onBattlefield(g, id))];
+  const passes: ("first" | "regular")[] = participants.some(firstStriker) ? ["first", "regular"] : ["regular"];
+
+  for (const pass of passes) {
+    const strikes = (id: CardInstanceId) =>
+      onBattlefield(g, id) &&
+      (pass === "first" ? firstStriker(id) : !firstStriker(id) || kw(id, "Double strike") || passes.length === 1);
+    type Hit = { source: CardInstanceId; card?: CardInstanceId; player?: PlayerId; amount: number };
+    const hits: Hit[] = [];
+    for (const a of attackers) {
+      if (!strikes(a)) continue;
+      const power = creatureStats(g, g.cards[a]!).power;
+      if (power <= 0) continue;
+      const trample = kw(a, "Trample");
+      const defender = combat.attackers[a]!;
+      if (!combat.blocked.includes(a)) {
+        hits.push({ source: a, player: defender, amount: power });
+        continue;
+      }
+      const blockers = blockersOf(a);
+      let left = power;
+      blockers.forEach((b, i) => {
+        if (left <= 0) return;
+        const last = i === blockers.length - 1;
+        const lethal = lethalDamage(g, g.cards[b]!, kw(a, "Deathtouch"));
+        const amount = last && !trample ? left : Math.min(left, lethal);
+        if (amount > 0) hits.push({ source: a, card: b, amount });
+        left -= amount;
+      });
+      if (trample && left > 0) hits.push({ source: a, player: defender, amount: left });
+    }
+    for (const [b, a] of Object.entries(combat.blockers)) {
+      if (!strikes(b) || !onBattlefield(g, a)) continue;
+      const power = creatureStats(g, g.cards[b]!).power;
+      if (power > 0) hits.push({ source: b, card: a, amount: power });
+    }
+    // Toutes les blessures d'un même passage sont infligées en même temps.
+    for (const hit of hits) applyCombatHit(g, hit);
+    destroyLethal(g);
+  }
+}
+
+function applyCombatHit(
+  g: GameState,
+  hit: { source: CardInstanceId; card?: CardInstanceId; player?: PlayerId; amount: number },
+): void {
+  const source = g.cards[hit.source]!;
+  const sourceName = cardName(g, source);
+  const infect = hasKeyword(g, source, "Infect");
+  if (hit.card) {
+    const target = g.cards[hit.card]!;
+    if (infect || hasKeyword(g, source, "Wither")) {
+      target.counters["-1/-1"] = (target.counters["-1/-1"] ?? 0) + hit.amount;
+    } else {
+      target.damage = (target.damage ?? 0) + hit.amount;
+    }
+    if (hasKeyword(g, source, "Deathtouch")) target.deathtouched = true;
+    log(g, null, `${sourceName} inflige ${plural(hit.amount, "blessure")} à ${cardName(g, target)}.`);
+  } else if (hit.player) {
+    const sharers = lifeSharers(g, hit.player).filter((p) => !p.hasConceded);
+    for (const p of sharers) {
+      if (infect) p.poison += hit.amount;
+      else p.life -= hit.amount;
+      if (source.isCommander && !infect) {
+        p.commanderDamage[source.instanceId] = (p.commanderDamage[source.instanceId] ?? 0) + hit.amount;
+      }
+    }
+    const what = infect ? plural(hit.amount, "marqueur poison", "marqueurs poison") : plural(hit.amount, "blessure");
+    log(g, null, `${sourceName} inflige ${what} à ${names(sharers)}${infect ? "" : ` (${sharers[0]?.life ?? 0} PV)`}.`);
+  }
+  if (hasKeyword(g, source, "Lifelink")) {
+    const gainers = lifeSharers(g, source.controllerId);
+    for (const p of gainers) p.life += hit.amount;
+    log(g, null, `${names(gainers)} ${gainers.length > 1 ? "gagnent" : "gagne"} ${hit.amount} PV (lien de vie).`);
+  }
+}
+
+/** Les créatures blessées mortellement (ou d'endurance nulle) vont au cimetière. */
+function destroyLethal(g: GameState): void {
+  for (const id of Object.values(g.players).flatMap((p) => [...p.zones.battlefield])) {
+    const card = g.cards[id];
+    if (!card || card.zone !== "battlefield" || !isCreature(g, card)) continue;
+    if (!hasLethalDamage(g, card)) continue;
+    const name = cardName(g, card);
+    moveCardTo(g, id, "graveyard", "top");
+    log(g, null, `${name} meurt.`);
+  }
 }
 
 /** Joueurs actifs encore en lice (plusieurs en tours partagés). */
@@ -905,6 +1187,11 @@ function startTurn(g: GameState, playerId: PlayerId): void {
   g.turn.activePlayerId = playerId;
   g.turn.planarDieRolls = 0;
   for (const p of Object.values(g.players)) p.landsPlayed = 0;
+  g.combat = null;
+  // Les permanents des joueurs actifs ne sont plus « malades » (règle 302.6).
+  for (const p of activePlayers(g)) {
+    for (const id of p.zones.battlefield) delete g.cards[id]!.summoningSick;
+  }
   log(g, null, `Tour ${g.turn.number} : c'est à ${activeNames(g)}.`);
   enterStep(g, "untap");
   enterStep(g, "upkeep");
@@ -915,6 +1202,38 @@ function enterStep(g: GameState, step: TurnStep): void {
   g.turn.step = step;
   // Le mana inutilisé disparaît entre deux étapes (règle 500.4).
   for (const p of Object.values(g.players)) p.manaPool = emptyPool();
+  switch (step) {
+    case "beginCombat":
+      g.combat = newCombat();
+      break;
+    case "declareBlockers": {
+      // Ceux qui n'ont aucune créature dégagée n'ont rien à déclarer.
+      const combat = g.combat;
+      if (!combat) break;
+      for (const p of pendingBlockers(g)) {
+        const canBlock = p.zones.battlefield.some((id) => {
+          const card = g.cards[id]!;
+          return !card.tapped && isCreature(g, card);
+        });
+        if (!canBlock) combat.blocksDeclared.push(p.id);
+      }
+      break;
+    }
+    case "combatDamage":
+      dealCombatDamage(g);
+      break;
+    case "main2":
+      g.combat = null;
+      break;
+    case "cleanup":
+      // Les blessures et les effets « jusqu'à la fin du tour » disparaissent (règle 514.2).
+      for (const card of Object.values(g.cards)) {
+        delete card.damage;
+        delete card.deathtouched;
+        delete card.ptBoost;
+      }
+      break;
+  }
   if (!g.settings.autoTurnActions) return;
   const players = activePlayers(g);
   switch (step) {

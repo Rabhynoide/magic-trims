@@ -30,6 +30,7 @@ export interface HiddenCardView {
   faceDown: boolean;
   counters: Record<string, number>;
   attachedTo?: CardInstanceId;
+  damage?: number;
 }
 
 export type CardView = VisibleCardView | HiddenCardView;
@@ -52,6 +53,7 @@ export interface GameView {
   archenemyId?: PlayerId;
   turn: GameState["turn"];
   priority: GameState["priority"];
+  combat: GameState["combat"];
   players: Record<PlayerId, PlayerView>;
   stack: CardView[];
   /** Variante Planechase. */
@@ -84,6 +86,7 @@ export function viewFor(g: GameState, viewerId: PlayerId): GameView {
       faceDown: card.faceDown,
       counters: { ...card.counters },
     };
+    if (card.damage) hidden.damage = card.damage;
     if (card.attachedTo) hidden.attachedTo = card.attachedTo;
     return hidden;
   };
@@ -105,6 +108,7 @@ export function viewFor(g: GameState, viewerId: PlayerId): GameView {
     teams: g.teams.map((t) => [...t]),
     turn: { ...g.turn },
     priority: g.priority ? structuredClone(g.priority) : null,
+    combat: g.combat ? structuredClone(g.combat) : null,
     players,
     stack: g.stack.map(viewCard),
     planarDeck: g.planarDeck.map(viewCard),

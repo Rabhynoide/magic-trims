@@ -1068,3 +1068,81 @@ textarea:focus {
   line-height: 14px;
   text-align: center;
 }
+
+.card-pt {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(10, 12, 16, 0.85);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+}
+.card-pt.modified {
+  color: var(--accent-strong);
+}
+.card-pt.damaged {
+  color: var(--danger);
+}
+.card.attacking {
+  outline: 3px solid var(--danger);
+  outline-offset: -3px;
+}
+.card.blocking {
+  outline: 3px solid var(--active);
+  outline-offset: -3px;
+}
+.card-combat {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  right: 3px;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 15px;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card-combat.attacking {
+  background: var(--danger);
+}
+.card-combat.blocking {
+  background: var(--active);
+}
+.combat-panel {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+}
+.combat-panel .combat-title {
+  font-weight: 600;
+  color: var(--danger);
+}
+.combat-panel .assignments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.combat-panel .assignment {
+  font-size: 12px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+}
+.combat-panel .hint {
+  color: var(--text-dim);
+  font-size: 13px;
+}
