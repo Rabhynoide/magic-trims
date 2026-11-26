@@ -129,6 +129,10 @@ export class GameClient {
     this.send({ type: "start" });
   }
 
+  addBot(deck: ResolvedDeck): void {
+    this.send({ type: "addBot", deck });
+  }
+
   kick(playerId: PlayerId): void {
     this.send({ type: "kick", playerId });
   }

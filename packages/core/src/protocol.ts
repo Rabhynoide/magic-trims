@@ -18,6 +18,8 @@ export interface LobbyPlayer {
   name: string;
   isHost: boolean;
   connected: boolean;
+  /** Joueur tenu par l'ordinateur. */
+  isBot?: boolean;
   /** Résumé du deck choisi, ou `null` s'il n'a pas encore été envoyé. */
   deck: {
     commanders: string[];
@@ -66,6 +68,8 @@ export type ClientMessage =
   | { type: "start" }
   /** Hôte seulement, avant le début de la partie. */
   | { type: "kick"; playerId: PlayerId }
+  /** Hôte seulement, avant le début de la partie : ajoute un adversaire joué par l'ordinateur. */
+  | { type: "addBot"; deck: ResolvedDeck }
   | { type: "action"; action: GameAction; requestId?: string }
   | { type: "chat"; text: string }
   | { type: "ping" };

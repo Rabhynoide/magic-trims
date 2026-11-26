@@ -9,7 +9,7 @@ Projet privé, entre amis. Les données et images des cartes viennent de [Scryfa
 1. **Fondations et decks** : modèle de partie, système d'actions, import Moxfield + Scryfall. *(fait)*
 2. **Multijoueur** : chaque joueur peut héberger la partie depuis l'appli, sans serveur à payer. *(fait)*
 3. **Table virtuelle jouable (v1)** : interface, glisser-déposer, installateur Windows. *(fait)*
-4. **Moteur de règles** : tours et phases, mana, pile, puis effets des cartes courantes, petit à petit. *(en cours : tours et phases, priorité et pile, mana, terrains et sorts, combat faits)* Le mode manuel reste toujours disponible pour ce que le moteur ne gère pas.
+4. **Moteur de règles** : tours et phases, mana, pile, puis effets des cartes courantes, petit à petit. *(en cours : tours et phases, priorité et pile, mana, terrains et sorts, combat et bot simple faits)* Le mode manuel reste toujours disponible pour ce que le moteur ne gère pas.
 
 ## Modes de jeu
 
@@ -46,6 +46,7 @@ L'installateur est aussi fabriqué automatiquement par GitHub Actions à chaque 
 
 - **Accueil** : ton pseudo, héberger une partie ou en rejoindre une avec un code, et tes decks.
 - **Importer un deck** : colle la liste exportée depuis Moxfield (*Export → Copy for Moxfield*) ou deckstats.net (*Exporter → Texte*), ou le lien d'un deck Archidekt. L'appli retrouve les cartes sur Scryfall et signale les problèmes de construction.
+- **Bots** : dans le salon, l'hôte peut ajouter un adversaire joué par l'ordinateur, avec un de ses decks (liste « Ajouter un bot avec le deck… »). Le bot joue un terrain par tour, lance ses permanents les plus chers qu'il peut payer (il n'applique pas encore les effets des cartes), attaque l'adversaire le plus faible quand c'est sans risque, bloque quand c'est rentable ou que les blessures seraient mortelles. Il tourne chez l'hôte ; on le retire avec « Exclure ». Quand il lance un sort, les autres joueurs passent la priorité comme d'habitude.
 - **Salon** : chacun choisit son deck ; l'hôte choisit le mode, les équipes, les points de vie, Planechase, et s'il accepte les decks non légaux pour le mode.
 - **Table** :
   - **tour et phases** : la barre au-dessus des boutons montre l'étape en cours. **Étape suivante** (ou Entrée) avance d'une étape ; un clic sur une étape plus loin y va directement ; **Finir le tour** passe au joueur suivant. Le dégagement au début du tour et la pioche à l'étape de pioche sont automatiques (pas de pioche au premier tour d'une partie à deux ni pour l'équipe qui commence en Géant à deux têtes), et le nettoyage rappelle s'il faut défausser au-delà de 7 cartes. L'hôte peut couper ces automatismes dans le salon ;
