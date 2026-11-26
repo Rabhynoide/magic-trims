@@ -61,6 +61,13 @@ export type GameAction =
   // Tour et table
   | { type: "passTurn" }
   | { type: "rollDie"; sides: number }
+  // Variantes
+  /** Archenemy : met en marche la machination du dessus. */
+  | { type: "setSchemeInMotion" }
+  /** Planechase : change de plan. */
+  | { type: "planeswalk" }
+  /** Planechase : lance le dé planaire (planeswalk, chaos ou rien). */
+  | { type: "rollPlanarDie" }
   | { type: "concede" };
 
 export interface ActionEnvelope {

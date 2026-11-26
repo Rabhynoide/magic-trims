@@ -1,6 +1,8 @@
 import type { ActionEnvelope, GameAction } from "./actions.js";
 import { nextRandom, shuffleInPlace } from "./rng.js";
+import { isActivePlayer, lifeSharers, areTeammates, teamOf } from "./modes.js";
 import {
+  HIDDEN_ORDERED_ZONES,
   PUBLIC_ZONES,
   type CardData,
   type CardInstance,
@@ -212,7 +214,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const names: string[] = [];
     for (const id of cardIds) {
       const card = getCard(g, id);
-      if (!canSee(card, actor.id)) throw new ActionError("Tu ne peux révéler qu'une carte que tu vois.");
+      if (!canSee(g, card, actor.id)) throw new ActionError("Tu ne peux révéler qu'une carte que tu vois.");
       addRevealed(card, targets);
       names.push(cardName(g, card));
     }
@@ -236,28 +238,37 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
   },
 
   adjustLife(g, actor, { playerId, delta }) {
-    const player = getPlayer(g, playerId);
-    player.life += delta;
-    log(g, actor.id, `${player.name} ${delta >= 0 ? "gagne" : "perd"} ${Math.abs(delta)} PV (${player.life}).`);
+    getPlayer(g, playerId);
+    const sharers = lifeSharers(g, playerId);
+    for (const p of sharers) p.life += delta;
+    const who = names(sharers);
+    const verb = sharers.length > 1 ? (delta >= 0 ? "gagnent" : "perdent") : delta >= 0 ? "gagne" : "perd";
+    log(g, actor.id, `${who} ${verb} ${Math.abs(delta)} PV (${sharers[0]!.life}).`);
   },
 
   adjustPoison(g, actor, { playerId, delta }) {
-    const player = getPlayer(g, playerId);
-    player.poison = Math.max(0, player.poison + delta);
-    log(g, actor.id, `${player.name} a ${plural(player.poison, "marqueur poison", "marqueurs poison")}.`);
+    getPlayer(g, playerId);
+    const sharers = lifeSharers(g, playerId);
+    for (const p of sharers) p.poison = Math.max(0, p.poison + delta);
+    const total = sharers[0]!.poison;
+    log(g, actor.id, `${names(sharers)} ${sharers.length > 1 ? "ont" : "a"} ${plural(total, "marqueur poison", "marqueurs poison")}.`);
   },
 
   adjustCommanderDamage(g, actor, { playerId, commanderId, delta, affectLife }) {
-    const player = getPlayer(g, playerId);
+    getPlayer(g, playerId);
     const commander = getCard(g, commanderId);
     if (!commander.isCommander) throw new ActionError("Cette carte n'est pas un commandant.");
-    const total = Math.max(0, (player.commanderDamage[commanderId] ?? 0) + delta);
-    player.commanderDamage[commanderId] = total;
-    if (affectLife ?? true) player.life -= delta;
+    const sharers = lifeSharers(g, playerId);
+    const total = Math.max(0, (sharers[0]!.commanderDamage[commanderId] ?? 0) + delta);
+    for (const p of sharers) {
+      p.commanderDamage[commanderId] = total;
+      if (affectLife ?? true) p.life -= delta;
+    }
+    const verb = sharers.length > 1 ? (delta >= 0 ? "subissent" : "retirent") : delta >= 0 ? "subit" : "retire";
     log(
       g,
       actor.id,
-      `${player.name} ${delta >= 0 ? "subit" : "retire"} ${Math.abs(delta)} blessures de ${cardName(g, commander)} (total ${total}/${g.settings.commanderDamageLimit}).`,
+      `${names(sharers)} ${verb} ${Math.abs(delta)} blessures de ${cardName(g, commander)} (total ${total}/${g.settings.commanderDamageLimit}).`,
     );
   },
 
@@ -271,14 +282,46 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
   },
 
   passTurn(g, actor) {
-    if (g.turn.activePlayerId !== actor.id) {
+    if (!isActivePlayer(g, actor.id)) {
       throw new ActionError("Ce n'est pas ton tour.");
     }
-    const next = nextActivePlayer(g, actor.id);
+    const next = nextActivePlayer(g, g.turn.activePlayerId);
     if (next === null) throw new ActionError("Plus aucun joueur en lice.");
-    g.turn.number += 1;
-    g.turn.activePlayerId = next;
-    log(g, actor.id, `Tour ${g.turn.number} : c'est à ${g.players[next]!.name}.`);
+    startTurn(g, next);
+    log(g, actor.id, `Tour ${g.turn.number} : c'est à ${activeNames(g)}.`);
+  },
+
+  setSchemeInMotion(g, actor) {
+    if (g.archenemyId !== actor.id) throw new ActionError("Seul l'archenemy met des machinations en marche.");
+    const top = actor.zones.schemes[0];
+    if (!top) throw new ActionError("Ta pioche de machinations est vide.");
+    const scheme = moveCardTo(g, top, "command", "top");
+    log(g, actor.id, `${actor.name} met en marche la machination ${cardName(g, scheme)}.`);
+  },
+
+  planeswalk(g, actor) {
+    if (!g.settings.planechase) throw new ActionError("La variante Planechase n'est pas activée.");
+    planeswalk(g, actor);
+  },
+
+  rollPlanarDie(g, actor) {
+    if (!g.settings.planechase) throw new ActionError("La variante Planechase n'est pas activée.");
+    const cost = g.turn.planarDieRolls;
+    g.turn.planarDieRolls += 1;
+    const r = nextRandom(g.rngState);
+    g.rngState = r.state;
+    // Dé planaire : une face planeswalk, une face chaos, quatre faces vierges.
+    const face = Math.floor(r.value * 6);
+    const costText = cost > 0 ? ` (coût : {${cost}})` : "";
+    if (face === 0) {
+      log(g, actor.id, `${actor.name} lance le dé planaire${costText} : planeswalk !`);
+      planeswalk(g, actor);
+    } else if (face === 1) {
+      const plane = g.plane[0];
+      log(g, actor.id, `${actor.name} lance le dé planaire${costText} : chaos${plane ? ` (${cardName(g, g.cards[plane]!)})` : ""} !`);
+    } else {
+      log(g, actor.id, `${actor.name} lance le dé planaire${costText} : rien.`);
+    }
   },
 
   rollDie(g, actor, { sides }) {
@@ -293,13 +336,20 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
 
   concede(g, actor) {
     if (actor.hasConceded) throw new ActionError("Tu as déjà abandonné.");
-    actor.hasConceded = true;
-    log(g, actor.id, `${actor.name} abandonne la partie.`);
-    if (g.turn.activePlayerId === actor.id) {
-      const next = nextActivePlayer(g, actor.id);
-      if (next !== null) {
-        g.turn.number += 1;
-        g.turn.activePlayerId = next;
+    // Quand les points de vie sont partagés, l'équipe perd ensemble.
+    const leaving = g.settings.sharedTeamLife ? lifeSharers(g, actor.id) : [actor];
+    for (const p of leaving) p.hasConceded = true;
+    log(g, actor.id, `${names(leaving)} ${leaving.length > 1 ? "abandonnent" : "abandonne"} la partie.`);
+    const active = g.players[g.turn.activePlayerId]!;
+    if (active.hasConceded) {
+      const stillActive = g.settings.sharedTurns
+        ? teamOf(g, active.id).find((id) => !g.players[id]!.hasConceded)
+        : undefined;
+      if (stillActive) {
+        g.turn.activePlayerId = stillActive;
+      } else {
+        const next = nextActivePlayer(g, active.id);
+        if (next !== null) startTurn(g, next);
       }
     }
   },
@@ -322,15 +372,17 @@ export function getCard(g: GameState, id: CardInstanceId): CardInstance {
 
 /** Liste (modifiable) des cartes d'une zone. */
 export function zoneList(g: GameState, card: Pick<CardInstance, "zone" | "ownerId" | "controllerId">): CardInstanceId[] {
-  if (card.zone === "stack") return g.stack;
+  if (card.zone === "stack" || card.zone === "planarDeck" || card.zone === "plane") return g[card.zone];
   const holder = card.zone === "battlefield" ? card.controllerId : card.ownerId;
   return g.players[holder]!.zones[card.zone];
 }
 
-export function canSee(card: CardInstance, viewerId: PlayerId): boolean {
+export function canSee(g: GameState, card: CardInstance, viewerId: PlayerId): boolean {
   if (card.revealedTo.includes(viewerId)) return true;
-  if (card.zone === "library") return false;
-  if (card.zone === "hand") return card.ownerId === viewerId;
+  if (HIDDEN_ORDERED_ZONES.has(card.zone)) return false;
+  if (card.zone === "hand") {
+    return card.ownerId === viewerId || (g.settings.teammatesSeeHands && areTeammates(g, card.ownerId, viewerId));
+  }
   if (card.faceDown) return card.controllerId === viewerId;
   return true;
 }
@@ -361,8 +413,8 @@ function insertAt(list: CardInstanceId[], id: CardInstanceId, zone: Zone, positi
     list.splice(Math.max(0, Math.min(position, list.length)), 0, id);
   } else if (position === "bottom") {
     list.push(id);
-  } else if (zone === "library") {
-    // Bibliothèque : l'index 0 est le dessus.
+  } else if (HIDDEN_ORDERED_ZONES.has(zone)) {
+    // Bibliothèque et autres pioches : l'index 0 est le dessus.
     list.unshift(id);
   } else {
     // Autres zones : la carte la plus récente est à la fin (dessus du cimetière, haut de la pile).
@@ -419,14 +471,14 @@ export function moveCardTo(
 
   if (card.faceDown) {
     card.revealedTo = [card.controllerId];
-  } else if (to === "library") {
+  } else if (HIDDEN_ORDERED_ZONES.has(to)) {
     card.revealedTo = wasPublic ? [...g.turnOrder] : [];
   } else if (wasPublic) {
     card.revealedTo = [...g.turnOrder];
   }
 
   let id = card.instanceId;
-  if (to === "library" && from !== "library") {
+  if (HIDDEN_ORDERED_ZONES.has(to) && from !== to) {
     id = renameInstance(g, id);
   }
   insertAt(zoneList(g, card), id, to, position);
@@ -434,7 +486,11 @@ export function moveCardTo(
 }
 
 function shuffleLibrary(g: GameState, player: PlayerState): void {
-  const library = player.zones.library;
+  shuffleZone(g, player.zones.library);
+}
+
+/** Mélange une pioche cachée (bibliothèque, machinations, plans). */
+export function shuffleZone(g: GameState, library: CardInstanceId[]): void {
   g.rngState = shuffleInPlace(library, g.rngState);
   // Après un mélange, plus personne ne sait où sont les cartes : on leur
   // donne de nouveaux identifiants pour qu'on ne puisse pas les suivre.
@@ -518,13 +574,44 @@ function addRevealed(card: CardInstance, players: PlayerId[]): void {
   for (const id of players) if (!card.revealedTo.includes(id)) card.revealedTo.push(id);
 }
 
+/**
+ * Prochain joueur actif dans l'ordre du tour. En tours partagés, on saute les
+ * coéquipiers du joueur actuel : c'est l'équipe suivante qui joue.
+ */
 function nextActivePlayer(g: GameState, from: PlayerId): PlayerId | null {
   const start = g.turnOrder.indexOf(from);
+  const skip = g.settings.sharedTurns ? teamOf(g, from) : [from];
   for (let i = 1; i <= g.turnOrder.length; i++) {
     const candidate = g.turnOrder[(start + i) % g.turnOrder.length]!;
+    if (skip.includes(candidate) && candidate !== from) continue;
     if (!g.players[candidate]!.hasConceded) return candidate;
   }
   return null;
+}
+
+function startTurn(g: GameState, playerId: PlayerId): void {
+  g.turn.number += 1;
+  g.turn.activePlayerId = playerId;
+  g.turn.planarDieRolls = 0;
+}
+
+function activeNames(g: GameState): string {
+  const active = g.settings.sharedTurns ? teamOf(g, g.turn.activePlayerId) : [g.turn.activePlayerId];
+  return names(active.map((id) => g.players[id]!).filter((p) => !p.hasConceded));
+}
+
+/** Le plan actif retourne au-dessous de la pioche de plans, et on révèle le suivant. */
+function planeswalk(g: GameState, actor: PlayerState): void {
+  if (g.planarDeck.length + g.plane.length === 0) throw new ActionError("La pioche de plans est vide.");
+  for (const id of [...g.plane]) moveCardTo(g, id, "planarDeck", "bottom");
+  // Le dessus a pu changer si la pioche ne contenait qu'un plan.
+  const plane = moveCardTo(g, g.planarDeck[0]!, "plane", "top");
+  log(g, actor.id, `${actor.name} se rend sur le plan ${cardName(g, plane)}.`);
+}
+
+function names(players: PlayerState[]): string {
+  const list = players.map((p) => p.name);
+  return list.length <= 1 ? (list[0] ?? "") : `${list.slice(0, -1).join(", ")} et ${list.at(-1)}`;
 }
 
 export function cardName(g: GameState, card: CardInstance): string {
@@ -561,6 +648,9 @@ const ZONE_NAMES: Record<Zone, { from: string; to: string }> = {
   exile: { from: "de l'exil", to: "en exil" },
   command: { from: "de la zone de commandement", to: "dans la zone de commandement" },
   stack: { from: "de la pile", to: "sur la pile" },
+  schemes: { from: "de la pioche de machinations", to: "dans la pioche de machinations" },
+  planarDeck: { from: "de la pioche de plans", to: "dans la pioche de plans" },
+  plane: { from: "du plan actif", to: "sur le plan actif" },
 };
 
 function zoneFrom(zone: Zone): string {

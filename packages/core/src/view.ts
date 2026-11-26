@@ -1,5 +1,7 @@
+import { evaluateOutcome, type Outcome } from "./modes.js";
 import { canSee } from "./reducer.js";
 import {
+  HIDDEN_ORDERED_ZONES,
   PLAYER_ZONES,
   type CardData,
   type CardInstance,
@@ -46,9 +48,16 @@ export interface GameView {
   viewerId: PlayerId;
   settings: GameState["settings"];
   turnOrder: PlayerId[];
+  teams: PlayerId[][];
+  archenemyId?: PlayerId;
   turn: GameState["turn"];
   players: Record<PlayerId, PlayerView>;
   stack: CardView[];
+  /** Variante Planechase. */
+  planarDeck: CardView[];
+  plane: CardView[];
+  /** Joueurs éliminés et vainqueurs éventuels. */
+  outcome: Outcome;
   /** Données des seules cartes visibles par ce joueur. */
   cardData: Record<string, CardData>;
   log: LogEntry[];
@@ -59,14 +68,14 @@ export function viewFor(g: GameState, viewerId: PlayerId): GameView {
 
   const viewCard = (id: CardInstanceId): CardView => {
     const card = g.cards[id]!;
-    if (canSee(card, viewerId)) {
+    if (canSee(g, card, viewerId)) {
       const data = g.cardData[card.cardId];
       if (data) cardData[data.id] = data;
       return { ...structuredClone(card), hidden: false };
     }
     const hidden: HiddenCardView = {
       hidden: true,
-      instanceId: card.zone === "library" ? null : card.instanceId,
+      instanceId: HIDDEN_ORDERED_ZONES.has(card.zone) ? null : card.instanceId,
       ownerId: card.ownerId,
       controllerId: card.controllerId,
       zone: card.zone,
@@ -86,16 +95,22 @@ export function viewFor(g: GameState, viewerId: PlayerId): GameView {
     players[id] = { ...structuredClone(rest), zones: viewZones };
   }
 
-  return {
+  const view: GameView = {
     id: g.id,
     version: g.version,
     viewerId,
     settings: { ...g.settings },
     turnOrder: [...g.turnOrder],
+    teams: g.teams.map((t) => [...t]),
     turn: { ...g.turn },
     players,
     stack: g.stack.map(viewCard),
+    planarDeck: g.planarDeck.map(viewCard),
+    plane: g.plane.map(viewCard),
+    outcome: evaluateOutcome(g),
     cardData,
     log: g.log.map((e) => ({ ...e })),
   };
+  if (g.archenemyId) view.archenemyId = g.archenemyId;
+  return view;
 }

@@ -62,11 +62,28 @@ export const PLAYER_ZONES = [
   "graveyard",
   "exile",
   "command",
+  /** Pioche de machinations de l'archenemy (variante Archenemy). */
+  "schemes",
 ] as const;
 export type PlayerZone = (typeof PLAYER_ZONES)[number];
 
-/** La pile est partagée par toute la table. */
-export type Zone = PlayerZone | "stack";
+/** Zones partagées par toute la table. */
+export const SHARED_ZONES = [
+  "stack",
+  /** Pioche de plans (variante Planechase). */
+  "planarDeck",
+  /** Plan(s) actif(s) (variante Planechase). */
+  "plane",
+] as const;
+export type SharedZone = (typeof SHARED_ZONES)[number];
+
+export type Zone = PlayerZone | SharedZone;
+
+/**
+ * Zones cachées dont l'ordre compte (comme une bibliothèque) : le dessus est
+ * l'index 0 et une carte qui y entre devient un nouvel objet inconnu.
+ */
+export const HIDDEN_ORDERED_ZONES: ReadonlySet<Zone> = new Set<Zone>(["library", "schemes", "planarDeck"]);
 
 /** Zones dont le contenu est visible par tous les joueurs. */
 export const PUBLIC_ZONES: ReadonlySet<Zone> = new Set<Zone>([
@@ -75,6 +92,7 @@ export const PUBLIC_ZONES: ReadonlySet<Zone> = new Set<Zone>([
   "exile",
   "command",
   "stack",
+  "plane",
 ]);
 
 /** Un exemplaire physique d'une carte dans la partie. */
@@ -123,13 +141,26 @@ export interface LogEntry {
   message: string;
 }
 
+export type GameModeType = "freeForAll" | "duel" | "teams" | "twoHeadedGiant" | "star" | "archenemy";
+
 export interface GameSettings {
+  mode: GameModeType;
   startingLife: number;
+  /** Points de vie de départ de l'archenemy (mode Archenemy). */
+  archenemyLife: number;
   /** Blessures de commandant mortelles. */
   commanderDamageLimit: number;
   poisonLimit: number;
   /** Le premier mulligan est gratuit en Commander multijoueur. */
   freeFirstMulligan: boolean;
+  /** Les coéquipiers partagent points de vie, poison et blessures de commandant (Géant à deux têtes). */
+  sharedTeamLife: boolean;
+  /** Les coéquipiers jouent leur tour en même temps (Géant à deux têtes, Archenemy). */
+  sharedTurns: boolean;
+  /** Les coéquipiers voient la main les uns des autres. */
+  teammatesSeeHands: boolean;
+  /** Variante Planechase : pioche de plans partagée et dé planaire. */
+  planechase: boolean;
 }
 
 export interface GameState {
@@ -143,10 +174,22 @@ export interface GameState {
   cards: Record<CardInstanceId, CardInstance>;
   /** Données Scryfall des cartes présentes, indexées par `CardData.id`. */
   cardData: Record<string, CardData>;
+  /**
+   * Équipes. En chacun pour soi, chaque joueur est seul dans son équipe.
+   * L'ordre des joueurs à l'intérieur d'une équipe suit l'ordre du tour.
+   */
+  teams: PlayerId[][];
+  /** Le joueur archenemy (mode Archenemy). */
+  archenemyId?: PlayerId;
   stack: CardInstanceId[];
+  planarDeck: CardInstanceId[];
+  plane: CardInstanceId[];
   turn: {
     number: number;
+    /** Joueur actif (en tours partagés : le premier joueur actif de l'équipe). */
     activePlayerId: PlayerId;
+    /** Jets de dé planaire déjà faits ce tour (le suivant coûte autant de mana générique). */
+    planarDieRolls: number;
   };
   /** État du générateur aléatoire (mélanges), pour des parties rejouables. */
   rngState: number;
