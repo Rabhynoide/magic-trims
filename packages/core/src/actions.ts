@@ -65,6 +65,11 @@ export type GameAction =
    * le même tour) en faisant les actions obligatoires des étapes traversées.
    */
   | { type: "nextStep"; to?: TurnStep }
+  /**
+   * Passe la priorité (pile non vide). Quand tous les joueurs ont passé
+   * d'affilée, l'objet du dessus de la pile se résout.
+   */
+  | { type: "passPriority" }
   /** Finit le tour (étapes restantes comprises) et donne la main au joueur suivant. */
   | { type: "passTurn" }
   | { type: "rollDie"; sides: number }

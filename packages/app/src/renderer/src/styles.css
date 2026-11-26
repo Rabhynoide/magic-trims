@@ -209,6 +209,10 @@ textarea:focus {
 .badge-turn {
   background: var(--active);
 }
+.badge-priority {
+  background: var(--accent);
+  color: #1a1408;
+}
 
 .issue {
   border-radius: 6px;

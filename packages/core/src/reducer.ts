@@ -33,6 +33,7 @@ export function applyAction(state: GameState, envelope: ActionEnvelope): ActionR
       throw new ActionError("Tu as abandonné cette partie.");
     }
     handlers[envelope.action.type](draft, actor, envelope.action as never);
+    if (envelope.action.type !== "passPriority") updatePriority(state, draft, actor);
     draft.version += 1;
     return { ok: true, state: draft };
   } catch (err) {
@@ -276,6 +277,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
 
   nextStep(g, actor, { to }) {
     assertActive(g, actor);
+    assertStackEmpty(g);
     if (to === undefined && g.turn.step === "cleanup") return passTurn(g, actor);
     if (to !== undefined && !isTurnStep(to)) throw new ActionError("Étape inconnue.");
     const target = to ?? TURN_STEPS[stepIndex(g.turn.step) + 1]!;
@@ -288,7 +290,27 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
 
   passTurn(g, actor) {
     assertActive(g, actor);
+    assertStackEmpty(g);
     passTurn(g, actor);
+  },
+
+  passPriority(g, actor) {
+    const priority = g.priority;
+    if (!priority || g.stack.length === 0) throw new ActionError("La pile est vide : personne n'a la priorité.");
+    if (!samePriorityUnit(g, priority.playerId, actor.id)) {
+      throw new ActionError(`C'est à ${g.players[priority.playerId]!.name} d'agir.`);
+    }
+    const units = priorityUnits(g);
+    const unit = units.find((u) => u.includes(actor.id))!;
+    priority.passed = [...new Set([...priority.passed, ...unit])];
+    log(g, actor.id, `${names(unit.map((id) => g.players[id]!))} ${unit.length > 1 ? "passent" : "passe"}.`);
+    if (units.every((u) => u.some((id) => priority.passed.includes(id)))) {
+      resolveTop(g);
+      g.priority = g.stack.length > 0 ? { playerId: g.turn.activePlayerId, passed: [] } : null;
+      return;
+    }
+    const next = units[(units.indexOf(unit) + 1) % units.length]!;
+    priority.playerId = next[0]!;
   },
 
   setSchemeInMotion(g, actor) {
@@ -587,6 +609,77 @@ function nextActivePlayer(g: GameState, from: PlayerId): PlayerId | null {
     if (!g.players[candidate]!.hasConceded) return candidate;
   }
   return null;
+}
+
+function assertStackEmpty(g: GameState): void {
+  if (g.stack.length > 0) throw new ActionError("La pile n'est pas vide : elle doit d'abord se résoudre.");
+}
+
+/**
+ * Ceux qui reçoivent la priorité, dans l'ordre du tour à partir du joueur
+ * actif. En tours partagés, une équipe la reçoit en bloc.
+ */
+function priorityUnits(g: GameState): PlayerId[][] {
+  const start = g.turnOrder.indexOf(g.turn.activePlayerId);
+  const units: PlayerId[][] = [];
+  for (let i = 0; i < g.turnOrder.length; i++) {
+    const id = g.turnOrder[(start + i) % g.turnOrder.length]!;
+    if (g.players[id]!.hasConceded || units.some((u) => u.includes(id))) continue;
+    const unit = g.settings.sharedTurns ? teamOf(g, id).filter((m) => !g.players[m]!.hasConceded) : [id];
+    units.push(unit);
+  }
+  return units;
+}
+
+function samePriorityUnit(g: GameState, a: PlayerId, b: PlayerId): boolean {
+  return a === b || (g.settings.sharedTurns && areTeammates(g, a, b));
+}
+
+/**
+ * Tient la priorité à jour après une action (hors « passer ») : quand un
+ * joueur met un objet sur la pile, il reçoit la priorité et les passes
+ * repartent de zéro ; si la pile change autrement, c'est au joueur actif.
+ */
+function updatePriority(before: GameState, g: GameState, actor: PlayerState): void {
+  if (g.stack.length === 0) {
+    g.priority = null;
+    return;
+  }
+  const added = g.stack.some((id) => !before.stack.includes(id));
+  const changed = g.stack.length !== before.stack.length || g.stack.some((id, i) => before.stack[i] !== id);
+  if (added) g.priority = { playerId: actor.id, passed: [] };
+  else if (changed || !g.priority) g.priority = { playerId: g.turn.activePlayerId, passed: [] };
+  // Un joueur qui abandonne en tenant la priorité la laisse au suivant.
+  if (g.players[g.priority.playerId]!.hasConceded) {
+    const from = g.turnOrder.indexOf(g.priority.playerId);
+    const next = g.turnOrder.map((_, i) => g.turnOrder[(from + 1 + i) % g.turnOrder.length]!).find((id) => !g.players[id]!.hasConceded);
+    g.priority.playerId = next ?? g.turn.activePlayerId;
+  }
+}
+
+/**
+ * Résout l'objet du dessus de la pile. Le moteur ne connaît pas encore les
+ * effets des cartes : il range la carte (champ de bataille pour un permanent,
+ * cimetière pour un éphémère ou un rituel) et les joueurs appliquent l'effet.
+ */
+function resolveTop(g: GameState): void {
+  const id = g.stack.at(-1)!;
+  const card = g.cards[id]!;
+  const name = cardName(g, card);
+  const typeLine = currentTypeLine(g, card);
+  if (/\b(Instant|Sorcery)\b/.test(typeLine)) {
+    moveCardTo(g, id, "graveyard", "top");
+    log(g, null, `${name} se résout et va au cimetière (appliquez son effet).`);
+  } else {
+    moveCardTo(g, id, "battlefield", "top", { controllerId: card.controllerId });
+    log(g, null, `${name} se résout et arrive sur le champ de bataille.`);
+  }
+}
+
+function currentTypeLine(g: GameState, card: CardInstance): string {
+  const data = g.cardData[card.cardId];
+  if (!data) return "";
+  return data.faces?.[card.faceIndex]?.typeLine ?? data.typeLine;
 }
 
 function assertActive(g: GameState, actor: PlayerState): void {

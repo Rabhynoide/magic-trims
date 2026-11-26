@@ -208,6 +208,13 @@ export interface GameSettings {
   autoTurnActions: boolean;
 }
 
+export interface PriorityState {
+  /** Le joueur qui a la priorité (en tours partagés : un membre de l'équipe, qui la tient pour tous). */
+  playerId: PlayerId;
+  /** Joueurs ayant passé la priorité d'affilée depuis le dernier changement de la pile. */
+  passed: PlayerId[];
+}
+
 export interface GameState {
   id: string;
   /** Incrémenté à chaque action appliquée. */
@@ -226,7 +233,13 @@ export interface GameState {
   teams: PlayerId[][];
   /** Le joueur archenemy (mode Archenemy). */
   archenemyId?: PlayerId;
+  /** La pile : le dernier élément est le dessus. */
   stack: CardInstanceId[];
+  /**
+   * Priorité, tant que la pile n'est pas vide (`null` sinon : le joueur actif
+   * avance alors librement dans le tour).
+   */
+  priority: PriorityState | null;
   planarDeck: CardInstanceId[];
   plane: CardInstanceId[];
   turn: {
