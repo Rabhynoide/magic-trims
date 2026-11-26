@@ -196,7 +196,7 @@ describe("Combat", () => {
       seed: 1,
       mode: "twoHeadedGiant",
       randomTurnOrder: false,
-      players: names.map((name, i) => ({ id: `p${i + 1}`, name, deck: fakeDeck(name) })),
+      players: names.map((name, i) => ({ id: `p${i + 1}`, name, deck: fakeDeck(name), priorityStops: [] })),
     });
     const [a1] = g.teams[0]!;
     const [d1, d2] = g.teams[1]!;

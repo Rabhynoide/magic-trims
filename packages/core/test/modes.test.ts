@@ -15,7 +15,7 @@ function game(mode: GameModeType, count: number, extra: Partial<NewGameOptions> 
     seed: 1,
     mode,
     randomTurnOrder: false,
-    players: NAMES.slice(0, count).map((name, i) => ({ id: `p${i + 1}`, name, deck: fakeDeck(name) })),
+    players: NAMES.slice(0, count).map((name, i) => ({ id: `p${i + 1}`, name, deck: fakeDeck(name), priorityStops: [] })),
     ...extra,
   });
 }
@@ -142,6 +142,7 @@ describe("Archenemy", () => {
       id: `p${i + 1}`,
       name,
       deck: fakeDeck(name),
+      priorityStops: [],
       ...(i === 2 ? { schemes } : {}),
     })) });
     expect(g.turnOrder[0]).toBe("p3");

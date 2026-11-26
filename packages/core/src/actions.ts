@@ -1,6 +1,6 @@
 import type { ManaType } from "./mana.js";
 import type { TurnStep } from "./turn.js";
-import type { CardData, CardInstanceId, PlayerId, Zone } from "./types.js";
+import type { CardData, CardInstanceId, PlayerId, PriorityStops, Zone } from "./types.js";
 
 /**
  * Toutes les modifications d'une partie passent par une action.
@@ -100,10 +100,13 @@ export type GameAction =
    */
   | { type: "nextStep"; to?: TurnStep }
   /**
-   * Passe la priorité (pile non vide). Quand tous les joueurs ont passé
-   * d'affilée, l'objet du dessus de la pile se résout.
+   * Passe la priorité. Pile non vide : quand tous les joueurs ont passé
+   * d'affilée, l'objet du dessus de la pile se résout. Pile vide (le joueur
+   * actif veut avancer) : quand tous ont passé, le tour avance.
    */
   | { type: "passPriority" }
+  /** Choisit les étapes du tour des autres où s'arrêter pour pouvoir répondre. */
+  | { type: "setPriorityStops"; stops: PriorityStops }
   /** Finit le tour (étapes restantes comprises) et donne la main au joueur suivant. */
   | { type: "passTurn" }
   | { type: "rollDie"; sides: number }

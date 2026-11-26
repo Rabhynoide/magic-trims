@@ -195,6 +195,8 @@ export interface PlayerState {
   landsPlayed: number;
   /** Réserve de mana ; elle se vide à la fin de chaque étape (règle 500.4). */
   manaPool: ManaPool;
+  /** Arrêts pour répondre pendant le tour des autres (toutes les étapes clés par défaut). */
+  priorityStops?: PriorityStops;
   hasConceded: boolean;
 }
 
@@ -245,7 +247,22 @@ export interface PriorityState {
   playerId: PlayerId;
   /** Joueurs ayant passé la priorité d'affilée depuis le dernier changement de la pile. */
   passed: PlayerId[];
+  /**
+   * Pile vide : le joueur actif veut avancer, et les autres peuvent d'abord
+   * répondre (éphémères, flash). Quand tous ont passé, l'avancée a lieu.
+   */
+  pending?: PendingAdvance;
 }
+
+/** Avancée du tour demandée par le joueur actif, en attente des réponses. */
+export type PendingAdvance = { type: "nextStep"; to?: TurnStep } | { type: "passTurn" };
+
+/**
+ * Étapes du tour des autres où le joueur s'arrête pour pouvoir répondre.
+ * Choisies à l'avance et jamais déduites de sa main : s'arrêter ne trahit
+ * pas qu'il a un éphémère.
+ */
+export type PriorityStops = TurnStep[];
 
 export interface GameState {
   id: string;

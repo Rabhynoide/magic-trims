@@ -827,6 +827,39 @@ textarea:focus {
   align-items: center;
   flex-wrap: wrap;
 }
+.stops-menu {
+  position: relative;
+}
+.stops-menu summary {
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  list-style: none;
+}
+.stops-menu summary::-webkit-details-marker {
+  display: none;
+}
+.stops-list {
+  position: absolute;
+  z-index: 20;
+  top: 100%;
+  left: 0;
+  width: 260px;
+  margin-top: 4px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+}
+.stops-list p {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
 .phase-bar {
   flex: none;
   display: flex;

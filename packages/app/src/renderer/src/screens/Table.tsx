@@ -3,7 +3,9 @@ import {
   GAME_MODES,
   MANA_LABELS,
   MANA_TYPES,
+  RESPONSE_STEPS,
   STEP_LABELS,
+  priorityStopsOf,
   TURN_PHASES,
   starEnemies,
   type CardData,
@@ -729,12 +731,14 @@ function PhaseBar(props: { view: GameView; isActive: boolean }) {
   const currentIndex = order.indexOf(current);
   const stackEmpty = view.stack.length === 0;
   const myPriority = hasPriority(view, view.viewerId);
+  // Personne n'attend de réponse : le joueur actif peut avancer.
+  const free = stackEmpty && view.priority === null;
 
-  // Entrée : passer la priorité quand la pile attend, sinon étape suivante.
+  // Entrée : passer la priorité quand on l'a, sinon étape suivante.
   useEffect(() => {
     const action: GameAction | null = myPriority
       ? { type: "passPriority" }
-      : isActive && stackEmpty
+      : isActive && free
         ? { type: "nextStep" }
         : null;
     if (!action) return;
@@ -746,7 +750,7 @@ function PhaseBar(props: { view: GameView; isActive: boolean }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [isActive, stackEmpty, myPriority]);
+  }, [isActive, free, myPriority]);
 
   return (
     <div className="phase-bar" aria-label="Étapes du tour">
@@ -758,7 +762,7 @@ function PhaseBar(props: { view: GameView; isActive: boolean }) {
               const index = order.indexOf(step);
               const state = index < currentIndex ? "past" : index === currentIndex ? "current" : "future";
               // Pas de priorité pendant le dégagement : on ne peut pas s'y arrêter.
-              const reachable = isActive && stackEmpty && state === "future" && step !== "untap";
+              const reachable = isActive && free && state === "future" && step !== "untap";
               return (
                 <button
                   key={step}
@@ -778,6 +782,38 @@ function PhaseBar(props: { view: GameView; isActive: boolean }) {
   );
 }
 
+/**
+ * Les étapes du tour des autres où le joueur s'arrête pour pouvoir répondre.
+ * On s'arrête à ces étapes même sans rien à jouer : les autres ne peuvent
+ * rien deviner de ta main.
+ */
+function StopsMenu(props: { view: GameView }) {
+  const me = props.view.players[props.view.viewerId]!;
+  const stops = priorityStopsOf(me);
+  const steps = [...RESPONSE_STEPS];
+  const toggle = (step: (typeof steps)[number]) =>
+    void act({
+      type: "setPriorityStops",
+      stops: stops.includes(step) ? stops.filter((s) => s !== step) : [...stops, step],
+    });
+  return (
+    <details className="stops-menu">
+      <summary title="Étapes du tour des autres où tu peux répondre">
+        Arrêts ({stops.length}/{steps.length})
+      </summary>
+      <div className="stops-list">
+        <p>Pendant le tour des autres, tu reçois la priorité à ces étapes, que tu aies un éphémère ou non.</p>
+        {steps.map((step) => (
+          <label key={step}>
+            <input type="checkbox" checked={stops.includes(step)} onChange={() => toggle(step)} />
+            {STEP_LABELS[step]}
+          </label>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 function Toolbar(props: { view: GameView; isActive: boolean; onTokens: () => void }) {
   const { view } = props;
   const me = view.players[view.viewerId]!;
@@ -790,12 +826,20 @@ function Toolbar(props: { view: GameView; isActive: boolean; onTokens: () => voi
         <button
           className="primary"
           disabled={!hasPriority(view, view.viewerId)}
-          title="Laisse la pile se résoudre ou les autres joueurs répondre (Entrée)"
+          title={
+            view.stack.length > 0
+              ? "Laisse la pile se résoudre ou les autres joueurs répondre (Entrée)"
+              : "Tu ne réponds pas : le tour peut avancer (Entrée)"
+          }
           onClick={() => void act({ type: "passPriority" })}
         >
           {hasPriority(view, view.viewerId)
-            ? "Passer la priorité"
-            : `Priorité : ${view.players[view.priority.playerId]!.name}`}
+            ? view.stack.length > 0
+              ? "Passer la priorité"
+              : "Passer (pas de réponse)"
+            : view.stack.length > 0
+              ? `Priorité : ${view.players[view.priority.playerId]!.name}`
+              : `${view.players[view.priority.playerId]!.name} peut répondre…`}
         </button>
       ) : (
         <button
@@ -807,9 +851,13 @@ function Toolbar(props: { view: GameView; isActive: boolean; onTokens: () => voi
           Étape suivante
         </button>
       )}
-      <button disabled={!props.isActive || view.stack.length > 0} onClick={() => void act({ type: "passTurn" })}>
+      <button
+        disabled={!props.isActive || view.stack.length > 0 || view.priority !== null}
+        onClick={() => void act({ type: "passTurn" })}
+      >
         Finir le tour
       </button>
+      {view.settings.enforceRules && <StopsMenu view={view} />}
       <button onClick={() => void act({ type: "untapAll" })}>Tout dégager</button>
       <button onClick={() => void act({ type: "draw", count: 1 })}>Piocher</button>
       <button

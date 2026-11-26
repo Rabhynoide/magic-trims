@@ -13,7 +13,7 @@ import {
   type ManaType,
 } from "./mana.js";
 import { creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatState } from "./combat.js";
-import { MAX_HAND_SIZE, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
+import { MAX_HAND_SIZE, STEP_LABELS, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
 import {
   HIDDEN_ORDERED_ZONES,
   PUBLIC_ZONES,
@@ -22,7 +22,9 @@ import {
   type CardInstanceId,
   type GameState,
   type PlayerId,
+  type PendingAdvance,
   type PlayerState,
+  type PriorityStops,
   type Zone,
 } from "./types.js";
 
@@ -516,27 +518,35 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     assertActive(g, actor);
     assertStackEmpty(g);
     assertMulligansDone(g);
-    if (to === undefined && g.turn.step === "cleanup") return passTurn(g, actor);
+    assertNoResponseWindow(g);
+    if (to === undefined && g.turn.step === "cleanup") return advanceTurn(g, actor, { type: "passTurn" });
     if (to !== undefined && !isTurnStep(to)) throw new ActionError("Étape inconnue.");
     const target = to ?? TURN_STEPS[stepIndex(g.turn.step) + 1]!;
     if (stepIndex(target) <= stepIndex(g.turn.step)) {
       throw new ActionError("On ne revient pas en arrière dans le tour.");
     }
-    const reached = advanceTo(g, target);
-    log(g, actor.id, `${actor.name} passe à ${STEP_PHRASES[reached]}.`);
-    if (reached !== target) logWaitingBlockers(g);
+    advanceTurn(g, actor, { type: "nextStep", to: target });
   },
 
   passTurn(g, actor) {
     assertActive(g, actor);
     assertStackEmpty(g);
     assertMulligansDone(g);
-    passTurn(g, actor);
+    assertNoResponseWindow(g);
+    if (nextActivePlayer(g, g.turn.activePlayerId) === null) throw new ActionError("Plus aucun joueur en lice.");
+    advanceTurn(g, actor, { type: "passTurn" });
+  },
+
+  setPriorityStops(g, actor, { stops }) {
+    if (!Array.isArray(stops) || !stops.every((s) => RESPONSE_STEPS.has(s))) {
+      throw new ActionError("On ne peut s'arrêter qu'aux étapes clés.");
+    }
+    actor.priorityStops = TURN_STEPS.filter((s) => stops.includes(s));
   },
 
   passPriority(g, actor) {
     const priority = g.priority;
-    if (!priority || g.stack.length === 0) throw new ActionError("La pile est vide : personne n'a la priorité.");
+    if (!priority) throw new ActionError("La pile est vide : personne n'a la priorité.");
     if (!samePriorityUnit(g, priority.playerId, actor.id)) {
       throw new ActionError(`C'est à ${g.players[priority.playerId]!.name} d'agir.`);
     }
@@ -544,6 +554,21 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const unit = units.find((u) => u.includes(actor.id))!;
     priority.passed = [...new Set([...priority.passed, ...unit])];
     log(g, actor.id, `${names(unit.map((id) => g.players[id]!))} ${unit.length > 1 ? "passent" : "passe"}.`);
+    if (priority.pending && g.stack.length === 0) {
+      // Pile vide : on cherche le prochain qui veut répondre, sinon le tour avance.
+      const from = units.indexOf(unit);
+      const next = units
+        .slice(from + 1)
+        .find((u) => !u.some((id) => priority.passed.includes(id)) && unitWantsToRespond(g, u, g.turn.step));
+      if (next) {
+        priority.playerId = next[0]!;
+        return;
+      }
+      const pending = priority.pending;
+      g.priority = null;
+      advanceTurn(g, g.players[g.turn.activePlayerId]!, pending, true);
+      return;
+    }
     if (units.every((u) => u.some((id) => priority.passed.includes(id)))) {
       resolveTop(g);
       g.priority = g.stack.length > 0 ? { playerId: g.turn.activePlayerId, passed: [] } : null;
@@ -905,7 +930,13 @@ function samePriorityUnit(g: GameState, a: PlayerId, b: PlayerId): boolean {
  */
 function updatePriority(before: GameState, g: GameState, actor: PlayerState): void {
   if (g.stack.length === 0) {
-    g.priority = null;
+    // Une fenêtre de réponse (pile vide) reste ouverte tant que le tour n'a pas changé.
+    const keep =
+      g.priority?.pending &&
+      g.turn.number === before.turn.number &&
+      g.turn.activePlayerId === before.turn.activePlayerId &&
+      !g.players[g.priority.playerId]!.hasConceded;
+    if (!keep) g.priority = null;
     return;
   }
   const added = g.stack.some((id) => !before.stack.includes(id));
@@ -980,6 +1011,7 @@ function findManaSource(
 /** Vitesse de rituel : son propre tour, phase principale, pile vide. */
 function assertSorceryTiming(g: GameState, actor: PlayerState, what: string): void {
   if (!isActivePlayer(g, actor.id)) throw new ActionError(`Tu ne peux ${what} que pendant ton tour.`);
+  assertNoResponseWindow(g);
   if (g.turn.step !== "main1" && g.turn.step !== "main2") {
     throw new ActionError(`Tu ne peux ${what} que pendant une phase principale.`);
   }
@@ -1008,6 +1040,83 @@ function currentTypeLine(g: GameState, card: CardInstance): string {
 
 function assertActive(g: GameState, actor: PlayerState): void {
   if (!isActivePlayer(g, actor.id)) throw new ActionError("Ce n'est pas ton tour.");
+}
+
+/** Étapes où les autres joueurs peuvent répondre avant que le joueur actif avance. */
+export const RESPONSE_STEPS: ReadonlySet<TurnStep> = new Set<TurnStep>([
+  "upkeep",
+  "draw",
+  "beginCombat",
+  "declareAttackers",
+  "declareBlockers",
+  "end",
+]);
+
+/** Arrêts d'un joueur : ceux qu'il a choisis, sinon toutes les étapes clés. */
+export function priorityStopsOf(p: Pick<PlayerState, "priorityStops">): PriorityStops {
+  return p.priorityStops ?? [...RESPONSE_STEPS];
+}
+
+/**
+ * Le joueur s'arrête-t-il à cette étape du tour d'un autre ? Ne dépend que
+ * de ses réglages, jamais de sa main.
+ */
+export function wantsToRespond(g: GameState, playerId: PlayerId, step: TurnStep = g.turn.step): boolean {
+  if (!RESPONSE_STEPS.has(step)) return false;
+  const p = g.players[playerId];
+  if (!p || p.hasConceded) return false;
+  return priorityStopsOf(p).includes(step);
+}
+
+function unitWantsToRespond(g: GameState, unit: PlayerId[], step: TurnStep): boolean {
+  return unit.some((id) => wantsToRespond(g, id, step));
+}
+
+function assertNoResponseWindow(g: GameState): void {
+  if (g.priority?.pending && g.stack.length === 0) {
+    throw new ActionError(`${g.players[g.priority.playerId]!.name} peut encore répondre.`);
+  }
+}
+
+/**
+ * Ouvre une fenêtre de réponse à l'étape en cours si un autre joueur veut
+ * répondre : il reçoit la priorité, pile vide. Retourne vrai si elle s'ouvre.
+ */
+function openResponseWindow(g: GameState, request: PendingAdvance): boolean {
+  if (!g.settings.enforceRules) return false;
+  const [active, ...others] = priorityUnits(g);
+  const responder = others.find((u) => unitWantsToRespond(g, u, g.turn.step));
+  if (!active || !responder) return false;
+  g.priority = { playerId: responder[0]!, passed: [...active], pending: request };
+  log(g, null, `${names(responder.map((id) => g.players[id]!))} peut répondre (${STEP_LABELS[g.turn.step]}).`);
+  return true;
+}
+
+/**
+ * Fait avancer le tour comme le demande le joueur actif. Avant de quitter
+ * chaque étape clé, les autres joueurs qui le veulent peuvent répondre :
+ * l'avancée reprend quand ils ont tous passé (`resumed` : la fenêtre de
+ * l'étape en cours a déjà eu lieu).
+ */
+function advanceTurn(g: GameState, actor: PlayerState, request: PendingAdvance, resumed = false): void {
+  const target: TurnStep = request.type === "passTurn" ? "cleanup" : request.to ?? TURN_STEPS[stepIndex(g.turn.step) + 1]!;
+  const start = g.turn.step;
+  while (stepIndex(g.turn.step) < stepIndex(target)) {
+    const first = g.turn.step === start;
+    if (g.turn.step === "declareBlockers" && pendingBlockers(g).length > 0) {
+      if (first) throw new ActionError(`En attente des bloqueurs de ${names(pendingBlockers(g))}.`);
+      log(g, actor.id, `${actor.name} passe à ${STEP_PHRASES[g.turn.step]}.`);
+      logWaitingBlockers(g);
+      return;
+    }
+    if (!(first && resumed) && openResponseWindow(g, request)) {
+      if (!first) log(g, actor.id, `${actor.name} passe à ${STEP_PHRASES[g.turn.step]}.`);
+      return;
+    }
+    enterStep(g, TURN_STEPS[stepIndex(g.turn.step) + 1]!);
+  }
+  if (request.type === "passTurn") passTurn(g, actor);
+  else log(g, actor.id, `${actor.name} passe à ${STEP_PHRASES[g.turn.step]}.`);
 }
 
 function passTurn(g: GameState, actor: PlayerState): void {

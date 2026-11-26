@@ -227,9 +227,18 @@ describe("bots", () => {
     // Si Alice commence, elle finit son tour : c'est alors au bot.
     if (game.turn.activePlayerId === aliceId) alice.send({ type: "action", action: { type: "passTurn" } });
     expect(host.state!.turn.activePlayerId).toBe(botId);
+    // Alice s'arrête aux étapes clés du tour du bot : elle passe à chaque fois.
     let steps = 0;
-    while (host.stepBots() && steps < 100) steps++;
+    let passes = 0;
+    while (steps < 200) {
+      if (host.stepBots()) steps++;
+      else if (host.state!.priority?.playerId === aliceId) {
+        alice.send({ type: "action", action: { type: "passPriority" } });
+        passes++;
+      } else break;
+    }
     expect(steps).toBeGreaterThan(0);
+    expect(passes).toBeGreaterThan(0);
     expect(host.state!.turn.activePlayerId).toBe(aliceId);
     expect(alice.last("state").view.turn.activePlayerId).toBe(aliceId);
   });

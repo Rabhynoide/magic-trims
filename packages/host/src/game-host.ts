@@ -271,7 +271,14 @@ export class GameHost {
       const options: Parameters<typeof createGame>[0] = {
         id: this.gameId,
         mode: this.config.mode,
-        players: this.players.map((p) => ({ id: p.id, name: p.name, deck: p.deck!, schemes: p.schemes })),
+        players: this.players.map((p) => ({
+          id: p.id,
+          name: p.name,
+          deck: p.deck!,
+          schemes: p.schemes,
+          // Un bot ne répond jamais : on ne l'attend pas pendant le tour des autres.
+          ...(p.isBot ? { priorityStops: [] } : {}),
+        })),
       };
       if (this.config.teams) options.teams = this.config.teams;
       if (this.config.archenemyId) options.archenemyId = this.config.archenemyId;

@@ -24,7 +24,7 @@ function game(mode: GameModeType, count: number): GameState {
     seed: 1,
     mode,
     randomTurnOrder: false,
-    players: names.slice(0, count).map((name, i) => ({ id: `p${i + 1}`, name, deck: fakeDeck(name) })),
+    players: names.slice(0, count).map((name, i) => ({ id: `p${i + 1}`, name, deck: fakeDeck(name), priorityStops: [] })),
   });
 }
 
@@ -104,7 +104,7 @@ describe("Tours et phases", () => {
       seed: 1,
       randomTurnOrder: false,
       settings: { autoTurnActions: false },
-      players: ["A", "B", "C"].map((name, i) => ({ id: `p${i + 1}`, name, deck: fakeDeck(name) })),
+      players: ["A", "B", "C"].map((name, i) => ({ id: `p${i + 1}`, name, deck: fakeDeck(name), priorityStops: [] })),
     });
     g = act(g, "p1", { type: "nextStep" });
     expect(g.players.p1!.zones.hand).toHaveLength(7);

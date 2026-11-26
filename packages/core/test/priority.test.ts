@@ -90,7 +90,7 @@ describe("Priorité et pile", () => {
       seed: 1,
       mode: "twoHeadedGiant",
       randomTurnOrder: false,
-      players: names.map((name, i) => ({ id: `p${i + 1}`, name, deck: fakeDeck(name) })),
+      players: names.map((name, i) => ({ id: `p${i + 1}`, name, deck: fakeDeck(name), priorityStops: [] })),
     });
     const [a, b] = g.teams[0]!;
     const [c] = g.teams[1]!;
