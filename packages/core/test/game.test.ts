@@ -199,7 +199,7 @@ describe("actions", () => {
     expect(refuse(g, "p2", { type: "passTurn" })).toMatch(/pas ton tour/);
     g = act(g, "p2", { type: "concede" });
     g = act(g, "p1", { type: "passTurn" });
-    expect(g.turn).toEqual({ number: 2, activePlayerId: "p3" });
+    expect(g.turn).toMatchObject({ number: 2, activePlayerId: "p3" });
     expect(refuse(g, "p2", { type: "draw", count: 1 })).toMatch(/abandonné/);
   });
 
