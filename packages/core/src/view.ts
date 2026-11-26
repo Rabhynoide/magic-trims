@@ -51,6 +51,7 @@ export interface GameView {
   teams: PlayerId[][];
   archenemyId?: PlayerId;
   turn: GameState["turn"];
+  priority: GameState["priority"];
   players: Record<PlayerId, PlayerView>;
   stack: CardView[];
   /** Variante Planechase. */
@@ -103,6 +104,7 @@ export function viewFor(g: GameState, viewerId: PlayerId): GameView {
     turnOrder: [...g.turnOrder],
     teams: g.teams.map((t) => [...t]),
     turn: { ...g.turn },
+    priority: g.priority ? structuredClone(g.priority) : null,
     players,
     stack: g.stack.map(viewCard),
     planarDeck: g.planarDeck.map(viewCard),

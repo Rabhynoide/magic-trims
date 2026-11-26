@@ -182,6 +182,29 @@ describe("actions", () => {
     expect(g.log.at(-1)!.message).toContain("gratuit");
     g = act(g, "p1", { type: "mulligan" });
     expect(g.log.at(-1)!.message).toContain("1 carte au-dessous");
+    expect(g.players.p1!.mulliganBottom).toBe(1);
+  });
+
+  it("oblige à mettre les cartes en trop au-dessous de la bibliothèque après des mulligans", () => {
+    let g = newTestGame();
+    g = act(g, "p2", { type: "mulligan" });
+    g = act(g, "p2", { type: "mulligan" });
+    g = act(g, "p2", { type: "mulligan" });
+    expect(g.players.p2!.mulliganBottom).toBe(2);
+    // La partie n'avance pas tant que ce n'est pas fait.
+    expect(refuse(g, "p1", { type: "nextStep" })).toMatch(/Bruno doit d'abord mettre des cartes au-dessous/);
+    expect(refuse(g, "p1", { type: "passTurn" })).toMatch(/mulligan/);
+    const hand = g.players.p2!.zones.hand;
+    expect(refuse(g, "p2", { type: "bottomMulligan", cardIds: [hand[0]!] })).toMatch(/exactement 2 cartes/);
+    expect(refuse(g, "p2", { type: "bottomMulligan", cardIds: [hand[0]!, hand[0]!] })).toMatch(/exactement/);
+    expect(refuse(g, "p2", { type: "bottomMulligan", cardIds: [hand[0]!, g.players.p1!.zones.hand[0]!] })).toMatch(/ta main/);
+    g = act(g, "p2", { type: "bottomMulligan", cardIds: [hand[0]!, hand[1]!] });
+    expect(g.players.p2!.zones.hand).toHaveLength(5);
+    expect(g.players.p2!.zones.library).toHaveLength(94);
+    expect(g.players.p2!.mulliganBottom).toBe(0);
+    expect(refuse(g, "p2", { type: "bottomMulligan", cardIds: [] })).toMatch(/pas de cartes/);
+    g = act(g, "p1", { type: "nextStep" });
+    expect(g.turn.step).toBe("draw");
   });
 
   it("meule et regarde le dessus de la bibliothèque", () => {

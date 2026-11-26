@@ -14,6 +14,8 @@ export type GameAction =
   | { type: "draw"; count: number }
   | { type: "shuffleLibrary" }
   | { type: "mulligan" }
+  /** Après un mulligan : met les cartes choisies de la main au-dessous de la bibliothèque (dans cet ordre). */
+  | { type: "bottomMulligan"; cardIds: CardInstanceId[] }
   /** Déplace les N cartes du dessus de la bibliothèque (meule, exil…). */
   | { type: "moveTopOfLibrary"; count: number; to: Zone; faceDown?: boolean }
   /** Regarde les N cartes du dessus (regard, surveillance…). */
@@ -65,6 +67,11 @@ export type GameAction =
    * le même tour) en faisant les actions obligatoires des étapes traversées.
    */
   | { type: "nextStep"; to?: TurnStep }
+  /**
+   * Passe la priorité (pile non vide). Quand tous les joueurs ont passé
+   * d'affilée, l'objet du dessus de la pile se résout.
+   */
+  | { type: "passPriority" }
   /** Finit le tour (étapes restantes comprises) et donne la main au joueur suivant. */
   | { type: "passTurn" }
   | { type: "rollDie"; sides: number }

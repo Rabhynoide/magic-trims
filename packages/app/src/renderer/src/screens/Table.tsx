@@ -6,6 +6,7 @@ import {
   starEnemies,
   type CardData,
   type CardView,
+  type GameAction,
   type GameView,
   type PlayerId,
   type PlayerView,
@@ -26,6 +27,16 @@ import { ui, useUi } from "../ui-store";
 const act = session.act.bind(session);
 
 type ZoneTarget = { zone: Zone; playerId: PlayerId };
+
+/** Même joueur, ou coéquipiers qui jouent ensemble (tours partagés). */
+function sameSide(view: GameView, a: PlayerId, b: PlayerId): boolean {
+  return a === b || (view.settings.sharedTurns && view.teams.some((t) => t.includes(a) && t.includes(b)));
+}
+
+/** Le joueur (ou son équipe) a la priorité. */
+function hasPriority(view: GameView, playerId: PlayerId): boolean {
+  return view.priority !== null && sameSide(view, view.priority.playerId, playerId);
+}
 
 /** Rend une zone capable de recevoir une carte glissée. */
 function useDrop(target: ZoneTarget, view: GameView) {
@@ -89,9 +100,7 @@ export function Table() {
   // Les adversaires, dans l'ordre du tour à partir du joueur suivant.
   const myIndex = view.turnOrder.indexOf(me);
   const others = [...view.turnOrder.slice(myIndex + 1), ...view.turnOrder.slice(0, myIndex)];
-  const isActive =
-    view.turn.activePlayerId === me ||
-    (view.settings.sharedTurns && view.teams.some((t) => t.includes(me) && t.includes(view.turn.activePlayerId)));
+  const isActive = sameSide(view, view.turn.activePlayerId, me);
   const winners = view.outcome.winners;
 
   return (
@@ -146,9 +155,8 @@ function PlayerArea(props: {
   const graveDrop = useDrop({ zone: "graveyard", playerId }, view);
   const exileDrop = useDrop({ zone: "exile", playerId }, view);
   const libraryDrop = useDrop({ zone: "library", playerId }, view);
-  const active =
-    view.turn.activePlayerId === playerId ||
-    (view.settings.sharedTurns && view.teams.some((t) => t.includes(playerId) && t.includes(view.turn.activePlayerId)));
+  const active = sameSide(view, view.turn.activePlayerId, playerId);
+  const priority = hasPriority(view, playerId);
   const eliminated = view.outcome.eliminated[playerId];
   const size = props.compact ? "tiny" : "small";
 
@@ -177,6 +185,7 @@ function PlayerArea(props: {
       <header className="player-header">
         <strong className="player-name">{p.name}</strong>
         {active && <span className="badge badge-turn">son tour · {STEP_LABELS[view.turn.step]}</span>}
+        {priority && <span className="badge badge-priority">priorité</span>}
         <PlayerTags view={view} playerId={playerId} />
         {eliminated && <span className="badge badge-warn">éliminé ({eliminated})</span>}
         <Stepper
@@ -392,9 +401,33 @@ function Hand(props: { view: GameView }) {
   const { view } = props;
   const me = view.players[view.viewerId]!;
   const drop = useDrop({ zone: "hand", playerId: view.viewerId }, view);
+  // Après un mulligan : choisir les cartes à mettre au-dessous de la bibliothèque.
+  const toBottom = me.mulliganBottom ?? 0;
+  const [chosen, setChosen] = useState<string[]>([]);
+  useEffect(() => setChosen([]), [toBottom, me.mulligans]);
+  const toggle = (id: string) =>
+    setChosen((list) =>
+      list.includes(id) ? list.filter((x) => x !== id) : list.length < toBottom ? [...list, id] : list,
+    );
   return (
     <div className={`hand ${drop.className}`} {...drop.handlers}>
-      <span className="zone-label">Main ({me.zones.hand.length})</span>
+      {toBottom > 0 ? (
+        <div className="mulligan-bar">
+          <span>
+            Mulligan : clique sur {toBottom > 1 ? `les ${toBottom} cartes` : "la carte"} à mettre au-dessous de ta
+            bibliothèque ({chosen.length}/{toBottom}).
+          </span>
+          <button
+            className="primary"
+            disabled={chosen.length !== toBottom}
+            onClick={() => void act({ type: "bottomMulligan", cardIds: chosen })}
+          >
+            Garder cette main
+          </button>
+        </div>
+      ) : (
+        <span className="zone-label">Main ({me.zones.hand.length})</span>
+      )}
       <div className="hand-cards">
         {me.zones.hand.map((c) => (
           <Card
@@ -402,11 +435,14 @@ function Hand(props: { view: GameView }) {
             view={view}
             card={c}
             size="medium"
-            draggable
+            draggable={toBottom === 0}
             onMenu={(e) => openCardMenu(e, view, c)}
-            onDoubleClick={() =>
-              c.instanceId && void act({ type: "moveCard", cardId: c.instanceId, to: "battlefield" })
-            }
+            {...(toBottom > 0 && c.instanceId
+              ? { selected: chosen.includes(c.instanceId), onSelect: () => toggle(c.instanceId!) }
+              : {
+                  onDoubleClick: () =>
+                    c.instanceId && void act({ type: "moveCard", cardId: c.instanceId, to: "battlefield" }),
+                })}
           />
         ))}
       </div>
@@ -423,19 +459,26 @@ function PhaseBar(props: { view: GameView; isActive: boolean }) {
   const current = view.turn.step;
   const order = TURN_PHASES.flatMap((p) => p.steps);
   const currentIndex = order.indexOf(current);
+  const stackEmpty = view.stack.length === 0;
+  const myPriority = hasPriority(view, view.viewerId);
 
-  // Entrée : étape suivante, quand on ne tape pas dans un champ.
+  // Entrée : passer la priorité quand la pile attend, sinon étape suivante.
   useEffect(() => {
-    if (!isActive) return;
+    const action: GameAction | null = myPriority
+      ? { type: "passPriority" }
+      : isActive && stackEmpty
+        ? { type: "nextStep" }
+        : null;
+    if (!action) return;
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       if (e.key !== "Enter" || e.repeat || target?.closest("input, textarea, select, button")) return;
       e.preventDefault();
-      void act({ type: "nextStep" });
+      void act(action);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [isActive]);
+  }, [isActive, stackEmpty, myPriority]);
 
   return (
     <div className="phase-bar" aria-label="Étapes du tour">
@@ -447,7 +490,7 @@ function PhaseBar(props: { view: GameView; isActive: boolean }) {
               const index = order.indexOf(step);
               const state = index < currentIndex ? "past" : index === currentIndex ? "current" : "future";
               // Pas de priorité pendant le dégagement : on ne peut pas s'y arrêter.
-              const reachable = isActive && state === "future" && step !== "untap";
+              const reachable = isActive && stackEmpty && state === "future" && step !== "untap";
               return (
                 <button
                   key={step}
@@ -475,15 +518,28 @@ function Toolbar(props: { view: GameView; isActive: boolean; onTokens: () => voi
       <span className="turn-info">
         Tour {view.turn.number} · {GAME_MODES[view.settings.mode].label}
       </span>
-      <button
-        className="primary"
-        disabled={!props.isActive}
-        title="Passe à l'étape suivante (Entrée)"
-        onClick={() => void act({ type: "nextStep" })}
-      >
-        Étape suivante
-      </button>
-      <button disabled={!props.isActive} onClick={() => void act({ type: "passTurn" })}>
+      {view.priority ? (
+        <button
+          className="primary"
+          disabled={!hasPriority(view, view.viewerId)}
+          title="Laisse la pile se résoudre ou les autres joueurs répondre (Entrée)"
+          onClick={() => void act({ type: "passPriority" })}
+        >
+          {hasPriority(view, view.viewerId)
+            ? "Passer la priorité"
+            : `Priorité : ${view.players[view.priority.playerId]!.name}`}
+        </button>
+      ) : (
+        <button
+          className="primary"
+          disabled={!props.isActive}
+          title="Passe à l'étape suivante (Entrée)"
+          onClick={() => void act({ type: "nextStep" })}
+        >
+          Étape suivante
+        </button>
+      )}
+      <button disabled={!props.isActive || view.stack.length > 0} onClick={() => void act({ type: "passTurn" })}>
         Finir le tour
       </button>
       <button onClick={() => void act({ type: "untapAll" })}>Tout dégager</button>
@@ -574,7 +630,10 @@ function SharedZones(props: { view: GameView }) {
         </div>
       )}
       <div className={`stack ${stackDrop.className}`} {...stackDrop.handlers}>
-        <span className="zone-label">Pile {view.stack.length > 0 ? `(${view.stack.length})` : ""}</span>
+        <span className="zone-label">
+          Pile {view.stack.length > 0 ? `(${view.stack.length})` : ""}
+          {view.priority && ` · priorité : ${view.players[view.priority.playerId]!.name}`}
+        </span>
         <div className="stack-cards">
           {[...view.stack].reverse().map((c) => (
             <Card
