@@ -24,7 +24,7 @@ function cast(g: GameState, playerId: string, card: CardData): [GameState, strin
   g = structuredClone(g);
   const cardId = g.cards[id]!.cardId;
   g.cardData[cardId] = { ...card, id: cardId };
-  g = act(g, playerId, { type: "moveCard", cardId: id, to: "stack" });
+  g = act(g, playerId, { type: "moveCard", cardId: id, to: "stack", force: true });
   return [g, id];
 }
 

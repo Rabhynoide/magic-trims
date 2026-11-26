@@ -23,7 +23,7 @@ function put(g: GameState, playerId: string, card: CardData): [GameState, string
   g = structuredClone(g);
   const cardId = g.cards[id]!.cardId;
   g.cardData[cardId] = { ...card, id: cardId };
-  g = act(g, playerId, { type: "moveCard", cardId: id, to: "battlefield" });
+  g = act(g, playerId, { type: "moveCard", cardId: id, to: "battlefield", force: true });
   return [g, id];
 }
 

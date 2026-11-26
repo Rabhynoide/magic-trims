@@ -17,6 +17,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   teammatesSeeHands: false,
   planechase: false,
   autoTurnActions: true,
+  enforceRules: true,
 };
 
 export const MAX_PLAYERS = 5;

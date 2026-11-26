@@ -43,7 +43,7 @@ describe("vue d'un joueur", () => {
     const id = g.players.p1!.zones.hand[0]!;
     const result = applyAction(g, {
       actorId: "p1",
-      action: { type: "moveCard", cardId: id, to: "battlefield", faceDown: true },
+      action: { type: "moveCard", cardId: id, to: "battlefield", force: true, faceDown: true },
     });
     if (!result.ok) throw new Error(result.error);
     g = result.state;

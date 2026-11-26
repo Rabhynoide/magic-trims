@@ -295,6 +295,16 @@ export function Lobby() {
           <label className="check">
             <input
               type="checkbox"
+              checked={config.settings?.enforceRules !== false}
+              disabled={!s.isHost}
+              onChange={(e) => configure({ settings: { ...config.settings, enforceRules: e.target.checked } })}
+            />
+            Faire respecter les règles pour jouer les cartes (moment, coût, un terrain par tour)
+          </label>
+
+          <label className="check">
+            <input
+              type="checkbox"
               checked={Boolean(config.settings?.planechase) && lobby.planeCount > 0}
               disabled={!s.isHost || loadingExtras}
               onChange={(e) => {

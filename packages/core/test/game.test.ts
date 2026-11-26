@@ -89,7 +89,7 @@ describe("actions", () => {
   it("nomme une carte jouée et remet à zéro une carte qui quitte le champ de bataille", () => {
     let g = newTestGame();
     const id = g.players.p1!.zones.hand[0]!;
-    g = act(g, "p1", { type: "moveCard", cardId: id, to: "battlefield" });
+    g = act(g, "p1", { type: "moveCard", cardId: id, to: "battlefield", force: true });
     expect(g.log.at(-1)!.message).toContain(nameOf(g, id));
     g = act(g, "p1", { type: "setTapped", cardIds: [id], tapped: true });
     g = act(g, "p1", { type: "adjustCardCounter", cardId: id, kind: "+1/+1", delta: 2 });
@@ -108,7 +108,7 @@ describe("actions", () => {
   it("permet de détruire un permanent adverse, et la carte va chez son propriétaire", () => {
     let g = newTestGame();
     const id = g.players.p1!.zones.hand[0]!;
-    g = act(g, "p1", { type: "moveCard", cardId: id, to: "battlefield" });
+    g = act(g, "p1", { type: "moveCard", cardId: id, to: "battlefield", force: true });
     g = act(g, "p2", { type: "changeControl", cardId: id, controllerId: "p2" });
     expect(g.players.p2!.zones.battlefield).toContain(id);
     g = act(g, "p3", { type: "moveCard", cardId: id, to: "graveyard" });
@@ -131,10 +131,10 @@ describe("actions", () => {
   it("compte la taxe de commandant", () => {
     let g = newTestGame();
     const cmd = g.players.p1!.zones.command[0]!;
-    g = act(g, "p1", { type: "moveCard", cardId: cmd, to: "stack" });
-    g = act(g, "p1", { type: "moveCard", cardId: cmd, to: "battlefield" });
+    g = act(g, "p1", { type: "moveCard", cardId: cmd, to: "stack", force: true });
+    g = act(g, "p1", { type: "moveCard", cardId: cmd, to: "battlefield", force: true });
     g = act(g, "p1", { type: "moveCard", cardId: cmd, to: "command" });
-    g = act(g, "p1", { type: "moveCard", cardId: cmd, to: "battlefield" });
+    g = act(g, "p1", { type: "moveCard", cardId: cmd, to: "battlefield", force: true });
     expect(g.players.p1!.commanderCasts[cmd]).toBe(2);
   });
 

@@ -38,6 +38,12 @@ export type GameAction =
       position?: "top" | "bottom" | number;
       tapped?: boolean;
       faceDown?: boolean;
+      /**
+       * Contourne les règles (effet qui met une carte en jeu, coût alternatif…) :
+       * sans lui, une carte de sa main ou de sa zone de commandement ne va
+       * pas directement sur le champ de bataille ou la pile.
+       */
+      force?: boolean;
     }
   | { type: "setTapped"; cardIds: CardInstanceId[]; tapped: boolean }
   /** Dégage tous les permanents de l'acteur. */
