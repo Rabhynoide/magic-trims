@@ -27,7 +27,8 @@ export type TriggerEvent =
   | { type: "cast"; playerId: PlayerId; cardId: CardInstanceId; typeLine: string }
   | { type: "attacks"; cardId: CardInstanceId }
   | { type: "blocks"; cardId: CardInstanceId }
-  | { type: "exploits"; cardId: CardInstanceId };
+  | { type: "exploits"; cardId: CardInstanceId }
+  | { type: "leaves"; cardId: CardInstanceId; controllerId: PlayerId; dataId: string; faceIndex: number };
 
 /** Qui, par rapport au contrôleur de la capacité. */
 type Whose = "you" | "opponent" | "any";
@@ -41,7 +42,9 @@ export type TriggerCondition =
   /** « Whenever ~ attacks », « … blocks », « … attacks or blocks ». */
   | { on: "combat"; attacks: boolean; blocks: boolean }
   /** « When ~ exploits a creature ». */
-  | { on: "exploits" };
+  | { on: "exploits" }
+  /** « When ~ leaves the battlefield ». */
+  | { on: "leaves" };
 
 export interface TriggeredAbility {
   /** Texte de la capacité, tel qu'imprimé. */
@@ -114,6 +117,7 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
     return { on: "combat", attacks: what.includes("attacks"), blocks: what.includes("blocks") };
   }
   if (/^~ exploits a creature$/i.test(t)) return { on: "exploits" };
+  if (/^~ leaves the battlefield$/i.test(t)) return { on: "leaves" };
   if ((m = /^the beginning of (your|each|each player's|each opponent's) (upkeep|draw step|end step)$/i.exec(t))) {
     const step = m[2]!.toLowerCase().startsWith("upkeep") ? "upkeep" : m[2]!.toLowerCase().startsWith("draw") ? "draw" : "end";
     return { on: "step", step, whose: whose(m[1]!)! };
@@ -245,6 +249,8 @@ export function conditionMatches(
       return c.on === "combat" && (event.type === "attacks" ? c.attacks : c.blocks) && event.cardId === source.instanceId;
     case "exploits":
       return c.on === "exploits" && event.cardId === source.instanceId;
+    case "leaves":
+      return c.on === "leaves" && event.cardId === source.instanceId;
     default:
       return c.on === event.type && whoseMatches(g, c.whose, source.controllerId, event.playerId);
   }

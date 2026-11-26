@@ -54,7 +54,7 @@ export interface SpellFilter {
  * Un nombre : fixe, X (choisi au lancement), ou « that much » d'une capacité
  * déclenchée (la quantité de l'événement : PV gagnés ou perdus).
  */
-export type Amount = number | "X" | "-X" | "event" | "-event" | "dealt" | "hand";
+export type Amount = number | "X" | "-X" | "event" | "-event" | "dealt" | "hand" | "given";
 
 /** Qui subit l'effet : « you », une cible, ou le joueur de l'événement déclencheur (« that player », « they »). */
 export type Who = "you" | "opponents" | "all" | "event" | { target: number } | { controllerOf: number };
@@ -66,10 +66,10 @@ export type Effect =
   | { type: "exile"; target: number }
   | { type: "exileAll"; filter: PermanentFilter }
   | { type: "bounce"; target: number }
-  | { type: "damage"; target: number | "event"; amount: Amount }
+  | { type: "damage"; target: number | "event" | "you"; amount: Amount }
   | { type: "damageEach"; who: "opponents" | "players" | "creatures"; amount: Amount }
   | { type: "life"; who: Who; amount: Amount }
-  | { type: "token"; count: Amount; token: TokenSpec; tapped: boolean }
+  | { type: "token"; count: Amount; token: TokenSpec; tapped: boolean; forOpponents?: boolean }
   | { type: "counter"; target: number }
   | { type: "mana"; mana: string[] }
   /** Marqueurs sur la source de la capacité (« put a +1/+1 counter on ~ »). */
@@ -85,7 +85,14 @@ export type Effect =
   /** Équiper : attache la source à la cible. */
   | { type: "attach"; target: number }
   /** « Sacrifice a creature » (au choix du contrôleur, à la résolution). */
-  | { type: "sacrifice"; filter: PermanentFilter };
+  | { type: "sacrifice"; filter: PermanentFilter }
+  /** « Target opponent gains control of target permanent you control » ; `permanent` : une cible, ou la source. */
+  | { type: "gainControl"; permanent: number | "self"; player: number }
+  /** « Exchange control of target land you control and target land an opponent controls. » */
+  | { type: "exchangeControl"; a: number; b: number }
+  /** « If you have 40 or more life, you win the game. » */
+  | { type: "winIf"; life?: number; handExactly?: number }
+  | { type: "loseGame" };
 
 export interface TokenSpec {
   power: string;
@@ -245,6 +252,39 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
     return effects;
   }
   if (/^you gain life equal to the damage dealt this way$/i.test(s)) return [{ type: "life", who: "you", amount: "dealt" }];
+  if (/^you gain X life and draw X cards, where X is the number of permanents you own that your opponents control$/i.test(s)) {
+    return [
+      { type: "life", who: "you", amount: "given" },
+      { type: "draw", who: "you", count: "given" },
+    ];
+  }
+  if ((m = new RegExp(`^~ deals ${NUM} damage to you$`, "i").exec(s))) return [{ type: "damage", target: "you", amount: amount(m[1]!) }];
+  if ((m = /^(target opponent|target player|an opponent) gains control of (~|it|target (.+))$/i.exec(s))) {
+    const who = m[1]!.toLowerCase();
+    const player = who === "an opponent" ? target({ label: "adversaire", player: true, opponent: true, choice: true }) : target(playerTarget(who));
+    if (!m[3]) return [{ type: "gainControl", permanent: "self", player }];
+    const filter = parsePermanentFilter(m[3]);
+    if (!filter) return null;
+    return [{ type: "gainControl", permanent: target({ label: permanentLabel(filter), permanent: filter }), player }];
+  }
+  if ((m = /^exchange control of target (.+?) and target (.+)$/i.exec(s))) {
+    const fa = parsePermanentFilter(m[1]!);
+    const fb = parsePermanentFilter(m[2]!);
+    if (!fa || !fb) return null;
+    const a = target({ label: permanentLabel(fa), permanent: fa });
+    const b = target({ label: permanentLabel(fb), permanent: fb });
+    return [{ type: "exchangeControl", a, b }];
+  }
+  if ((m = /^if you have (\d+) or more life, you win the game$/i.exec(s))) return [{ type: "winIf", life: parseInt(m[1]!, 10) }];
+  if ((m = new RegExp(`^if you have exactly (${NUM.slice(1, -1)}|thirteen) cards in your hand, you win the game$`, "i").exec(s))) {
+    const n = m[1]!.toLowerCase() === "thirteen" ? 13 : (amount(m[1]!) as number);
+    return [{ type: "winIf", handExactly: n }];
+  }
+  if (/^you lose the game$/i.test(s)) return [{ type: "loseGame" }];
+  if ((m = new RegExp(`^each opponent creates ${NUM} (tapped )?(.+)$`, "i").exec(s))) {
+    const token = parseToken(m[3]!);
+    if (token) return [{ type: "token", count: amount(m[1]!), token, tapped: !!m[2], forOpponents: true }];
+  }
   if (/^you gain 1 life for each card in your hand$/i.test(s)) return [{ type: "life", who: "you", amount: "hand" }];
   if ((m = new RegExp(`^(each opponent|each player) draws ${NUM} cards?$`, "i").exec(s))) {
     return [{ type: "draw", who: /opponent/i.test(m[1]!) ? "opponents" : "all", count: amount(m[2]!) }];
@@ -542,8 +582,9 @@ export function spellEffectsOf(g: GameState, card: CardInstance, faceIndex = car
 }
 
 /** Valeur d'un nombre d'effet, avec la valeur de X choisie au lancement. */
-export function resolveAmount(a: Amount, x: number, eventAmount = 0, context: { dealt?: number; hand?: number } = {}): number {
+export function resolveAmount(a: Amount, x: number, eventAmount = 0, context: { dealt?: number; hand?: number; given?: number } = {}): number {
   if (a === "dealt") return context.dealt ?? 0;
+  if (a === "given") return context.given ?? 0;
   if (a === "hand") return context.hand ?? 0;
   if (a === "X") return x;
   if (a === "-X") return -x;

@@ -1,0 +1,529 @@
+[
+ {
+  "name": "Zedruu the Greathearted",
+  "typeLine": "Legendary Creature — Minotaur Monk",
+  "oracleText": "At the beginning of your upkeep, you gain X life and draw X cards, where X is the number of permanents you own that your opponents control.\n{U}{R}{W}: Target opponent gains control of target permanent you control.",
+  "manaCost": "{1}{U}{R}{W}",
+  "power": "2",
+  "toughness": "4"
+ },
+ {
+  "name": "Akroan Horse",
+  "typeLine": "Artifact Creature — Horse",
+  "oracleText": "Defender\nWhen this creature enters, an opponent gains control of it.\nAt the beginning of your upkeep, each opponent creates a 1/1 white Soldier creature token.",
+  "manaCost": "{4}",
+  "power": "0",
+  "toughness": "4"
+ },
+ {
+  "name": "Bazaar Trader",
+  "typeLine": "Creature — Goblin",
+  "oracleText": "{T}: Target player gains control of target artifact, creature, or land you control.",
+  "manaCost": "{1}{R}",
+  "power": "1",
+  "toughness": "1"
+ },
+ {
+  "name": "Body of Knowledge",
+  "typeLine": "Creature — Avatar",
+  "oracleText": "Body of Knowledge's power and toughness are each equal to the number of cards in your hand.\nYou have no maximum hand size.\nWhenever this creature is dealt damage, draw that many cards.",
+  "manaCost": "{3}{U}{U}",
+  "power": "*",
+  "toughness": "*"
+ },
+ {
+  "name": "Bronze Bombshell",
+  "typeLine": "Artifact Creature — Construct",
+  "oracleText": "When a player other than this creature's owner controls it, that player sacrifices it. If the player does, this creature deals 7 damage to the player.",
+  "manaCost": "{4}",
+  "power": "4",
+  "toughness": "1"
+ },
+ {
+  "name": "Cinder Giant",
+  "typeLine": "Creature — Giant",
+  "oracleText": "At the beginning of your upkeep, this creature deals 2 damage to each other creature you control.",
+  "manaCost": "{3}{R}",
+  "power": "5",
+  "toughness": "3"
+ },
+ {
+  "name": "Daring Thief",
+  "typeLine": "Creature — Human Rogue",
+  "oracleText": "Inspired — Whenever this creature becomes untapped, you may exchange control of target nonland permanent you control and target permanent an opponent controls that shares a card type with it.",
+  "manaCost": "{2}{U}",
+  "power": "2",
+  "toughness": "3"
+ },
+ {
+  "name": "Djinn of Infinite Deceits",
+  "typeLine": "Creature — Djinn",
+  "oracleText": "Flying\n{T}: Exchange control of two target nonlegendary creatures. You can't activate this ability during combat.",
+  "manaCost": "{4}{U}{U}",
+  "power": "2",
+  "toughness": "7"
+ },
+ {
+  "name": "Felidar Sovereign",
+  "typeLine": "Creature — Cat Beast",
+  "oracleText": "Vigilance (Attacking doesn't cause this creature to tap.)\nLifelink (Damage dealt by this creature also causes you to gain that much life.)\nAt the beginning of your upkeep, if you have 40 or more life, you win the game.",
+  "manaCost": "{4}{W}{W}",
+  "power": "4",
+  "toughness": "6"
+ },
+ {
+  "name": "Goldnight Castigator",
+  "typeLine": "Creature — Angel",
+  "oracleText": "Flying, haste\nIf a source would deal damage to you, it deals double that damage to you instead.\nIf a source would deal damage to this creature, it deals double that damage to this creature instead.",
+  "manaCost": "{2}{R}{R}",
+  "power": "4",
+  "toughness": "9"
+ },
+ {
+  "name": "Grid Monitor",
+  "typeLine": "Artifact Creature — Construct",
+  "oracleText": "You can't cast creature spells.",
+  "manaCost": "{4}",
+  "power": "4",
+  "toughness": "6"
+ },
+ {
+  "name": "Humble Defector",
+  "typeLine": "Creature — Human Rogue",
+  "oracleText": "{T}: Draw two cards. Target opponent gains control of this creature. Activate only during your turn.",
+  "manaCost": "{1}{R}",
+  "power": "2",
+  "toughness": "1"
+ },
+ {
+  "name": "Psychosis Crawler",
+  "typeLine": "Artifact Creature — Phyrexian Horror",
+  "oracleText": "Psychosis Crawler's power and toughness are each equal to the number of cards in your hand.\nWhenever you draw a card, each opponent loses 1 life.",
+  "manaCost": "{5}",
+  "power": "*",
+  "toughness": "*"
+ },
+ {
+  "name": "Rust Elemental",
+  "typeLine": "Artifact Creature — Elemental",
+  "oracleText": "Flying\nAt the beginning of your upkeep, sacrifice another artifact. If you can't, tap this creature and you lose 4 life.",
+  "manaCost": "{4}",
+  "power": "4",
+  "toughness": "4"
+ },
+ {
+  "name": "Silent Arbiter",
+  "typeLine": "Artifact Creature — Construct",
+  "oracleText": "No more than one creature can attack each combat.\nNo more than one creature can block each combat.",
+  "manaCost": "{4}",
+  "power": "1",
+  "toughness": "5"
+ },
+ {
+  "name": "Steel Golem",
+  "typeLine": "Artifact Creature — Golem",
+  "oracleText": "You can't cast creature spells.",
+  "manaCost": "{3}",
+  "power": "3",
+  "toughness": "4"
+ },
+ {
+  "name": "Triskaidekaphile",
+  "typeLine": "Creature — Human Wizard",
+  "oracleText": "You have no maximum hand size.\nAt the beginning of your upkeep, if you have exactly thirteen cards in your hand, you win the game.\n{3}{U}: Draw a card.",
+  "manaCost": "{1}{U}",
+  "power": "1",
+  "toughness": "3"
+ },
+ {
+  "name": "Vedalken Plotter",
+  "typeLine": "Creature — Vedalken Wizard",
+  "oracleText": "When this creature enters, exchange control of target land you control and target land an opponent controls.",
+  "manaCost": "{2}{U}",
+  "power": "1",
+  "toughness": "1"
+ },
+ {
+  "name": "Windborn Muse",
+  "typeLine": "Creature — Spirit",
+  "oracleText": "Flying\nCreatures can't attack you unless their controller pays {2} for each creature they control that's attacking you.",
+  "manaCost": "{3}{W}",
+  "power": "2",
+  "toughness": "3"
+ },
+ {
+  "name": "Chaos Warp",
+  "typeLine": "Instant",
+  "oracleText": "The owner of target permanent shuffles it into their library, then reveals the top card of their library. If it's a permanent card, they put it onto the battlefield.",
+  "manaCost": "{2}{R}"
+ },
+ {
+  "name": "Counterspell",
+  "typeLine": "Instant",
+  "oracleText": "Counter target spell.",
+  "manaCost": "{U}{U}"
+ },
+ {
+  "name": "Dovin's Veto",
+  "typeLine": "Instant",
+  "oracleText": "This spell can't be countered.\nCounter target noncreature spell.",
+  "manaCost": "{W}{U}"
+ },
+ {
+  "name": "Negate",
+  "typeLine": "Instant",
+  "oracleText": "Counter target noncreature spell.",
+  "manaCost": "{1}{U}"
+ },
+ {
+  "name": "Path to Exile",
+  "typeLine": "Instant",
+  "oracleText": "Exile target creature. Its controller may search their library for a basic land card, put that card onto the battlefield tapped, then shuffle.",
+  "manaCost": "{W}"
+ },
+ {
+  "name": "Unwind",
+  "typeLine": "Instant",
+  "oracleText": "Counter target noncreature spell. Untap up to three lands.",
+  "manaCost": "{2}{U}"
+ },
+ {
+  "name": "Approach of the Second Sun",
+  "typeLine": "Sorcery",
+  "oracleText": "If this spell was cast from your hand and you've cast another spell named Approach of the Second Sun this game, you win the game. Otherwise, put Approach of the Second Sun into its owner's library seventh from the top and you gain 7 life.",
+  "manaCost": "{6}{W}"
+ },
+ {
+  "name": "Farewell",
+  "typeLine": "Sorcery",
+  "oracleText": "Choose one or more —\n• Exile all artifacts.\n• Exile all creatures.\n• Exile all enchantments.\n• Exile all graveyards.",
+  "manaCost": "{4}{W}{W}"
+ },
+ {
+  "name": "Harmless Offering",
+  "typeLine": "Sorcery",
+  "oracleText": "Target opponent gains control of target permanent you control.",
+  "manaCost": "{2}{R}"
+ },
+ {
+  "name": "Modify Memory",
+  "typeLine": "Sorcery",
+  "oracleText": "Exchange control of two target creatures controlled by different players. If you control neither creature, draw three cards.",
+  "manaCost": "{4}{U}"
+ },
+ {
+  "name": "Political Trickery",
+  "typeLine": "Sorcery",
+  "oracleText": "Exchange control of target land you control and target land an opponent controls. (This effect lasts indefinitely.)",
+  "manaCost": "{2}{U}"
+ },
+ {
+  "name": "Role Reversal",
+  "typeLine": "Sorcery",
+  "oracleText": "Exchange control of two target permanents that share a permanent type.",
+  "manaCost": "{U}{U}{R}"
+ },
+ {
+  "name": "Supreme Verdict",
+  "typeLine": "Sorcery",
+  "oracleText": "This spell can't be countered.\nDestroy all creatures.",
+  "manaCost": "{1}{W}{W}{U}"
+ },
+ {
+  "name": "Arcane Signet",
+  "typeLine": "Artifact",
+  "oracleText": "{T}: Add one mana of any color in your commander's color identity.",
+  "manaCost": "{2}"
+ },
+ {
+  "name": "Crown of Doom",
+  "typeLine": "Artifact",
+  "oracleText": "Whenever a creature attacks you or a planeswalker you control, it gets +2/+0 until end of turn.\n{2}: Target player other than this artifact's owner gains control of it. Activate only during your turn.",
+  "manaCost": "{3}"
+ },
+ {
+  "name": "Decanter of Endless Water",
+  "typeLine": "Artifact",
+  "oracleText": "You have no maximum hand size.\n{T}: Add one mana of any color.",
+  "manaCost": "{3}"
+ },
+ {
+  "name": "Elixir of Immortality",
+  "typeLine": "Artifact",
+  "oracleText": "{2}, {T}: You gain 5 life. Shuffle this artifact and your graveyard into their owner's library.",
+  "manaCost": "{1}"
+ },
+ {
+  "name": "Folio of Fancies",
+  "typeLine": "Artifact — Book",
+  "oracleText": "Players have no maximum hand size.\n{X}{X}, {T}: Each player draws X cards.\n{2}{U}, {T}: Each opponent mills cards equal to the number of cards in their hand.",
+  "manaCost": "{1}{U}"
+ },
+ {
+  "name": "Font of Mythos",
+  "typeLine": "Artifact",
+  "oracleText": "At the beginning of each player's draw step, that player draws two additional cards.",
+  "manaCost": "{4}"
+ },
+ {
+  "name": "Grafted Skullcap",
+  "typeLine": "Artifact",
+  "oracleText": "At the beginning of your draw step, draw an additional card.\nAt the beginning of your end step, discard your hand.",
+  "manaCost": "{4}"
+ },
+ {
+  "name": "Izzet Signet",
+  "typeLine": "Artifact",
+  "oracleText": "{1}, {T}: Add {U}{R}.",
+  "manaCost": "{2}"
+ },
+ {
+  "name": "Jinxed Choker",
+  "typeLine": "Artifact",
+  "oracleText": "At the beginning of your end step, target opponent gains control of this artifact and puts a charge counter on it.\nAt the beginning of your upkeep, this artifact deals damage to you equal to the number of charge counters on it.\n{3}: Put a charge counter on this artifact or remove one from it.",
+  "manaCost": "{3}"
+ },
+ {
+  "name": "Jinxed Idol",
+  "typeLine": "Artifact",
+  "oracleText": "At the beginning of your upkeep, this artifact deals 2 damage to you.\nSacrifice a creature: Target opponent gains control of this artifact.",
+  "manaCost": "{2}"
+ },
+ {
+  "name": "Lightning Greaves",
+  "typeLine": "Artifact — Equipment",
+  "oracleText": "Equipped creature has haste and shroud. (It can't be the target of spells or abilities.)\nEquip {0}",
+  "manaCost": "{2}"
+ },
+ {
+  "name": "Mana Crypt",
+  "typeLine": "Artifact",
+  "oracleText": "At the beginning of your upkeep, flip a coin. If you lose the flip, this artifact deals 3 damage to you.\n{T}: Add {C}{C}.",
+  "manaCost": "{0}"
+ },
+ {
+  "name": "Sol Ring",
+  "typeLine": "Artifact",
+  "oracleText": "{T}: Add {C}{C}.",
+  "manaCost": "{1}"
+ },
+ {
+  "name": "Spellbook",
+  "typeLine": "Artifact — Book",
+  "oracleText": "You have no maximum hand size.",
+  "manaCost": "{0}"
+ },
+ {
+  "name": "Swiftfoot Boots",
+  "typeLine": "Artifact — Equipment",
+  "oracleText": "Equipped creature has hexproof and haste. (It can't be the target of spells or abilities your opponents control. It can attack and {T} no matter when it came under your control.)\nEquip {1} ({1}: Attach to target creature you control. Equip only as a sorcery.)",
+  "manaCost": "{2}"
+ },
+ {
+  "name": "Venser's Journal",
+  "typeLine": "Artifact — Book",
+  "oracleText": "You have no maximum hand size.\nAt the beginning of your upkeep, you gain 1 life for each card in your hand.",
+  "manaCost": "{5}"
+ },
+ {
+  "name": "Wedding Ring",
+  "typeLine": "Artifact",
+  "oracleText": "When this artifact enters, if it was cast, target opponent creates a token that's a copy of it.\nWhenever an opponent who controls an artifact named Wedding Ring draws a card during their turn, you draw a card.\nWhenever an opponent who controls an artifact named Wedding Ring gains life during their turn, you gain that much life.",
+  "manaCost": "{2}{W}{W}"
+ },
+ {
+  "name": "Aggressive Mining",
+  "typeLine": "Enchantment",
+  "oracleText": "You can't play lands.\nSacrifice a land: Draw two cards. Activate only once each turn.",
+  "manaCost": "{3}{R}"
+ },
+ {
+  "name": "Darksteel Mutation",
+  "typeLine": "Enchantment — Aura",
+  "oracleText": "Enchant creature\nEnchanted creature is an Insect artifact creature with base power and toughness 0/1 and has indestructible, and it loses all other abilities, card types, and creature types.",
+  "manaCost": "{1}{W}"
+ },
+ {
+  "name": "Delusions of Mediocrity",
+  "typeLine": "Enchantment",
+  "oracleText": "When this enchantment enters, you gain 10 life.\nWhen this enchantment leaves the battlefield, you lose 10 life.",
+  "manaCost": "{3}{U}"
+ },
+ {
+  "name": "Ghostly Prison",
+  "typeLine": "Enchantment",
+  "oracleText": "Creatures can't attack you unless their controller pays {2} for each creature they control that's attacking you.",
+  "manaCost": "{2}{W}"
+ },
+ {
+  "name": "Illusions of Grandeur",
+  "typeLine": "Enchantment",
+  "oracleText": "Cumulative upkeep {2} (At the beginning of your upkeep, put an age counter on this permanent, then sacrifice it unless you pay its upkeep cost for each age counter on it.)\nWhen this enchantment enters, you gain 20 life.\nWhen this enchantment leaves the battlefield, you lose 20 life.",
+  "manaCost": "{3}{U}"
+ },
+ {
+  "name": "Moderation",
+  "typeLine": "Enchantment",
+  "oracleText": "You can't cast more than one spell each turn.\nWhenever you cast a spell, draw a card.",
+  "manaCost": "{1}{W}{U}"
+ },
+ {
+  "name": "Nine Lives",
+  "typeLine": "Enchantment",
+  "oracleText": "Hexproof\nIf a source would deal damage to you, prevent that damage and put an incarnation counter on this enchantment.\nWhen there are nine or more incarnation counters on this enchantment, exile it.\nWhen this enchantment leaves the battlefield, you lose the game.",
+  "manaCost": "{1}{W}{W}"
+ },
+ {
+  "name": "Paradox Haze",
+  "typeLine": "Enchantment — Aura",
+  "oracleText": "Enchant player\nAt the beginning of enchanted player's first upkeep each turn, that player gets an additional upkeep step after this step.",
+  "manaCost": "{2}{U}"
+ },
+ {
+  "name": "Propaganda",
+  "typeLine": "Enchantment",
+  "oracleText": "Creatures can't attack you unless their controller pays {2} for each creature they control that's attacking you.",
+  "manaCost": "{2}{U}"
+ },
+ {
+  "name": "Puca's Mischief",
+  "typeLine": "Enchantment",
+  "oracleText": "At the beginning of your upkeep, you may exchange control of target nonland permanent you control and target nonland permanent an opponent controls with equal or lesser mana value.",
+  "manaCost": "{3}{U}"
+ },
+ {
+  "name": "Pyromancer's Swath",
+  "typeLine": "Enchantment",
+  "oracleText": "If an instant or sorcery source you control would deal damage to a permanent or player, it deals that much damage plus 2 to that permanent or player instead.\nAt the beginning of each end step, discard your hand.",
+  "manaCost": "{2}{R}"
+ },
+ {
+  "name": "Rhystic Study",
+  "typeLine": "Enchantment",
+  "oracleText": "Whenever an opponent casts a spell, you may draw a card unless that player pays {1}.",
+  "manaCost": "{2}{U}"
+ },
+ {
+  "name": "Smothering Tithe",
+  "typeLine": "Enchantment",
+  "oracleText": "Whenever an opponent draws a card, that player may pay {2}. If the player doesn't, you create a Treasure token. (It's an artifact with \"{T}, Sacrifice this token: Add one mana of any color.\")",
+  "manaCost": "{3}{W}"
+ },
+ {
+  "name": "Solitary Confinement",
+  "typeLine": "Enchantment",
+  "oracleText": "At the beginning of your upkeep, sacrifice this enchantment unless you discard a card.\nSkip your draw step.\nYou have shroud. (You can't be the target of spells or abilities.)\nPrevent all damage that would be dealt to you.",
+  "manaCost": "{2}{W}"
+ },
+ {
+  "name": "Sphere of Safety",
+  "typeLine": "Enchantment",
+  "oracleText": "Creatures can't attack you or planeswalkers you control unless their controller pays {X} for each of those creatures, where X is the number of enchantments you control.",
+  "manaCost": "{4}{W}"
+ },
+ {
+  "name": "Statecraft",
+  "typeLine": "Enchantment",
+  "oracleText": "Prevent all combat damage that would be dealt to and dealt by creatures you control.",
+  "manaCost": "{3}{U}"
+ },
+ {
+  "name": "Witness Protection",
+  "typeLine": "Enchantment — Aura",
+  "oracleText": "Enchant creature\nEnchanted creature loses all abilities and is a green and white Citizen creature with base power and toughness 1/1 named Legitimate Businessperson. (It loses all other colors, card types, creature types, and names.)",
+  "manaCost": "{U}"
+ },
+ {
+  "name": "The Eternal Wanderer",
+  "typeLine": "Legendary Planeswalker",
+  "oracleText": "No more than one creature can attack The Eternal Wanderer each combat.\n+1: Exile up to one target artifact or creature. Return that card to the battlefield under its owner's control at the beginning of that player's next end step.\n0: Create a 2/2 white Samurai creature token with double strike.\n−4: For each player, choose a creature that player controls. Each player sacrifices all creatures they control not chosen this way.",
+  "manaCost": "{4}{W}{W}",
+  "loyalty": "5"
+ },
+ {
+  "name": "Command Tower",
+  "typeLine": "Land",
+  "oracleText": "{T}: Add one mana of any color in your commander's color identity.",
+  "manaCost": ""
+ },
+ {
+  "name": "Glacial Chasm",
+  "typeLine": "Land",
+  "oracleText": "Cumulative upkeep—Pay 2 life. (At the beginning of your upkeep, put an age counter on this permanent, then sacrifice it unless you pay its upkeep cost for each age counter on it.)\nWhen this land enters, sacrifice a land.\nCreatures you control can't attack.\nPrevent all damage that would be dealt to you.",
+  "manaCost": ""
+ },
+ {
+  "name": "Hall of Heliod's Generosity",
+  "typeLine": "Legendary Land",
+  "oracleText": "{T}: Add {C}.\n{1}{W}, {T}: Put target enchantment card from your graveyard on top of your library.",
+  "manaCost": ""
+ },
+ {
+  "name": "Hengegate Pathway // Mistgate Pathway",
+  "typeLine": "Land // Land",
+  "oracleText": "{T}: Add {W}.\n//\n{T}: Add {U}.",
+  "manaCost": "",
+  "faces": [
+   {
+    "name": "Hengegate Pathway",
+    "typeLine": "Land",
+    "oracleText": "{T}: Add {W}.",
+    "manaCost": ""
+   },
+   {
+    "name": "Mistgate Pathway",
+    "typeLine": "Land",
+    "oracleText": "{T}: Add {U}.",
+    "manaCost": ""
+   }
+  ]
+ },
+ {
+  "name": "Mystic Monastery",
+  "typeLine": "Land",
+  "oracleText": "This land enters tapped.\n{T}: Add {U}, {R}, or {W}.",
+  "manaCost": ""
+ },
+ {
+  "name": "Plateau",
+  "typeLine": "Land — Mountain Plains",
+  "oracleText": "({T}: Add {R} or {W}.)",
+  "manaCost": ""
+ },
+ {
+  "name": "Raugrin Triome",
+  "typeLine": "Land — Island Mountain Plains",
+  "oracleText": "({T}: Add {U}, {R}, or {W}.)\nThis land enters tapped.\nCycling {3} ({3}, Discard this card: Draw a card.)",
+  "manaCost": ""
+ },
+ {
+  "name": "Swiftwater Cliffs",
+  "typeLine": "Land",
+  "oracleText": "This land enters tapped.\nWhen this land enters, you gain 1 life.\n{T}: Add {U} or {R}.",
+  "manaCost": ""
+ },
+ {
+  "name": "Tranquil Cove",
+  "typeLine": "Land",
+  "oracleText": "This land enters tapped.\nWhen this land enters, you gain 1 life.\n{T}: Add {W} or {U}.",
+  "manaCost": ""
+ },
+ {
+  "name": "Tundra",
+  "typeLine": "Land — Plains Island",
+  "oracleText": "({T}: Add {W} or {U}.)",
+  "manaCost": ""
+ },
+ {
+  "name": "Volcanic Island",
+  "typeLine": "Land — Island Mountain",
+  "oracleText": "({T}: Add {U} or {R}.)",
+  "manaCost": ""
+ },
+ {
+  "name": "Wind-Scarred Crag",
+  "typeLine": "Land",
+  "oracleText": "This land enters tapped.\nWhen this land enters, you gain 1 life.\n{T}: Add {R} or {W}.",
+  "manaCost": ""
+ }
+]

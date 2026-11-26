@@ -39,6 +39,8 @@ export interface ActivatedAbility {
   mana: boolean;
   /** Équiper. */
   equip: boolean;
+  /** « Activate only during your turn. » */
+  ownTurn?: boolean;
 }
 
 /** Lit un coût (« {2}, {T}, Sacrifice ~ », « Pay 1 life », « −2 ») ; `null` s'il n'est pas compris. */
@@ -108,8 +110,13 @@ export function parseActivatedLine(line: string, isPlaneswalker: boolean): Activ
     oncePerTurn = true;
     body = body.replace(/\s*Activate only once each turn\.?$/i, "");
   }
+  let ownTurn = false;
+  if (/\s*Activate only during your turn\.?$/i.test(body)) {
+    ownTurn = true;
+    body = body.replace(/\s*Activate only during your turn\.?$/i, "");
+  }
   const effects = parseSpellEffects(body, "~");
   const zone = effects.effects.some((e) => e.type === "returnSelf") ? "graveyard" : "battlefield";
   const mana = effects.effects.length > 0 && effects.effects.every((e) => e.type === "mana" || e.type === "manaAny") && effects.targets.length === 0;
-  return { text: line, costText, cost, effects, zone, sorcery, oncePerTurn, mana, equip: false };
+  return { text: line, costText, cost, effects, zone, sorcery, oncePerTurn, mana, equip: false, ...(ownTurn ? { ownTurn } : {}) };
 }

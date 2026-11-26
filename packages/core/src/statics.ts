@@ -23,7 +23,18 @@ export type StaticAbility =
   /** « Creatures you control get +1/+1. », « Other creatures you control have flying. » */
   | { kind: "anthem"; others: boolean; keywords: string[]; power: number; toughness: number }
   /** « ~'s power and toughness are each equal to the number of cards in your hand. » */
-  | { kind: "ptEqualsHand" };
+  | { kind: "ptEqualsHand" }
+  /** « Players have no maximum hand size. » */
+  | { kind: "noMaxHandSizeAll" }
+  /** « This land enters tapped. » */
+  | { kind: "entersTapped" }
+  /** « Creatures can't attack you unless their controller pays {2} for each creature… » (X : nombre d'enchantements). */
+  | { kind: "attackTax"; amount: number | "enchantments" }
+  /** « You can't cast creature spells. » */
+  | { kind: "cantCast"; types: string[] }
+  | { kind: "cantPlayLands" }
+  /** « You can't cast more than one spell each turn. » */
+  | { kind: "oneSpellPerTurn" };
 
 const COLOR_WORDS: Record<string, string> = { white: "W", blue: "U", black: "B", red: "R", green: "G" };
 const SPELL_TYPES = ["creature", "artifact", "enchantment", "instant", "sorcery", "planeswalker", "battle"];
@@ -54,6 +65,20 @@ export function parseStaticLine(line: string): StaticAbility | null {
   const l = line.replace(/\.$/, "").trim();
   let m: RegExpExecArray | null;
   if (/^you have no maximum hand size$/i.test(l)) return { kind: "noMaxHandSize" };
+  if (/^players have no maximum hand size$/i.test(l)) return { kind: "noMaxHandSizeAll" };
+  if (/^~ enters tapped$/i.test(l)) return { kind: "entersTapped" };
+  if (/^you can't play lands$/i.test(l)) return { kind: "cantPlayLands" };
+  if (/^you can't cast more than one spell each turn$/i.test(l)) return { kind: "oneSpellPerTurn" };
+  if ((m = /^you can't cast (creature|noncreature|artifact|enchantment|instant|sorcery) spells$/i.exec(l))) return { kind: "cantCast", types: [m[1]!.toLowerCase()] };
+  if (
+    (m =
+      /^creatures can't attack you(?: or planeswalkers you control)? unless their controller pays \{(\d+|X)\} for each (?:creature they control that's attacking you|of those creatures)(, where X is the number of enchantments you control)?$/i.exec(
+        l,
+      ))
+  ) {
+    if (m[1]!.toUpperCase() === "X") return m[2] ? { kind: "attackTax", amount: "enchantments" } : null;
+    return { kind: "attackTax", amount: parseInt(m[1]!, 10) };
+  }
   if (/^your opponents can't gain life$/i.test(l)) return { kind: "opponentsCantGainLife" };
   if (/^~ can't (attack|block)( or (attack|block))?$/i.test(l)) return { kind: "restriction" };
   if (/^~'s power and toughness are each equal to the number of cards in your hand$/i.test(l)) return { kind: "ptEqualsHand" };
@@ -137,7 +162,51 @@ function controls(g: GameState, playerId: PlayerId, kind: StaticAbility["kind"])
 
 /** Le joueur n'a pas de taille maximale de main. */
 export function hasNoMaxHandSize(g: GameState, playerId: PlayerId): boolean {
-  return controls(g, playerId, "noMaxHandSize");
+  return controls(g, playerId, "noMaxHandSize") || g.turnOrder.some((id) => !g.players[id]!.hasConceded && controls(g, id, "noMaxHandSizeAll"));
+}
+
+/** Le permanent arrive-t-il engagé (« This land enters tapped ») ? */
+export function entersTapped(data: CardData | undefined, faceIndex: number): boolean {
+  return staticsOfData(data, faceIndex).some((s) => s.kind === "entersTapped");
+}
+
+/** Taxe à payer pour chaque créature qui attaque ce joueur (Ghostly Prison, Propaganda…). */
+export function attackTaxPerCreature(g: GameState, defenderId: PlayerId): number {
+  let total = 0;
+  const mine = g.players[defenderId]!.zones.battlefield.map((id) => g.cards[id]!);
+  for (const card of mine) {
+    for (const s of staticsOf(g, card)) {
+      if (s.kind !== "attackTax") continue;
+      total += s.amount === "enchantments" ? mine.filter((c) => !c.faceDown && /\bEnchantment\b/.test(typeLineOf(g, c))).length : s.amount;
+    }
+  }
+  return total;
+}
+
+function typeLineOf(g: GameState, card: CardInstance): string {
+  const data = g.cardData[card.cardId];
+  return data?.faces?.[card.faceIndex]?.typeLine ?? data?.typeLine ?? "";
+}
+
+/** Pourquoi ce joueur ne peut pas lancer ce sort (Steel Golem, Moderation…), ou `null`. */
+export function castRestriction(g: GameState, playerId: PlayerId, typeLine: string, spellsThisTurn: number): string | null {
+  const type = typeLine.toLowerCase();
+  for (const id of g.players[playerId]!.zones.battlefield) {
+    const card = g.cards[id]!;
+    for (const s of staticsOf(g, card)) {
+      const name = g.cardData[card.cardId]?.name ?? "?";
+      if (s.kind === "cantCast" && s.types.some((t) => (t.startsWith("non") ? !type.includes(t.slice(3)) : new RegExp(`\\b${t}\\b`).test(type)))) {
+        return `${name} t'empêche de lancer ce sort.`;
+      }
+      if (s.kind === "oneSpellPerTurn" && spellsThisTurn >= 1) return `${name} : un seul sort par tour.`;
+    }
+  }
+  return null;
+}
+
+/** Un permanent empêche-t-il ce joueur de jouer des terrains (Aggressive Mining) ? */
+export function cantPlayLands(g: GameState, playerId: PlayerId): boolean {
+  return controls(g, playerId, "cantPlayLands");
 }
 
 /** Un adversaire du joueur l'empêche-t-il de gagner des points de vie ? */

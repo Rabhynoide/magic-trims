@@ -235,6 +235,8 @@ export interface PlayerState {
    * après ses mulligans (règle 103.5) : la partie n'avance pas avant.
    */
   mulliganBottom: number;
+  /** Sorts lancés ce tour (Moderation…). */
+  spellsCast?: { turn: number; count: number };
   /** Terrains joués ce tour (un seul par tour, règle 305.2). */
   landsPlayed: number;
   /** Réserve de mana ; elle se vide à la fin de chaque étape (règle 500.4). */
