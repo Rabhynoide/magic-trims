@@ -1,0 +1,15 @@
+{
+  "name": "magic-trims",
+  "private": true,
+  "description": "Table de jeu Magic: The Gathering Commander entre amis, jusqu'à 5 joueurs en ligne.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
