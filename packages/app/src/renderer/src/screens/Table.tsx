@@ -5,6 +5,7 @@ import {
   MANA_TYPES,
   RESPONSE_STEPS,
   STEP_LABELS,
+  abilitiesOf,
   permanentMatches,
   priorityStopsOf,
   spellMatches,
@@ -353,6 +354,36 @@ function targetProps(view: GameView, targeting: Targeting, card: CardView): Part
   return { selected, onSelect: () => ui.pickTarget({ kind: "card", id }) };
 }
 
+/**
+ * Une de mes capacités déclenchées attend ses cibles : on ouvre le choix des
+ * cibles tout seul (Annuler le rouvre au prochain changement de la partie).
+ */
+function useTriggerTargets(view: GameView): { waitingName: string | null; reopen: () => void } {
+  const waiting = view.stack.find(
+    (c): c is VisibleCardView => !c.hidden && Boolean(c.ability?.needsTargets) && c.controllerId === view.viewerId,
+  );
+  const asking = useRef<string | null>(null);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (!waiting?.instanceId || asking.current === waiting.instanceId) return;
+    const ability = waiting.ability!;
+    const specs = abilitiesOf(view.cardData[waiting.cardId], ability.faceIndex).triggers[ability.index]?.effects.targets ?? [];
+    if (specs.length === 0) return;
+    asking.current = waiting.instanceId;
+    const id = waiting.instanceId;
+    void ui.chooseTargets(`Capacité de ${ability.sourceName}`, id, specs).then((targets) => {
+      if (targets) void act({ type: "chooseTargets", cardId: id, targets });
+    });
+  }, [waiting?.instanceId, retry]);
+  return {
+    waitingName: waiting?.ability?.sourceName ?? null,
+    reopen: () => {
+      asking.current = null;
+      setRetry((n) => n + 1);
+    },
+  };
+}
+
 /** Bandeau du choix des cibles, avec Annuler (ou Échap). */
 function TargetingBanner() {
   const { targeting } = useUi();
@@ -405,11 +436,20 @@ export function Table() {
   const combatUi = useCombatUi(view, isActive);
   const winners = view.outcome.winners;
   const { targeting } = useUi();
+  const trigger = useTriggerTargets(view);
 
   return (
     <div className={`table ${targeting ? "targeting" : ""}`}>
       <div className="table-main">
         <TargetingBanner />
+        {trigger.waitingName && !targeting && (
+          <div className="targeting-banner" role="status">
+            <span>
+              La capacité de <strong>{trigger.waitingName}</strong> attend ses cibles : la partie ne peut pas continuer avant.
+            </span>
+            <button onClick={trigger.reopen}>Choisir les cibles</button>
+          </div>
+        )}
         <div className={`opponents opponents-${others.length}`}>
           {others.map((id) => (
             <PlayerArea key={id} view={view} playerId={id} compact onOpenZone={setZoneViewer} combat={combatUi} />

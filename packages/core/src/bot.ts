@@ -9,6 +9,8 @@
  */
 import type { GameAction } from "./actions.js";
 import { creatureStats, hasKeyword, isCreature } from "./combat.js";
+import { isLegalTarget, type Target } from "./effects.js";
+import { abilitiesOf } from "./triggers.js";
 import { areTeammates, isActivePlayer, teamOf } from "./modes.js";
 import { applyAction } from "./reducer.js";
 import { MAX_HAND_SIZE } from "./turn.js";
@@ -23,6 +25,19 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
   if (me.mulliganBottom > 0) {
     const sorted = [...me.zones.hand].sort((a, b) => manaValue(g, b) - manaValue(g, a));
     return { type: "bottomMulligan", cardIds: sorted.slice(0, me.mulliganBottom) };
+  }
+
+  // Ses capacités déclenchées qui attendent des cibles : un adversaire de préférence.
+  const waiting = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.needsTargets && c.controllerId === botId);
+  if (waiting) {
+    const specs = abilitiesOf(g.cardData[waiting.cardId], waiting.ability!.faceIndex).triggers[waiting.ability!.index]?.effects.targets ?? [];
+    const players = [...g.turnOrder].sort((a, b) => Number(areTeammates(g, a, botId) || a === botId) - Number(areTeammates(g, b, botId) || b === botId));
+    const candidates = [
+      ...players.map((id) => ({ kind: "player", id }) as Target),
+      ...g.turnOrder.flatMap((id) => g.players[id]!.zones.battlefield).map((id) => ({ kind: "card", id }) as Target),
+    ];
+    const targets = specs.map((spec) => candidates.find((t) => isLegalTarget(g, spec, t, botId, waiting.instanceId)));
+    if (targets.every((t) => t)) return { type: "chooseTargets", cardId: waiting.instanceId, targets: targets as Target[] };
   }
 
   // Le bot ne répond jamais : il passe la priorité (pile non vide, ou avant

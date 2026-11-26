@@ -9,6 +9,7 @@
  */
 import { COMBAT_KEYWORDS, hasKeyword } from "./combat.js";
 import { manaOptions } from "./mana.js";
+import { parsePermanentAbilities } from "./triggers.js";
 import { areTeammates } from "./modes.js";
 import type { CardData, CardInstance, GameState, PlayerId } from "./types.js";
 
@@ -25,6 +26,8 @@ export interface TargetSpec {
   spell?: SpellFilter;
   /** Un joueur peut être choisi. */
   player?: boolean;
+  /** Seulement un adversaire du lanceur. */
+  opponent?: boolean;
 }
 
 export interface PermanentFilter {
@@ -42,21 +45,30 @@ export interface SpellFilter {
 }
 
 /** Un nombre : fixe, ou X (choisi au lancement). */
-export type Amount = number | "X" | "-X";
+/**
+ * Un nombre : fixe, X (choisi au lancement), ou « that much » d'une capacité
+ * déclenchée (la quantité de l'événement : PV gagnés ou perdus).
+ */
+export type Amount = number | "X" | "-X" | "event" | "-event";
+
+/** Qui subit l'effet : « you », une cible, ou le joueur de l'événement déclencheur (« that player », « they »). */
+export type Who = "you" | "opponents" | "event" | { target: number };
 
 export type Effect =
-  | { type: "draw"; who: "you" | { target: number }; count: Amount }
+  | { type: "draw"; who: Who; count: Amount }
   | { type: "destroy"; target: number }
   | { type: "destroyAll"; filter: PermanentFilter }
   | { type: "exile"; target: number }
   | { type: "exileAll"; filter: PermanentFilter }
   | { type: "bounce"; target: number }
-  | { type: "damage"; target: number; amount: Amount }
+  | { type: "damage"; target: number | "event"; amount: Amount }
   | { type: "damageEach"; who: "opponents" | "players" | "creatures"; amount: Amount }
-  | { type: "life"; who: "you" | "opponents" | { target: number }; amount: Amount }
+  | { type: "life"; who: Who; amount: Amount }
   | { type: "token"; count: Amount; token: TokenSpec; tapped: boolean }
   | { type: "counter"; target: number }
-  | { type: "mana"; mana: string[] };
+  | { type: "mana"; mana: string[] }
+  /** Marqueurs sur la source de la capacité (« put a +1/+1 counter on ~ »). */
+  | { type: "counterSelf"; kind: string; count: number };
 
 export interface TokenSpec {
   power: string;
@@ -167,13 +179,59 @@ function permanentLabel(f: PermanentFilter): string {
   return label;
 }
 
+/** « target player », « target opponent ». */
+function playerTarget(text: string): TargetSpec {
+  return /opponent/i.test(text) ? { label: "adversaire", player: true, opponent: true } : { label: "joueur", player: true };
+}
+
+const neg = (a: Amount): Amount => (a === "X" ? "-X" : a === "event" ? "-event" : -(a as number));
+
+/**
+ * Phrases propres aux capacités déclenchées, qui parlent de l'événement
+ * (« they lose 2 life », « you gain that much life »…). `null` si la phrase
+ * n'en est pas une.
+ */
+function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number): Effect[] | null {
+  const much = (text: string): Amount => (/that much/i.test(text) ? "event" : amount(text));
+  const AMT = `(${NUM.slice(1, -1)}|that much)`;
+  let m: RegExpExecArray | null;
+  if ((m = new RegExp(`^(?:they|that player) loses? ${AMT} life and draws? ${NUM} cards?$`, "i").exec(s))) {
+    return [
+      { type: "life", who: "event", amount: neg(much(m[1]!)) },
+      { type: "draw", who: "event", count: amount(m[2]!) },
+    ];
+  }
+  if ((m = new RegExp(`^(?:they|that player) loses? ${AMT} life$`, "i").exec(s))) {
+    return [{ type: "life", who: "event", amount: neg(much(m[1]!)) }];
+  }
+  if ((m = new RegExp(`^that player draws ${NUM} (?:additional )?cards?$`, "i").exec(s))) {
+    return [{ type: "draw", who: "event", count: amount(m[1]!) }];
+  }
+  if ((m = new RegExp(`^~ deals ${NUM} damage to that player$`, "i").exec(s))) {
+    return [{ type: "damage", target: "event", amount: amount(m[1]!) }];
+  }
+  if ((m = new RegExp(`^you gain ${AMT} life$`, "i").exec(s))) {
+    return [{ type: "life", who: "you", amount: much(m[1]!) }];
+  }
+  if ((m = new RegExp(`^(target player|target opponent|each opponent) loses ${AMT} life(?: and you gain ${AMT} life)?$`, "i").exec(s))) {
+    const who: Who = /each/i.test(m[1]!) ? "opponents" : { target: target(playerTarget(m[1]!)) };
+    const effects: Effect[] = [{ type: "life", who, amount: neg(much(m[2]!)) }];
+    if (m[3]) effects.push({ type: "life", who: "you", amount: much(m[3]) });
+    return effects;
+  }
+  if ((m = new RegExp(`^put ${NUM} (\\+1/\\+1|-1/-1) counters? on ~$`, "i").exec(s))) {
+    return [{ type: "counterSelf", kind: m[2]!, count: amount(m[1]!) as number }];
+  }
+  return null;
+}
+
 /** Cibles de blessures : « any target », « target creature or planeswalker »… */
 function damageTarget(text: string): TargetSpec | null {
   const t = text.toLowerCase();
   if (t === "any target") {
     return { label: "n'importe quelle cible", player: true, permanent: { types: ["creature", "planeswalker", "battle"], notTypes: [] } };
   }
-  if (t === "target player" || t === "target opponent") return { label: t === "target player" ? "joueur" : "adversaire", player: true };
+  if (t === "target player" || t === "target opponent") return playerTarget(t);
   if (t === "target player or planeswalker" || t === "target opponent or planeswalker") {
     return { label: "joueur ou planeswalker", player: true, permanent: { types: ["planeswalker"], notTypes: [] } };
   }
@@ -206,7 +264,8 @@ export function parseSpellEffects(oracleText: string, cardName: string): SpellEf
   const result: SpellEffects = { targets: [], effects: [], unknown: [] };
   const target = (spec: TargetSpec) => result.targets.push(spec) - 1;
   // Texte de rappel entre parenthèses, nom de la carte remplacé par « ~ ».
-  const names = [cardName, ...cardName.split(" // ")].filter(Boolean);
+  // Nom complet, faces d'une carte double, et nom court d'un légendaire (« Vito » pour « Vito, Thorn of the Dusk Rose »).
+  const names = [cardName, ...cardName.split(" // "), cardName.split(",")[0]!].filter(Boolean);
   let text = oracleText.replace(/\([^)]*\)/g, "");
   for (const n of names) text = text.split(n).join("~");
   const sentences = text
@@ -222,6 +281,11 @@ export function parseSpellEffects(oracleText: string, cardName: string): SpellEf
     if (HARMLESS.some((re) => re.test(sentence))) continue;
     let m: RegExpExecArray | null;
 
+    const triggered = parseTriggerSentence(s, target);
+    if (triggered) {
+      result.effects.push(...triggered);
+      continue;
+    }
     if ((m = new RegExp(`^(you |target player )?draws? ${NUM} cards? and (?:you )?loses? ${NUM} life$`, "i").exec(s))) {
       // « You draw two cards and you lose 2 life. », « Target player draws X cards and loses X life. »
       const targeted = /target/i.test(m[1] ?? "");
@@ -283,7 +347,7 @@ export function parseSpellEffects(oracleText: string, cardName: string): SpellEf
       result.effects.push({ type: "life", who: "opponents", amount: n === "X" ? "-X" : -(n as number) });
     } else if ((m = new RegExp(`^target (player|opponent) (gains|loses) ${NUM} life$`, "i").exec(s))) {
       const n = amount(m[3]!);
-      const t = target({ label: m[1]!.toLowerCase() === "player" ? "joueur" : "adversaire", player: true });
+      const t = target(playerTarget(m[1]!));
       const loses = m[2]!.toLowerCase() === "loses";
       result.effects.push({ type: "life", who: { target: t }, amount: loses ? (n === "X" ? "-X" : -(n as number)) : n });
     } else if ((m = new RegExp(`^create ${NUM} (tapped )?(.+)$`, "i").exec(s))) {
@@ -393,7 +457,8 @@ export function matchesPermanent(g: GameState, card: CardInstance, filter: Perma
 export function isLegalTarget(g: GameState, spec: TargetSpec, target: Target, casterId: PlayerId, sourceId?: string): boolean {
   if (target.kind === "player") {
     const p = g.players[target.id];
-    return !!spec.player && !!p && !p.hasConceded;
+    if (!spec.player || !p || p.hasConceded) return false;
+    return !spec.opponent || (p.id !== casterId && !areTeammates(g, p.id, casterId));
   }
   const card = g.cards[target.id];
   if (!card || card.instanceId === sourceId) return false;
@@ -406,7 +471,7 @@ export function isLegalTarget(g: GameState, spec: TargetSpec, target: Target, ca
     return true;
   }
   if (card.zone === "stack") {
-    if (!spec.spell) return false;
+    if (!spec.spell || card.ability) return false;
     return spellMatches(faceData(g, card).typeLine, spec.spell);
   }
   return false;
@@ -423,9 +488,11 @@ export function spellEffectsOf(g: GameState, card: CardInstance, faceIndex = car
 }
 
 /** Valeur d'un nombre d'effet, avec la valeur de X choisie au lancement. */
-export function resolveAmount(a: Amount, x: number): number {
+export function resolveAmount(a: Amount, x: number, eventAmount = 0): number {
   if (a === "X") return x;
   if (a === "-X") return -x;
+  if (a === "event") return eventAmount;
+  if (a === "-event") return -eventAmount;
   return a;
 }
 
@@ -446,6 +513,7 @@ function faceSupport(typeLine: string, oracleText: string, name: string): { know
   }
   let known = 0;
   const unknown: string[] = [];
+  const triggers = new Set(parsePermanentAbilities(oracleText, name).triggers.map((t) => t.text));
   for (const raw of oracleText.split("\n")) {
     const line = raw.replace(/\([^)]*\)/g, "").trim();
     if (!line) continue;
@@ -455,6 +523,10 @@ function faceSupport(typeLine: string, oracleText: string, name: string): { know
       continue;
     }
     if (/^\{T\}: Add /.test(line) && manaOptions(typeLine, line).length > 0) {
+      known++;
+      continue;
+    }
+    if (triggers.has(line)) {
       known++;
       continue;
     }

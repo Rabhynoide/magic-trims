@@ -15,6 +15,7 @@ export * from "./turn.js";
 export * from "./mana.js";
 export * from "./combat.js";
 export * from "./effects.js";
+export * from "./triggers.js";
 export * from "./bot.js";
 export * from "./view.js";
 export * from "./rng.js";

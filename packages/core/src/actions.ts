@@ -66,6 +66,8 @@ export type GameAction =
    * scindées ou modales), `x` : la valeur de X.
    */
   | { type: "castSpell"; cardId: CardInstanceId; face?: number; x?: number; targets?: Target[] }
+  /** Choisit les cibles d'une capacité déclenchée qu'on contrôle, sur la pile. */
+  | { type: "chooseTargets"; cardId: CardInstanceId; targets: Target[] }
   /** Déclare les attaquants (étape des attaquants), chacun vers un joueur adverse. Une liste vide : pas d'attaque. */
   | { type: "declareAttackers"; attackers: { cardId: CardInstanceId; defender: PlayerId }[] }
   /** Déclare ses bloqueurs (étape des bloqueurs), chacun contre un attaquant. Une liste vide : pas de blocage. */

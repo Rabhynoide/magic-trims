@@ -63,6 +63,11 @@ export function Card(props: {
         <div className="card-back">{card.hidden ? "" : name}</div>
       )}
       {card.faceDown && !card.hidden && <span className="card-flag">face cachée</span>}
+      {!card.hidden && card.ability && (
+        <span className="card-flag" title={card.ability.text}>
+          capacité{card.ability.needsTargets ? " · cible ?" : ""}
+        </span>
+      )}
       {(() => {
         const data = card.faceDown ? undefined : cardData(view, card);
         const support = data && supportOf(data);

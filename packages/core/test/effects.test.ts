@@ -107,8 +107,7 @@ describe("Lecture des effets", () => {
         oracleText: "Deathtouch\nWhenever you draw a card, you gain 2 life.\nWhenever an opponent draws a card, they lose 2 life.",
       }),
     );
-    expect(sheoldred.level).toBe("partial");
-    expect(sheoldred.unknown).toHaveLength(2);
+    expect(sheoldred).toEqual({ level: "full", unknown: [] });
     expect(cardSupport(spell("Village Rites", "As an additional cost to cast this spell, sacrifice a creature.\nDraw two cards.")).level).toBe(
       "partial",
     );
