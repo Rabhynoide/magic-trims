@@ -1302,3 +1302,12 @@ textarea:focus {
   color: var(--text-dim);
   font-style: italic;
 }
+
+/* Symboles de mana dans le texte (encart des capacités). */
+.mana-symbol {
+  display: inline-block;
+  width: 1.05em;
+  height: 1.05em;
+  vertical-align: -0.18em;
+  margin: 0 1px;
+}

@@ -1,5 +1,6 @@
 import { abilityReport, type AbilityReportItem, type CardView, type GameView, type VisibleCardView } from "@magic-trims/core";
 import { cardData } from "../cards";
+import { ManaText } from "./ManaText";
 
 const ICONS: Record<AbilityReportItem["status"], { icon: string; label: string }> = {
   auto: { icon: "✓", label: "automatique" },
@@ -54,10 +55,12 @@ export function AbilityPanel(props: { view: GameView; card: CardView; className?
               <span className="ability-status">{ICONS[status].label}</span>
             </div>
             <div className="ability-text" title={keyword ? undefined : item.text}>
-              {keyword ? item.text : translate(item.text)}
+              <ManaText text={keyword ? item.text : translate(item.text)} />
             </div>
             {!rulesOff && item.manual && item.manual.length > 0 && (
-              <div className="ability-manual">À la main : {item.manual.join(" ")}</div>
+              <div className="ability-manual">
+                À la main : <ManaText text={item.manual.join(" ")} />
+              </div>
             )}
           </div>
         );
