@@ -10,7 +10,7 @@ export function Card(props: {
   card: CardView;
   size?: "tiny" | "small" | "medium";
   onMenu?: (e: React.MouseEvent) => void;
-  onDoubleClick?: () => void;
+  onDoubleClick?: (e: React.MouseEvent) => void;
   draggable?: boolean;
   attachments?: CardView[];
   /** Mode sélection (par exemple pour un mulligan) : un clic choisit la carte. */

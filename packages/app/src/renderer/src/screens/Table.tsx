@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
   GAME_MODES,
+  MANA_LABELS,
+  MANA_TYPES,
   STEP_LABELS,
   TURN_PHASES,
   starEnemies,
@@ -17,10 +19,10 @@ import { Card, DRAG_TYPE } from "../components/Card";
 import { Chat } from "../components/Chat";
 import { Modal } from "../components/Modal";
 import { Overlays } from "../components/Overlays";
-import { cardData, cardImage, cardName, cardText, isLand } from "../cards";
+import { cardData, cardImage, cardManaOptions, cardName, cardText, isLand, manaSymbolUrl } from "../cards";
 import { CardLanguageSelect } from "../components/CardLanguage";
 import { CardZoom } from "../components/CardZoom";
-import { cardMenu, libraryMenu } from "../menus";
+import { cardMenu, libraryMenu, manaItems } from "../menus";
 import { session, useSession } from "../session";
 import { ui, useUi } from "../ui-store";
 
@@ -83,6 +85,19 @@ function findCard(view: GameView, id: string): CardView | undefined {
     }
   }
   return [...view.stack, ...view.plane].find((c) => c.instanceId === id);
+}
+
+/**
+ * Double-clic sur un permanent : s'il produit du mana et qu'il est dégagé, on
+ * l'engage pour son mana (avec un menu s'il y a un choix) ; sinon on
+ * l'engage ou le dégage simplement.
+ */
+function tapOrProduce(e: React.MouseEvent, view: GameView, card: CardView) {
+  const id = card.instanceId!;
+  const options = card.tapped || card.controllerId !== view.viewerId ? [] : cardManaOptions(view, card);
+  if (options.length === 1) return void act({ type: "tapForMana", cardId: id });
+  if (options.length > 1) return ui.openMenu(e.clientX, e.clientY, manaItems(view, card));
+  void act({ type: "setTapped", cardIds: [id], tapped: !card.tapped });
 }
 
 function openCardMenu(e: React.MouseEvent, view: GameView, card: CardView) {
@@ -174,7 +189,7 @@ function PlayerArea(props: {
       draggable
       attachments={attachmentsOf(c.instanceId)}
       onMenu={(e) => openCardMenu(e, view, c)}
-      onDoubleClick={() => c.instanceId && void act({ type: "setTapped", cardIds: [c.instanceId], tapped: !c.tapped })}
+      onDoubleClick={(e) => c.instanceId && tapOrProduce(e, view, c)}
     />
   );
 
@@ -199,6 +214,7 @@ function PlayerArea(props: {
           value={p.poison}
           onChange={(delta) => void act({ type: "adjustPoison", playerId, delta })}
         />
+        <ManaPoolView view={view} playerId={playerId} />
         {Object.entries(p.counters).map(([kind, n]) => (
           <Stepper
             key={kind}
@@ -309,6 +325,39 @@ function PlayerTags(props: { view: GameView; playerId: PlayerId }) {
         </span>
       ))}
     </>
+  );
+}
+
+/**
+ * Réserve de mana. La sienne : clic pour ajouter, clic droit pour dépenser.
+ * Celle des autres : seulement le mana présent.
+ */
+function ManaPoolView(props: { view: GameView; playerId: PlayerId }) {
+  const { view, playerId } = props;
+  const pool = view.players[playerId]!.manaPool;
+  if (!pool) return null;
+  const isMe = playerId === view.viewerId;
+  const shown = MANA_TYPES.filter((m) => isMe || pool[m] > 0);
+  if (shown.length === 0) return null;
+  return (
+    <span className="mana-pool" title={isMe ? "Réserve de mana : clic pour ajouter, clic droit pour dépenser" : "Réserve de mana"}>
+      {shown.map((m) => (
+        <button
+          key={m}
+          className={`mana ${pool[m] > 0 ? "has" : ""}`}
+          disabled={!isMe}
+          aria-label={`Mana ${MANA_LABELS[m]} : ${pool[m]}`}
+          onClick={(e) => void act({ type: "adjustMana", mana: m, delta: e.shiftKey ? 5 : 1 })}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            if (pool[m] > 0) void act({ type: "adjustMana", mana: m, delta: -1 });
+          }}
+        >
+          <img src={manaSymbolUrl(m)} alt={m} />
+          {pool[m] > 0 && <span className="mana-count">{pool[m]}</span>}
+        </button>
+      ))}
+    </span>
   );
 }
 

@@ -5,6 +5,7 @@
  * envoyé sur le réseau, sauvegardé sur disque et rejoué.
  */
 
+import type { ManaPool } from "./mana.js";
 import type { TurnStep } from "./turn.js";
 
 /** Données d'une carte, issues de Scryfall (sous-ensemble utile au jeu). */
@@ -175,6 +176,8 @@ export interface PlayerState {
    * après ses mulligans (règle 103.5) : la partie n'avance pas avant.
    */
   mulliganBottom: number;
+  /** Réserve de mana ; elle se vide à la fin de chaque étape (règle 500.4). */
+  manaPool: ManaPool;
   hasConceded: boolean;
 }
 
