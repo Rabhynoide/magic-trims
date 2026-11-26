@@ -9,7 +9,7 @@ Projet privé, entre amis. Les données et images des cartes viennent de [Scryfa
 1. **Fondations et decks** : modèle de partie, système d'actions, import Moxfield + Scryfall. *(fait)*
 2. **Multijoueur** : chaque joueur peut héberger la partie depuis l'appli, sans serveur à payer. *(fait)*
 3. **Table virtuelle jouable (v1)** : interface, glisser-déposer, installateur Windows. *(fait)*
-4. **Moteur de règles** : tours et phases, mana, pile, puis effets des cartes courantes, petit à petit. *(en cours : tours et phases, priorité et pile, réserve de mana faits)* Le mode manuel reste toujours disponible pour ce que le moteur ne gère pas.
+4. **Moteur de règles** : tours et phases, mana, pile, puis effets des cartes courantes, petit à petit. *(en cours : tours et phases, priorité et pile, mana, terrains et sorts faits)* Le mode manuel reste toujours disponible pour ce que le moteur ne gère pas.
 
 ## Modes de jeu
 
@@ -53,6 +53,7 @@ L'installateur est aussi fabriqué automatiquement par GitHub Actions à chaque 
   - glisser-déposer les cartes entre la main, le champ de bataille, le cimetière, l'exil, la bibliothèque, la zone de commandement et la pile ; déposer une carte sur le champ de bataille d'un autre joueur lui en donne le contrôle ;
   - **survol** : la carte s'agrandit à côté du curseur après une demi-seconde (et dans le panneau de droite) ;
   - **double-clic** : engager / dégager (sur le champ de bataille), jouer la carte (dans la main) ;
+  - **jouer avec les règles** : double-clic sur une carte de ta main (ou sur ton commandant) pour **jouer le terrain** (un par tour, pendant ta phase principale) ou **lancer le sort**. Le coût est payé avec ta réserve, et le moteur engage tout seul les terrains qui manquent (en gardant de préférence les terrains polyvalents). Il vérifie le moment (rituel pendant ta phase principale pile vide, éphémère ou flash quand tu as la priorité), ajoute la taxe de commandant et demande la valeur de X. Pour une carte scindée ou modale, un menu propose chaque face. Le glisser-déposer reste libre pour tout ce que le moteur ne gère pas ;
   - **clic droit** sur une carte : marqueurs, face cachée, transformer, déplacer, donner le contrôle, révéler ;
   - **clic sur la bibliothèque** : piocher, mélanger, regarder ou révéler le dessus, meuler, exiler ;
   - points de vie, poison et blessures de commandant avec les boutons − / + (Maj+clic : ±5) ;

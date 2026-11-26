@@ -47,6 +47,18 @@ export type GameAction =
    * `manaOptions` quand la carte peut produire plusieurs sortes de mana.
    */
   | { type: "tapForMana"; cardId: CardInstanceId; choice?: number }
+  /**
+   * Joue un terrain depuis la main (un par tour, pendant sa phase principale,
+   * pile vide). `face` : 1 pour jouer le verso d'une carte modale.
+   */
+  | { type: "playLand"; cardId: CardInstanceId; face?: number }
+  /**
+   * Lance un sort depuis la main (ou son commandant depuis la zone de
+   * commandement) en payant son coût avec la réserve ; les terrains qui
+   * manquent sont engagés automatiquement. `face` : la moitié lancée (cartes
+   * scindées ou modales), `x` : la valeur de X.
+   */
+  | { type: "castSpell"; cardId: CardInstanceId; face?: number; x?: number }
   /** Ajoute (ou retire, si négatif) du mana dans la réserve de l'acteur, à la main. */
   | { type: "adjustMana"; mana: ManaType; delta: number }
   | { type: "setFaceDown"; cardId: CardInstanceId; faceDown: boolean }

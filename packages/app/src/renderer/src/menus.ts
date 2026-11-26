@@ -1,5 +1,5 @@
 import type { CardView, GameView, PlayerId, VisibleCardView, Zone } from "@magic-trims/core";
-import { formatMana } from "@magic-trims/core";
+import { formatMana, hasX } from "@magic-trims/core";
 import { cardData, cardManaOptions } from "./cards";
 import { session } from "./session";
 import { ui, type MenuItem } from "./ui-store";
@@ -104,6 +104,11 @@ export function cardMenu(view: GameView, card: CardView): MenuItem[] {
     items.push({ separator: true, label: "" });
   }
 
+  if ((zone === "hand" || (zone === "command" && (card as VisibleCardView).isCommander)) && card.ownerId === me) {
+    const play = playItems(view, card);
+    if (play.length > 0) items.push(...play, { separator: true, label: "" });
+  }
+
   if (zone === "hand" && card.ownerId === me) {
     items.push(
       {
@@ -168,4 +173,42 @@ export function manaItems(view: GameView, card: CardView): MenuItem[] {
     label: `Engager pour ${formatMana(mana)}`,
     onClick: () => void act({ type: "tapForMana", cardId: id, ...(options.length > 1 ? { choice: i } : {}) }),
   }));
+}
+
+/**
+ * Jouer la carte avec les règles : « Jouer » pour un terrain, « Lancer » pour
+ * un sort (une entrée par face jouable d'une carte scindée ou modale).
+ */
+export function playItems(view: GameView, card: CardView): MenuItem[] {
+  const id = card.instanceId;
+  const data = cardData(view, card);
+  if (!id || !data) return [];
+  const faces = data.faces && data.faces.length > 1 ? data.faces : null;
+  const entries = (faces ?? [{ name: data.name, typeLine: data.typeLine, manaCost: data.manaCost }]).map((f, i) => ({
+    face: faces ? i : undefined,
+    name: f.name,
+    typeLine: f.typeLine,
+    manaCost: f.manaCost || (faces ? "" : data.manaCost),
+  }));
+  // Les dos des cartes à transformer ne se lancent pas : seulement les faces avec un coût, ou des terrains.
+  return entries
+    .filter((f, i) => i === 0 || f.manaCost || /\bLand\b/.test(f.typeLine))
+    .map((f) => {
+      const face = f.face !== undefined ? { face: f.face } : {};
+      if (/\bLand\b/.test(f.typeLine)) {
+        return { label: `Jouer ${f.name}`, onClick: () => void act({ type: "playLand", cardId: id, ...face }) };
+      }
+      return {
+        label: `Lancer ${f.name}${f.manaCost ? ` ${f.manaCost}` : ""}`,
+        onClick: async () => {
+          let x: number | undefined;
+          if (hasX(f.manaCost)) {
+            const value = await ui.ask("Valeur de X", "1", "number");
+            if (value === null) return;
+            x = Math.max(0, Math.floor(Number(value) || 0));
+          }
+          void act({ type: "castSpell", cardId: id, ...face, ...(x !== undefined ? { x } : {}) });
+        },
+      };
+    });
 }

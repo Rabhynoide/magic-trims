@@ -1,7 +1,17 @@
 import type { ActionEnvelope, GameAction } from "./actions.js";
 import { nextRandom, shuffleInPlace } from "./rng.js";
 import { isActivePlayer, lifeSharers, areTeammates, teamOf } from "./modes.js";
-import { MANA_LABELS, emptyPool, formatMana, isManaType, manaOptions } from "./mana.js";
+import {
+  MANA_LABELS,
+  emptyPool,
+  formatMana,
+  isManaType,
+  manaOptions,
+  parseManaCost,
+  payFromPool,
+  type ManaNeed,
+  type ManaType,
+} from "./mana.js";
 import { MAX_HAND_SIZE, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
 import {
   HIDDEN_ORDERED_ZONES,
@@ -164,14 +174,71 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     if (options.length === 0) {
       throw new ActionError(`Le moteur ne sait pas quel mana produit ${cardName(g, card)} : ajoute-le à la main.`);
     }
-    const index = choice ?? 0;
     if (options.length > 1 && choice === undefined) throw new ActionError("Choisis le mana à produire.");
-    const mana = options[index];
-    if (!mana) throw new ActionError("Choix de mana invalide.");
-    card.tapped = true;
-    const pool = g.players[card.controllerId]!.manaPool;
-    for (const m of mana) pool[m] += 1;
-    log(g, actor.id, `${actor.name} engage ${cardName(g, card)} pour ${formatMana(mana)}.`);
+    tapForMana(g, actor, card, choice ?? 0);
+  },
+
+  playLand(g, actor, { cardId, face }) {
+    const card = getCard(g, cardId);
+    if (card.ownerId !== actor.id || card.zone !== "hand") throw new ActionError("Joue un terrain de ta main.");
+    const faceIndex = face ?? 0;
+    if (!/\bLand\b/.test(faceTypeLine(g, card, faceIndex))) throw new ActionError(`${cardName(g, card)} n'est pas un terrain.`);
+    assertSorceryTiming(g, actor, "jouer un terrain");
+    if (actor.landsPlayed >= 1) throw new ActionError("Tu as déjà joué un terrain ce tour.");
+    const played = moveCardTo(g, cardId, "battlefield", "top");
+    played.faceIndex = faceIndex;
+    actor.landsPlayed += 1;
+    log(g, actor.id, `${actor.name} joue ${cardName(g, played)}.`);
+  },
+
+  castSpell(g, actor, { cardId, face, x }) {
+    const card = getCard(g, cardId);
+    const fromCommand = card.zone === "command" && card.isCommander;
+    if (card.ownerId !== actor.id || (card.zone !== "hand" && !fromCommand)) {
+      throw new ActionError("Lance un sort de ta main ou ton commandant depuis la zone de commandement.");
+    }
+    const faceIndex = face ?? 0;
+    const data = g.cardData[card.cardId]!;
+    const faceData = data.faces?.[faceIndex];
+    if (face !== undefined && !faceData) throw new ActionError("Cette carte n'a pas cette face.");
+    const typeLine = faceData?.typeLine ?? data.typeLine;
+    if (/\bLand\b/.test(typeLine)) throw new ActionError("Un terrain se joue, il ne se lance pas.");
+    const fast = /\bInstant\b/.test(typeLine) || data.keywords.includes("Flash");
+    if (fast) {
+      if (g.priority && !samePriorityUnit(g, g.priority.playerId, actor.id)) {
+        throw new ActionError(`Attends d'avoir la priorité (c'est à ${g.players[g.priority.playerId]!.name}).`);
+      }
+    } else {
+      assertSorceryTiming(g, actor, "lancer ce sort");
+    }
+    const xValue = x ?? 0;
+    if (!Number.isInteger(xValue) || xValue < 0 || xValue > 100) throw new ActionError("Valeur de X invalide.");
+    const costText = faceData?.manaCost || data.manaCost;
+    const cost = parseManaCost(costText);
+    const tax = fromCommand ? 2 * (actor.commanderCasts[card.instanceId] ?? 0) : 0;
+    const name = cardName(g, card);
+
+    // Paie avec la réserve, en engageant des sources de mana quand il en manque.
+    let payment = payFromPool(actor.manaPool, cost, xValue, tax);
+    while (!payment.ok) {
+      const source = findManaSource(g, actor, payment.need, card.instanceId);
+      if (!source) {
+        const missing = payment.need.kind === "color" ? payment.need.options.map((m) => `{${m}}`).join(" ou ") : "du mana";
+        throw new ActionError(`Pas assez de mana pour lancer ${name} : il manque ${missing}.`);
+      }
+      tapForMana(g, actor, source.card, source.choice);
+      payment = payFromPool(actor.manaPool, cost, xValue, tax);
+    }
+    actor.manaPool = payment.pool;
+    if (payment.life > 0) actor.life -= payment.life;
+
+    const cast = moveCardTo(g, cardId, "stack", "top");
+    cast.faceIndex = faceIndex;
+    const paid = [payment.spent.length > 0 ? formatMana(payment.spent) : "rien", payment.life > 0 ? `${payment.life} PV` : ""]
+      .filter(Boolean)
+      .join(" et ");
+    const details = [x !== undefined ? `X = ${xValue}` : "", tax > 0 ? `taxe de commandant {${tax}}` : ""].filter(Boolean).join(", ");
+    log(g, actor.id, `${actor.name} lance ${cardName(g, cast)}${details ? ` (${details})` : ""} en payant ${paid}.`);
   },
 
   adjustMana(g, actor, { mana, delta }) {
@@ -734,6 +801,59 @@ function resolveTop(g: GameState): void {
   }
 }
 
+function tapForMana(g: GameState, actor: PlayerState, card: CardInstance, choice: number): void {
+  const mana = cardManaOptions(g, card)[choice];
+  if (!mana) throw new ActionError("Choix de mana invalide.");
+  card.tapped = true;
+  const pool = g.players[card.controllerId]!.manaPool;
+  for (const m of mana) pool[m] += 1;
+  log(g, actor.id, `${actor.name} engage ${cardName(g, card)} pour ${formatMana(mana)}.`);
+}
+
+/**
+ * Choisit un permanent dégagé à engager pour couvrir un manque de mana : de
+ * préférence un terrain, et la source la moins polyvalente (pour garder les
+ * terrains qui donnent plusieurs couleurs pour plus tard).
+ */
+function findManaSource(
+  g: GameState,
+  actor: PlayerState,
+  need: ManaNeed,
+  exclude: CardInstanceId,
+): { card: CardInstance; choice: number } | null {
+  let best: { card: CardInstance; choice: number; score: number } | null = null;
+  for (const id of actor.zones.battlefield) {
+    const card = g.cards[id]!;
+    if (card.tapped || id === exclude || card.controllerId !== actor.id) continue;
+    const options = cardManaOptions(g, card);
+    options.forEach((mana, choice) => {
+      const fits = need.kind === "any" || mana.some((m: ManaType) => need.options.includes(m));
+      if (!fits) return;
+      const isLandCard = /\bLand\b/.test(faceTypeLine(g, card, card.faceIndex));
+      // Pour le générique : l'incolore d'abord.
+      const colorless = need.kind === "any" && mana.every((m) => m === "C");
+      const score = options.length * 10 + (isLandCard ? 0 : 5) + (colorless ? 0 : 1);
+      if (!best || score < best.score) best = { card, choice, score };
+    });
+  }
+  return best;
+}
+
+/** Vitesse de rituel : son propre tour, phase principale, pile vide. */
+function assertSorceryTiming(g: GameState, actor: PlayerState, what: string): void {
+  if (!isActivePlayer(g, actor.id)) throw new ActionError(`Tu ne peux ${what} que pendant ton tour.`);
+  if (g.turn.step !== "main1" && g.turn.step !== "main2") {
+    throw new ActionError(`Tu ne peux ${what} que pendant une phase principale.`);
+  }
+  if (g.stack.length > 0) throw new ActionError(`Tu ne peux ${what} que quand la pile est vide.`);
+}
+
+function faceTypeLine(g: GameState, card: CardInstance, faceIndex: number): string {
+  const data = g.cardData[card.cardId];
+  if (!data) return "";
+  return data.faces?.[faceIndex]?.typeLine ?? data.typeLine;
+}
+
 /** Mana que la carte (sur sa face visible) peut produire en s'engageant. */
 export function cardManaOptions(g: GameState, card: CardInstance) {
   const data = g.cardData[card.cardId];
@@ -774,6 +894,7 @@ function startTurn(g: GameState, playerId: PlayerId): void {
   g.turn.number += 1;
   g.turn.activePlayerId = playerId;
   g.turn.planarDieRolls = 0;
+  for (const p of Object.values(g.players)) p.landsPlayed = 0;
   log(g, null, `Tour ${g.turn.number} : c'est à ${activeNames(g)}.`);
   enterStep(g, "untap");
   enterStep(g, "upkeep");
