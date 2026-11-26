@@ -6,6 +6,7 @@ export * from "./modes.js";
 export * from "./turn.js";
 export * from "./mana.js";
 export * from "./combat.js";
+export * from "./bot.js";
 export * from "./view.js";
 export * from "./rng.js";
 export * from "./deck/parse.js";

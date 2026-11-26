@@ -138,6 +138,7 @@ export async function startHostServer(options: HostServerOptions = {}): Promise<
     upnp,
     async close() {
       clearInterval(heartbeat);
+      host.stopBots();
       for (const socket of wss.clients) socket.close(1001, "Fin de la partie");
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve) => http.close(() => resolve()));

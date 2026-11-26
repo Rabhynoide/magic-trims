@@ -120,6 +120,7 @@ export function Lobby() {
                 <div className="player-line">
                   <strong>{p.name}</strong>
                   {p.isHost && <span className="badge">hôte</span>}
+                  {p.isBot && <span className="badge">bot</span>}
                   {p.id === s.playerId && <span className="badge badge-me">toi</span>}
                   {!p.connected && <span className="badge badge-warn">déconnecté</span>}
                   {s.isHost && !p.isHost && (
@@ -163,6 +164,28 @@ export function Lobby() {
               </li>
             ))}
           </ul>
+
+          {s.isHost && lobby.players.length < lobby.maxPlayers && (
+            <div className="row">
+              <select
+                value=""
+                aria-label="Ajouter un bot"
+                onChange={(e) => {
+                  const deck = decks.find((d) => d.id === e.target.value);
+                  if (deck) session.client?.addBot(deck.deck);
+                }}
+              >
+                <option value="" disabled>
+                  Ajouter un bot avec le deck…
+                </option>
+                {decks.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <h3>Mon deck</h3>
           <div className="row">

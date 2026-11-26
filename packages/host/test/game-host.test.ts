@@ -207,3 +207,36 @@ describe("partie", () => {
     expect(guest.last("state").view.version).toBe(0);
   });
 });
+
+describe("bots", () => {
+  it("l'hôte ajoute un bot qui joue son tour tout seul", () => {
+    const host = new GameHost({ hostKey: "secret", seed: 3, botDelayMs: null });
+    const alice = new Conn(host, "a");
+    alice.hello("Alice", { hostKey: "secret" });
+    alice.send({ type: "setDeck", deck: fakeDeck("Alice") });
+    alice.send({ type: "addBot", deck: fakeDeck("Bot") });
+    const lobby = alice.last("lobby").lobby;
+    expect(lobby.players.map((p) => [p.name, p.isBot ?? false, p.connected])).toEqual([
+      ["Alice", false, true],
+      ["Bot", true, true],
+    ]);
+    alice.send({ type: "start" });
+    const game = host.state!;
+    const botId = lobby.players[1]!.id;
+    const aliceId = lobby.players[0]!.id;
+    // Si Alice commence, elle finit son tour : c'est alors au bot.
+    if (game.turn.activePlayerId === aliceId) alice.send({ type: "action", action: { type: "passTurn" } });
+    expect(host.state!.turn.activePlayerId).toBe(botId);
+    let steps = 0;
+    while (host.stepBots() && steps < 100) steps++;
+    expect(steps).toBeGreaterThan(0);
+    expect(host.state!.turn.activePlayerId).toBe(aliceId);
+    expect(alice.last("state").view.turn.activePlayerId).toBe(aliceId);
+  });
+
+  it("un joueur qui n'est pas l'hôte ne peut pas ajouter de bot", () => {
+    const { conns } = setup(2);
+    conns[1]!.send({ type: "addBot", deck: fakeDeck("Bot") });
+    expect(conns[1]!.last("error").message).toMatch(/Seul l'hôte/);
+  });
+});

@@ -1,7 +1,9 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   applyAction,
+  chooseBotAction,
   createGame,
+  evaluateOutcome,
   formatForMode,
   GAME_MODES,
   isDeckLegal,
@@ -35,6 +37,8 @@ interface HostedPlayer {
   deck: ResolvedDeck | null;
   schemes: CardData[];
   connId: string | null;
+  /** Joueur tenu par l'ordinateur (pas de connexion). */
+  isBot?: boolean;
 }
 
 /** Tout ce qu'il faut pour reprendre une partie (sauvegarde sur disque). */
@@ -58,6 +62,8 @@ export interface GameHostOptions {
   seed?: number;
   /** Appelé après chaque changement à sauvegarder. */
   onChange?: (snapshot: HostSnapshot) => void;
+  /** Délai entre deux actions d'un bot, en millisecondes (800 par défaut ; `null` : pas de bots automatiques, pour les tests). */
+  botDelayMs?: number | null;
 }
 
 type Send = (msg: ServerMessage) => void;
@@ -79,6 +85,7 @@ export class GameHost {
   private readonly connections = new Map<string, { send: Send; playerId: PlayerId | null }>();
   /** Cartes dont les données ont déjà été envoyées, par joueur. */
   private readonly sentCards = new Map<PlayerId, Set<string>>();
+  private botTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly options: GameHostOptions) {
     this.hostKey = options.hostKey;
@@ -92,6 +99,7 @@ export class GameHost {
     host.config = snapshot.config;
     host.planarDeck = snapshot.planarDeck;
     host.game = snapshot.game ? upgradeGame(snapshot.game) : snapshot.game;
+    host.scheduleBots();
     return host;
   }
 
@@ -152,6 +160,8 @@ export class GameHost {
           return this.start(player);
         case "kick":
           return this.kick(player, msg.playerId);
+        case "addBot":
+          return this.addBot(player, msg.deck);
         case "chat":
           return this.chat(player, msg.text);
         case "action":
@@ -277,6 +287,62 @@ export class GameHost {
     this.broadcastLobby();
     this.broadcastState();
     this.changed();
+    this.scheduleBots();
+  }
+
+  private addBot(player: HostedPlayer, deck: ResolvedDeck): void {
+    this.assertHost(player);
+    this.assertLobby();
+    if (!isDeck(deck)) throw new HostError("Deck invalide.");
+    if (this.players.length >= MAX_PLAYERS) throw new HostError(`La table est pleine (${MAX_PLAYERS} joueurs).`);
+    this.players.push({
+      id: `b${randomBytes(4).toString("hex")}`,
+      name: this.uniqueName("Bot"),
+      token: randomBytes(16).toString("hex"),
+      isHost: false,
+      deck,
+      schemes: [],
+      connId: null,
+      isBot: true,
+    });
+    this.broadcastLobby();
+    this.changed();
+  }
+
+  /**
+   * Fait jouer une action à un bot, s'il en a une. Retourne vrai si un bot a
+   * joué. Appelé tout seul (avec un délai) après chaque changement.
+   */
+  stepBots(): boolean {
+    const game = this.game;
+    if (!game || evaluateOutcome(game).winners) return false;
+    for (const bot of this.players.filter((p) => p.isBot)) {
+      const action = chooseBotAction(game, bot.id);
+      if (!action) continue;
+      const result = applyAction(game, { actorId: bot.id, action });
+      // Un coup refusé ne doit pas arriver ; on n'insiste pas pour ne pas boucler.
+      if (!result.ok) continue;
+      this.game = result.state;
+      this.broadcastState();
+      this.changed();
+      return true;
+    }
+    return false;
+  }
+
+  private scheduleBots(): void {
+    const delay = this.options.botDelayMs === undefined ? 800 : this.options.botDelayMs;
+    if (delay === null || this.botTimer || !this.players.some((p) => p.isBot)) return;
+    this.botTimer = setTimeout(() => {
+      this.botTimer = null;
+      if (this.stepBots()) this.scheduleBots();
+    }, delay);
+  }
+
+  /** Arrête les bots (fermeture de la partie). */
+  stopBots(): void {
+    if (this.botTimer) clearTimeout(this.botTimer);
+    this.botTimer = null;
   }
 
   private kick(player: HostedPlayer, targetId: PlayerId): void {
@@ -323,6 +389,7 @@ export class GameHost {
     reply(true);
     this.broadcastState();
     this.changed();
+    this.scheduleBots();
   }
 
   // -------------------------------------------------------------------------
@@ -336,7 +403,8 @@ export class GameHost {
           id: p.id,
           name: p.name,
           isHost: p.isHost,
-          connected: p.connId !== null,
+          connected: p.isBot === true || p.connId !== null,
+          ...(p.isBot ? { isBot: true } : {}),
           deck: p.deck
             ? {
                 commanders: p.deck.commanders.map((c) => c.name),
@@ -428,7 +496,7 @@ function parseMessage(raw: unknown): ClientMessage {
   if (!msg || typeof msg !== "object" || typeof (msg as { type?: unknown }).type !== "string") {
     throw new HostError("Message invalide.");
   }
-  const known = ["hello", "setDeck", "configure", "start", "kick", "action", "chat", "ping"];
+  const known = ["hello", "setDeck", "configure", "start", "kick", "addBot", "action", "chat", "ping"];
   if (!known.includes((msg as { type: string }).type)) throw new HostError("Message inconnu.");
   return msg as ClientMessage;
 }
