@@ -137,12 +137,14 @@ export function evaluateOutcome(g: GameState): Outcome {
   return { eliminated, winners };
 }
 
-function eliminationReason(g: GameState, p: PlayerState): string | null {
+export function eliminationReason(g: GameState, p: PlayerState): string | null {
+  if (p.lostReason) return p.lostReason;
   if (p.hasConceded) return "abandon";
   if (p.life <= 0) return "points de vie";
   if (p.poison >= g.settings.poisonLimit) return "poison";
   if (Object.values(p.commanderDamage).some((d) => d >= g.settings.commanderDamageLimit)) {
     return "blessures de commandant";
   }
+  if (p.drewFromEmpty) return "bibliothèque vide";
   return null;
 }

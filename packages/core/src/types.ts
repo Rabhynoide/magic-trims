@@ -162,6 +162,8 @@ export interface CardInstance {
   damage?: number;
   /** Blessée par une source avec contact mortel ce tour. */
   deathtouched?: boolean;
+  /** Planeswalker arrivé avec ses marqueurs de loyauté : il meurt quand il n'en a plus. */
+  hasLoyalty?: boolean;
   /** Bonus de force et d'endurance jusqu'à la fin du tour (+3/+3 d'une Croissance gigantesque…). */
   ptBoost?: { power: number; toughness: number };
 }
@@ -180,6 +182,10 @@ export interface PlayerState {
   commanderCasts: Record<CardInstanceId, number>;
   /** Mulligans pris pendant la mise en place. */
   mulligans: number;
+  /** Raison de la défaite décidée par le moteur (points de vie, poison…) ; le joueur est alors hors jeu. */
+  lostReason?: string;
+  /** A tenté de piocher dans une bibliothèque vide (il perd à la prochaine vérification). */
+  drewFromEmpty?: boolean;
   /**
    * Cartes que le joueur doit encore mettre au-dessous de sa bibliothèque
    * après ses mulligans (règle 103.5) : la partie n'avance pas avant.
