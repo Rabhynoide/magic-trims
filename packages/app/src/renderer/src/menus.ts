@@ -1,6 +1,6 @@
-import type { CardView, GameView, PlayerId, VisibleCardView, Zone } from "@magic-trims/core";
-import { formatMana, hasX } from "@magic-trims/core";
-import { cardData, cardManaOptions, creaturePT } from "./cards";
+import type { CardView, GameView, PlayerId, Target, VisibleCardView, Zone } from "@magic-trims/core";
+import { formatMana, hasX, parseSpellEffects } from "@magic-trims/core";
+import { cardData, cardManaOptions, cardName, creaturePT } from "./cards";
 import { session } from "./session";
 import { ui, type MenuItem } from "./ui-store";
 
@@ -225,7 +225,19 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
             if (value === null) return;
             x = Math.max(0, Math.floor(Number(value) || 0));
           }
-          void act({ type: "castSpell", cardId: id, ...face, ...(x !== undefined ? { x } : {}) });
+          // Les cibles des effets que le moteur applique (quand l'hôte fait respecter les règles).
+          const faceData = faces ? faces[f.face ?? 0] : data;
+          const effects =
+            view.settings.enforceRules && /\b(Instant|Sorcery)\b/.test(f.typeLine)
+              ? parseSpellEffects(faceData?.oracleText ?? data.oracleText, f.name)
+              : null;
+          let targets: Target[] | undefined;
+          if (effects && effects.targets.length > 0) {
+            const chosen = await ui.chooseTargets(cardName(view, card), id, effects.targets);
+            if (!chosen) return;
+            targets = chosen;
+          }
+          void act({ type: "castSpell", cardId: id, ...face, ...(x !== undefined ? { x } : {}), ...(targets ? { targets } : {}) });
         },
       };
     });

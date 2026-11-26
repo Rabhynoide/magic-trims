@@ -562,6 +562,49 @@ textarea:focus {
   border-radius: 4px;
   padding: 0 3px;
 }
+/* Carte que le moteur ne gère pas (ou pas entièrement) : à jouer à la main. */
+.card-support {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 14px;
+  min-width: 14px;
+  text-align: center;
+  border-radius: 7px;
+  padding: 0 3px;
+  color: #1a1408;
+  background: var(--warn);
+  cursor: help;
+}
+.card-support.manual {
+  background: var(--danger);
+  color: #fff;
+}
+.targeting-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: #1a1408;
+}
+.targeting-banner button {
+  background: #1a1408;
+  color: var(--text);
+  border-color: transparent;
+}
+.table.targeting .card.selectable {
+  outline: 2px dashed var(--accent-strong);
+  outline-offset: -2px;
+}
+.table.targeting .card.selected {
+  outline: 3px solid var(--accent-strong);
+}
 .card-attachments {
   position: absolute;
   top: 2px;
@@ -1178,4 +1221,16 @@ textarea:focus {
 .combat-panel .hint {
   color: var(--text-dim);
   font-size: 13px;
+}
+
+.deck-support {
+  margin: 6px 0;
+  font-size: 13px;
+}
+.deck-support summary {
+  cursor: pointer;
+  color: var(--text-dim);
+}
+.deck-support p {
+  margin: 4px 0;
 }

@@ -6,6 +6,7 @@
  */
 
 import type { CombatState } from "./combat.js";
+import type { Target } from "./effects.js";
 import type { ManaPool } from "./mana.js";
 import type { TurnStep } from "./turn.js";
 
@@ -166,6 +167,13 @@ export interface CardInstance {
   hasLoyalty?: boolean;
   /** Bonus de force et d'endurance jusqu'à la fin du tour (+3/+3 d'une Croissance gigantesque…). */
   ptBoost?: { power: number; toughness: number };
+  /**
+   * Sort lancé par le moteur (et non posé à la main sur la pile) : ses cibles,
+   * dans l'ordre des cibles du texte. Ses effets s'appliquent à la résolution.
+   */
+  targets?: Target[];
+  /** Valeur de X choisie au lancement. */
+  xValue?: number;
 }
 
 export interface PlayerState {
