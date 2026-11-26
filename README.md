@@ -7,8 +7,8 @@ Projet privé, entre amis. Les données et images des cartes viennent de [Scryfa
 ## Feuille de route
 
 1. **Fondations et decks** : modèle de partie, système d'actions, import Moxfield + Scryfall. *(fait)*
-2. **Multijoueur** : chaque joueur peut héberger la partie depuis l'appli, sans serveur à payer. *(en cours)*
-3. **Table virtuelle jouable (v1)** : interface, glisser-déposer, installateur Windows.
+2. **Multijoueur** : chaque joueur peut héberger la partie depuis l'appli, sans serveur à payer. *(fait)*
+3. **Table virtuelle jouable (v1)** : interface, glisser-déposer, installateur Windows. *(en cours)*
 4. **Moteur de règles** : tours et phases, mana, pile, puis effets des cartes courantes, petit à petit.
 
 ## Modes de jeu
@@ -30,6 +30,29 @@ Tous les réglages (points de vie, poison, partage entre coéquipiers…) resten
 
 `evaluateOutcome()` indique les joueurs éliminés (points de vie, poison, blessures de commandant, abandon) et les vainqueurs selon le mode.
 
+## Lancer l'appli
+
+```sh
+npm install
+npm run app     # lance l'appli en mode développement
+npm run dist    # fabrique l'installateur Windows dans packages/app/release/
+```
+
+L'installateur est aussi fabriqué automatiquement par GitHub Actions à chaque modification de `main` : onglet **Actions** du dépôt → dernier passage → **MagicTrims-installateur-windows**.
+
+### Jouer
+
+- **Accueil** : ton pseudo, héberger une partie ou en rejoindre une avec un code, et tes decks.
+- **Importer un deck** : colle la liste exportée depuis Moxfield (*Export → Copy for Moxfield*) ou deckstats.net (*Exporter → Texte*). L'appli retrouve les cartes sur Scryfall et signale les problèmes de construction.
+- **Salon** : chacun choisit son deck ; l'hôte choisit le mode, les équipes, les points de vie, Planechase, et s'il accepte les decks non légaux pour le mode.
+- **Table** :
+  - glisser-déposer les cartes entre la main, le champ de bataille, le cimetière, l'exil, la bibliothèque, la zone de commandement et la pile ; déposer une carte sur le champ de bataille d'un autre joueur lui en donne le contrôle ;
+  - **double-clic** : engager / dégager (sur le champ de bataille), jouer la carte (dans la main) ;
+  - **clic droit** sur une carte : marqueurs, face cachée, transformer, déplacer, donner le contrôle, révéler ;
+  - **clic sur la bibliothèque** : piocher, mélanger, regarder ou révéler le dessus, meuler, exiler ;
+  - points de vie, poison et blessures de commandant avec les boutons − / + (Maj+clic : ±5) ;
+  - jetons (recherche Scryfall), dés, mulligan, journal de la partie et discussion.
+
 ## Héberger une partie
 
 N'importe quel joueur peut héberger : l'appli lance un petit serveur sur son PC (port 47474) et affiche des **codes de connexion** à donner aux amis (par exemple `60001-05EBJ`), ou l'adresse en clair.
@@ -48,6 +71,7 @@ Pour tester sans interface : `npm run host` (ou `npm run host -- --reprendre` po
 packages/
   core/   Logique de jeu pure, protocole réseau et client de connexion
   host/   Serveur de partie intégré à l'appli de l'hôte (Node.js)
+  app/    Appli Windows (Electron + React)
 ```
 
 ### `@magic-trims/core`
@@ -78,6 +102,9 @@ npm test           # tests
 npm run typecheck  # vérification des types
 ```
 
-## Importer un deck Moxfield
+## Importer un deck
 
-Sur la page du deck : **Export** → **Copy for Moxfield** (ou « Copy for MTGO / Arena »), puis coller le texte dans l'appli. Moxfield n'a pas d'API publique officielle, d'où le copier-coller.
+- **Moxfield** : sur la page du deck, **Export** → **Copy for Moxfield** (ou « Copy for MTGO / Arena »).
+- **deckstats.net** : **Exporter** → **Texte**. Le commandant est repéré par la mention `# !Commander`.
+
+Ni l'un ni l'autre n'a d'API publique officielle, d'où le copier-coller.

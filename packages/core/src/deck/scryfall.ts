@@ -120,6 +120,20 @@ export class ScryfallClient {
     }
   }
 
+  /**
+   * Recherche libre avec la syntaxe Scryfall (« t:plane », « t:token soldier »…).
+   * Retourne au plus la première page de résultats (175 cartes).
+   */
+  async search(query: string): Promise<CardData[]> {
+    try {
+      const body = await this.request(`/cards/search?q=${encodeURIComponent(query)}&unique=cards`);
+      return ((body.data ?? []) as ScryfallCard[]).map(toCardData);
+    } catch (err) {
+      if (err instanceof ScryfallError && err.status === 404) return [];
+      throw err;
+    }
+  }
+
   /** Recherche de jetons (« t:token name:Soldier »…). */
   async searchTokens(query: string): Promise<CardData[]> {
     try {
@@ -233,6 +247,7 @@ export function toCardData(raw: ScryfallCard): CardData {
     set: raw.set,
     collectorNumber: raw.collector_number,
   };
+  if (raw.legalities?.duel) card.duelLegality = raw.legalities.duel;
   if (raw.printed_name) card.printedName = raw.printed_name;
   if (raw.power !== undefined) card.power = raw.power;
   if (raw.toughness !== undefined) card.toughness = raw.toughness;

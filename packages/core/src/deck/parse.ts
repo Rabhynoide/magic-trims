@@ -1,5 +1,5 @@
 /**
- * Lecture d'une liste de deck exportée depuis Moxfield (ou un autre site).
+ * Lecture d'une liste de deck exportée depuis Moxfield, deckstats.net ou un autre site.
  *
  * Moxfield n'a pas d'API publique officielle : on importe le texte obtenu avec
  * « Export » → « Copy for Moxfield / MTGO / Arena » ou « Download as text ».
@@ -9,6 +9,8 @@
  *   1x Atraxa, Praetors' Voice (C16) 28 *F*
  *   Arena : sections « Commander » / « Deck » / « Sideboard »
  *   MTGO : commandant isolé après une ligne vide à la fin de la liste
+ *   deckstats.net : « 1 [C21#263] Sol Ring », commandant marqué « # !Commander »,
+ *                   sections « //Main », « //Sideboard »
  */
 
 export interface DeckEntry {
@@ -37,6 +39,9 @@ const SECTION_HEADERS: [RegExp, Section][] = [
   [/^(sideboard|maybeboard|considering|companion|compagnon|tokens?|attractions?|stickers?)\b/i, "other"],
 ];
 
+/** Format deckstats.net : édition (et numéro) entre crochets avant le nom. */
+const DECKSTATS_RE = /^(?<qty>\d+)\s*x?\s+\[(?<set>[A-Za-z0-9]{2,6})(?:#(?<num>[^\]]+))?\]\s+(?<name>.+)$/;
+
 const LINE_RE =
   /^(?<qty>\d+)\s*x?\s+(?<name>.+?)(?:\s+\((?<set>[A-Za-z0-9]{2,6})\)(?:\s+(?<num>[^\s*]+))?)?(?:\s+\*[A-Z]+\*)*\s*$/;
 
@@ -58,10 +63,13 @@ export function parseDeckList(text: string): ParsedDeck {
       }
       return;
     }
-    if (line.startsWith("//") || line.startsWith("#")) return;
+    const isComment = line.startsWith("//") || line.startsWith("#");
 
-    // « SIDEBOARD: » ou « Commander » seul sur la ligne, avec ou sans deux-points.
-    const header = line.replace(/:$/, "").replace(/\s*\(\d+\)$/, "");
+    // « SIDEBOARD: », « Commander » ou « //Main » seul sur la ligne.
+    const header = line
+      .replace(/^(\/\/|#)\s*/, "")
+      .replace(/:$/, "")
+      .replace(/\s*\(\d+\)$/, "");
     const matched = SECTION_HEADERS.find(([re]) => re.test(header) && !/^\d/.test(header) && header.split(/\s+/).length <= 2);
     if (matched) {
       if (current.entries.length > 0) blocks.push(current);
@@ -69,8 +77,23 @@ export function parseDeckList(text: string): ParsedDeck {
       sawHeader = true;
       return;
     }
+    if (isComment) return;
 
-    const m = LINE_RE.exec(line);
+    // Sideboard au format MTGO : « SB: 1 Carte ».
+    let body = line;
+    let forced: Section | null = null;
+    if (/^SB:\s*/i.test(body)) {
+      body = body.replace(/^SB:\s*/i, "");
+      forced = "other";
+    }
+    // Commentaire en fin de ligne (deckstats) : « # !Commander » désigne le commandant.
+    const comment = /\s#\s*(.*)$/.exec(body);
+    if (comment) {
+      if (/!commander/i.test(comment[1]!)) forced = "commander";
+      body = body.slice(0, comment.index).trim();
+    }
+
+    const m = DECKSTATS_RE.exec(body) ?? LINE_RE.exec(body);
     if (!m?.groups) {
       result.errors.push({ line: lineNo, text: raw });
       return;
@@ -86,7 +109,14 @@ export function parseDeckList(text: string): ParsedDeck {
       result.errors.push({ line: lineNo, text: raw });
       return;
     }
-    current.entries.push(entry);
+    if (forced === "commander") {
+      result.commanders.push(entry);
+      sawHeader = true;
+    } else if (forced === "other") {
+      result.other.push(entry);
+    } else {
+      current.entries.push(entry);
+    }
   });
   if (current.entries.length > 0) blocks.push(current);
 
