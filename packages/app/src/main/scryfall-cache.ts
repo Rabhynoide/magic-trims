@@ -6,16 +6,16 @@ import type { CardCache, CardData } from "@magic-trims/core";
  * Cache Scryfall sur disque : une carte déjà vue n'est plus redemandée,
  * ce qui accélère les imports et permet de rejouer un deck hors ligne.
  */
-export class FileCardCache implements CardCache {
-  private map: Map<string, CardData> | null = null;
+export class FileCache<T> {
+  private map: Map<string, T> | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly path: string) {}
 
-  private async load(): Promise<Map<string, CardData>> {
+  private async load(): Promise<Map<string, T>> {
     if (this.map) return this.map;
     try {
-      this.map = new Map(Object.entries(JSON.parse(await readFile(this.path, "utf8")) as Record<string, CardData>));
+      this.map = new Map(Object.entries(JSON.parse(await readFile(this.path, "utf8")) as Record<string, T>));
     } catch {
       this.map = new Map();
     }
@@ -26,8 +26,8 @@ export class FileCardCache implements CardCache {
     return (await this.load()).get(key);
   }
 
-  async set(key: string, card: CardData) {
-    (await this.load()).set(key, card);
+  async set(key: string, value: T) {
+    (await this.load()).set(key, value);
     this.timer ??= setTimeout(() => void this.flush(), 1000);
   }
 
@@ -41,3 +41,5 @@ export class FileCardCache implements CardCache {
     await rename(tmp, this.path);
   }
 }
+
+export class FileCardCache extends FileCache<CardData> implements CardCache {}

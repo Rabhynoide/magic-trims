@@ -24,6 +24,7 @@ const KEYS = {
   lastCode: "magic-trims.lastCode",
   session: "magic-trims.session",
   selectedDeck: "magic-trims.selectedDeck",
+  cardLang: "magic-trims.cardLang",
 } as const;
 
 function read<T>(key: string, fallback: T): T {
@@ -55,4 +56,7 @@ export const storage = {
   setSession: (session: LastSession | null) => write(KEYS.session, session),
   getSelectedDeck: () => read<string | null>(KEYS.selectedDeck, null),
   setSelectedDeck: (id: string | null) => write(KEYS.selectedDeck, id),
+  /** Langue des cartes (code Scryfall), le français par défaut. */
+  getCardLang: () => read<string>(KEYS.cardLang, "fr"),
+  setCardLang: (lang: string) => write(KEYS.cardLang, lang),
 };

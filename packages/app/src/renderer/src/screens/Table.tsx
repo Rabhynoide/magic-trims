@@ -14,7 +14,8 @@ import { Card, DRAG_TYPE } from "../components/Card";
 import { Chat } from "../components/Chat";
 import { Modal } from "../components/Modal";
 import { Overlays } from "../components/Overlays";
-import { cardData, cardImage, cardName, isLand } from "../cards";
+import { cardData, cardImage, cardName, cardText, isLand } from "../cards";
+import { CardLanguageSelect } from "../components/CardLanguage";
 import { cardMenu, libraryMenu } from "../menus";
 import { session, useSession } from "../session";
 import { ui, useUi } from "../ui-store";
@@ -441,6 +442,7 @@ function Toolbar(props: { view: GameView; isActive: boolean; onTokens: () => voi
         <button onClick={() => void act({ type: "setSchemeInMotion" })}>Machination ({me.zones.schemes.length})</button>
       )}
       <span className="spacer" />
+      <CardLanguageSelect />
       <button
         className="link danger"
         onClick={() => {
@@ -474,15 +476,16 @@ function Preview(props: { view: GameView }) {
   const card = preview;
   const img = card ? cardImage(props.view, card, "normal") : null;
   const data = card ? cardData(props.view, card) : undefined;
+  const text = data && card && !card.hidden ? cardText(data, card.faceIndex) : undefined;
   return (
     <div className="preview">
       {img ? (
         <img src={img} alt={card ? cardName(props.view, card) : ""} />
-      ) : data ? (
+      ) : data && text ? (
         <div className="preview-text">
-          <strong>{data.name}</strong> {data.manaCost}
-          <div>{data.typeLine}</div>
-          <p>{data.oracleText}</p>
+          <strong>{text.name}</strong> {data.manaCost}
+          <div>{text.typeLine}</div>
+          <p>{text.oracleText}</p>
         </div>
       ) : (
         <div className="preview-empty">Survole une carte pour l'agrandir</div>

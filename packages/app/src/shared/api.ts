@@ -1,4 +1,4 @@
-import type { CardData, DeckIssue, DeckEntry, ResolvedDeck } from "@magic-trims/core";
+import type { CardData, DeckIssue, DeckEntry, LocalizedCard, ResolvedDeck } from "@magic-trims/core";
 
 export interface HostInfo {
   port: number;
@@ -16,6 +16,8 @@ export interface DeckImportResult {
   issues: DeckIssue[];
 }
 
+export type CardToLocalize = Pick<CardData, "id" | "oracleId" | "set" | "collectorNumber">;
+
 /** Ce que le processus principal d'Electron offre à l'interface (via le preload). */
 export interface MagicApi {
   startHost(options: { resume: boolean }): Promise<HostInfo>;
@@ -24,6 +26,8 @@ export interface MagicApi {
   importDeck(text: string): Promise<DeckImportResult>;
   /** Cherche des cartes par nom (jetons, plans, machinations…). */
   searchCards(query: string): Promise<CardData[]>;
+  /** Cherche les cartes imprimées dans une langue (`null` : on garde l'anglais). */
+  localizeCards(cards: CardToLocalize[], lang: string): Promise<Record<string, LocalizedCard | null>>;
 }
 
 declare global {

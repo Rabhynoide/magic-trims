@@ -54,6 +54,7 @@ L'installateur est aussi fabriqué automatiquement par GitHub Actions à chaque 
   - **clic sur la bibliothèque** : piocher, mélanger, regarder ou révéler le dessus, meuler, exiler ;
   - points de vie, poison et blessures de commandant avec les boutons − / + (Maj+clic : ±5) ;
   - jetons (recherche Scryfall), dés, mulligan, journal de la partie et discussion.
+- **Langue des cartes** (accueil ou barre du bas de la table) : chaque joueur choisit la sienne (français par défaut). L'appli affiche l'impression Scryfall dans cette langue, de la même édition si elle existe, sinon d'une autre ; une carte jamais imprimée dans cette langue reste en anglais. Les traductions sont gardées en cache sur le PC.
 
 ## Héberger une partie
 

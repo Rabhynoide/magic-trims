@@ -8,6 +8,7 @@ import {
   type LobbyState,
 } from "@magic-trims/core";
 import type { HostInfo } from "../../shared/api";
+import { localizer } from "./localization";
 import { storage } from "./storage";
 
 export interface ChatLine {
@@ -57,6 +58,14 @@ class Session {
   client: GameClient | null = null;
   private listeners = new Set<() => void>();
   private toastSeq = 0;
+  /** Vue reçue de l'hôte, avant traduction des cartes. */
+  private rawView: GameView | null = null;
+
+  constructor() {
+    localizer.subscribe(() => {
+      if (this.rawView) this.set({ view: localizer.apply(this.rawView) });
+    });
+  }
 
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
@@ -109,6 +118,7 @@ class Session {
     this.client?.close();
     const client = new GameClient({ url, name, ...extra });
     this.client = client;
+    this.rawView = null;
     this.set({ connecting: true, chat: [], view: null, lobby: null });
 
     client.on("welcome", (w) => {
@@ -118,7 +128,10 @@ class Session {
     client.on("lobby", (lobby) => {
       this.set({ lobby, screen: lobby.started ? (this.state.view ? "game" : this.state.screen) : "lobby" });
     });
-    client.on("state", (view) => this.set({ view, screen: "game" }));
+    client.on("state", (view) => {
+      this.rawView = view;
+      this.set({ view: localizer.apply(view), screen: "game" });
+    });
     client.on("chat", (c) => this.set({ chat: [...this.state.chat.slice(-199), c] }));
     client.on("error", (e) => {
       this.toast(e.message);
@@ -152,6 +165,7 @@ class Session {
     this.client?.close();
     this.client = null;
     if (this.state.isHost) void window.magic?.stopHost();
+    this.rawView = null;
     this.set({ ...initial, toasts: this.state.toasts });
   }
 }

@@ -7,6 +7,7 @@ const api: MagicApi = {
   hasSavedGame: () => ipcRenderer.invoke("host:hasSavedGame"),
   importDeck: (text) => ipcRenderer.invoke("deck:import", text),
   searchCards: (query) => ipcRenderer.invoke("cards:search", query),
+  localizeCards: (cards, lang) => ipcRenderer.invoke("cards:localize", cards, lang),
 };
 
 contextBridge.exposeInMainWorld("magic", api);

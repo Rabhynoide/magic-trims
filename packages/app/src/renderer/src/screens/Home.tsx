@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { session, useSession } from "../session";
 import { storage, type SavedDeck } from "../storage";
+import { CardLanguageSelect } from "../components/CardLanguage";
 import { DeckImport } from "./DeckImport";
 
 export function Home() {
@@ -43,6 +44,7 @@ export function Home() {
             Ton nom
             <input value={name} onChange={(e) => updateName(e.target.value)} maxLength={24} placeholder="Pseudo" />
           </label>
+          <CardLanguageSelect label="Langue des cartes" />
 
           <div className="play-block">
             <h3>Héberger</h3>

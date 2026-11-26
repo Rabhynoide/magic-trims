@@ -1,4 +1,4 @@
-import type { CardData, CardFace, CardImages } from "../types.js";
+import type { CardData, CardFace, CardImages, LocalizedCard } from "../types.js";
 
 /**
  * Accès à l'API Scryfall (https://scryfall.com/docs/api).
@@ -11,6 +11,8 @@ import type { CardData, CardFace, CardImages } from "../types.js";
 export const SCRYFALL_API = "https://api.scryfall.com";
 const COLLECTION_BATCH = 75;
 const MIN_DELAY_MS = 110;
+/** Cartes par recherche de traduction (la requête reste sous ~1 000 caractères). */
+const LOCALIZE_BATCH = 15;
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -145,6 +147,62 @@ export class ScryfallClient {
     }
   }
 
+  /**
+   * Cherche les cartes imprimées dans la langue voulue : d'abord la même
+   * édition et le même numéro que la carte d'origine (même illustration),
+   * sinon n'importe quelle impression dans cette langue. Retourne `null`
+   * pour les cartes jamais imprimées dans cette langue (on garde l'anglais).
+   */
+  async localize(
+    cards: Pick<CardData, "id" | "oracleId" | "set" | "collectorNumber">[],
+    lang: string,
+  ): Promise<Map<string, LocalizedCard | null>> {
+    const result = new Map<string, LocalizedCard | null>();
+    if (!/^[a-z]{2,3}$/.test(lang)) throw new Error(`Langue inconnue : ${lang}`);
+    const quote = (value: string) => value.replace(/[^\w-]/g, "");
+    for (let i = 0; i < cards.length; i += LOCALIZE_BATCH) {
+      const batch = cards.slice(i, i + LOCALIZE_BATCH);
+      // 1. Même impression, dans la langue voulue.
+      const exact = await this.searchAll(
+        `lang:${lang} (${batch
+          .map((c) => `(oracleid:${quote(c.oracleId)} set:${quote(c.set)} cn:${quote(c.collectorNumber)})`)
+          .join(" or ")})`,
+        "prints",
+      );
+      const rest: typeof batch = [];
+      for (const card of batch) {
+        const raw = exact.find(
+          (r) => oracleIdOf(r) === card.oracleId && r.set === card.set && r.collector_number === card.collectorNumber,
+        );
+        if (raw) result.set(card.id, toLocalizedCard(raw, lang));
+        else rest.push(card);
+      }
+      if (rest.length === 0) continue;
+      // 2. N'importe quelle impression dans cette langue.
+      const any = await this.searchAll(
+        `lang:${lang} (${[...new Set(rest.map((c) => `oracleid:${quote(c.oracleId)}`))].join(" or ")})`,
+        "cards",
+      );
+      for (const card of rest) {
+        const raw = any.find((r) => oracleIdOf(r) === card.oracleId);
+        result.set(card.id, raw ? toLocalizedCard(raw, lang) : null);
+      }
+    }
+    return result;
+  }
+
+  private async searchAll(query: string, unique: "cards" | "prints"): Promise<ScryfallCard[]> {
+    try {
+      const body = await this.request(
+        `/cards/search?q=${encodeURIComponent(query)}&unique=${unique}&include_multilingual=true`,
+      );
+      return (body.data ?? []) as ScryfallCard[];
+    } catch (err) {
+      if (err instanceof ScryfallError && err.status === 404) return [];
+      throw err;
+    }
+  }
+
   private async request(path: string, init: RequestInit = {}): Promise<Record<string, unknown>> {
     const wait = this.lastRequest + this.delayMs - Date.now();
     if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
@@ -190,8 +248,11 @@ export function matchesIdentifier(raw: ScryfallCard, id: CardIdentifier): boolea
 export interface ScryfallCard {
   id: string;
   oracle_id?: string;
+  lang?: string;
   name: string;
   printed_name?: string;
+  printed_type_line?: string;
+  printed_text?: string;
   mana_cost?: string;
   cmc?: number;
   type_line?: string;
@@ -211,6 +272,9 @@ export interface ScryfallCard {
 
 interface ScryfallFace {
   name: string;
+  printed_name?: string;
+  printed_type_line?: string;
+  printed_text?: string;
   mana_cost?: string;
   type_line?: string;
   oracle_text?: string;
@@ -272,6 +336,50 @@ export function toCardData(raw: ScryfallCard): CardData {
     });
   }
   return card;
+}
+
+function oracleIdOf(raw: ScryfallCard): string | undefined {
+  return raw.oracle_id ?? raw.card_faces?.[0]?.oracle_id;
+}
+
+/** Texte et images traduits d'une carte Scryfall (anglais à défaut). */
+export function toLocalizedCard(raw: ScryfallCard, lang: string): LocalizedCard {
+  const firstFace = raw.card_faces?.[0];
+  const localized: LocalizedCard = {
+    lang,
+    name:
+      raw.printed_name ??
+      (raw.card_faces?.every((f) => f.printed_name)
+        ? raw.card_faces.map((f) => f.printed_name).join(" // ")
+        : raw.name),
+  };
+  const typeLine = raw.printed_type_line ?? firstFace?.printed_type_line;
+  if (typeLine) localized.typeLine = typeLine;
+  const text =
+    raw.printed_text ??
+    (raw.card_faces ?? []).map((f) => f.printed_text ?? "").filter(Boolean).join("\n//\n");
+  if (text) localized.oracleText = text;
+  const image = toImages(raw.image_uris ?? firstFace?.image_uris);
+  if (image) localized.image = image;
+  if (raw.card_faces && raw.card_faces.length > 1) {
+    localized.faces = raw.card_faces.map((f) => {
+      const face: NonNullable<LocalizedCard["faces"]>[number] = { name: f.printed_name ?? f.name };
+      if (f.printed_type_line) face.typeLine = f.printed_type_line;
+      if (f.printed_text) face.oracleText = f.printed_text;
+      const faceImage = toImages(f.image_uris ?? raw.image_uris);
+      if (faceImage) face.image = faceImage;
+      return face;
+    });
+  }
+  return localized;
+}
+
+/**
+ * Ajoute une traduction aux données d'une carte, pour l'affichage seulement :
+ * les champs anglais restent intacts (ils servent aux règles, comme « Land »).
+ */
+export function applyLocalization(card: CardData, localized: LocalizedCard | null | undefined): CardData {
+  return localized ? { ...card, localized } : card;
 }
 
 function toImages(images: ScryfallImages | undefined): CardImages | undefined {

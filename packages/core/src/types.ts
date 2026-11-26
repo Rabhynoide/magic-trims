@@ -33,6 +33,11 @@ export interface CardData {
   image?: CardImages;
   /** Faces des cartes double face, scindées, à aventure… */
   faces?: CardFace[];
+  /**
+   * Traduction choisie par le joueur qui regarde (ajoutée par son appli,
+   * jamais envoyée par l'hôte). Les champs anglais restent la référence.
+   */
+  localized?: LocalizedCard;
 }
 
 export interface CardFace {
@@ -51,6 +56,36 @@ export interface CardImages {
   normal: string;
   large: string;
   artCrop?: string;
+}
+
+/**
+ * Langues dans lesquelles Scryfall propose des cartes imprimées.
+ * Le code est celui de Scryfall (« lang:fr »).
+ */
+export const CARD_LANGUAGES = [
+  { code: "en", label: "English" },
+  { code: "fr", label: "Français" },
+  { code: "de", label: "Deutsch" },
+  { code: "es", label: "Español" },
+  { code: "it", label: "Italiano" },
+  { code: "pt", label: "Português" },
+  { code: "ja", label: "日本語" },
+  { code: "ko", label: "한국어" },
+  { code: "ru", label: "Русский" },
+  { code: "zhs", label: "简体中文" },
+  { code: "zht", label: "繁體中文" },
+] as const;
+
+export type CardLanguage = (typeof CARD_LANGUAGES)[number]["code"];
+
+/** Texte et images d'une carte imprimée dans une autre langue. */
+export interface LocalizedCard {
+  lang: string;
+  name: string;
+  typeLine?: string;
+  oracleText?: string;
+  image?: CardImages;
+  faces?: { name: string; typeLine?: string; oracleText?: string; image?: CardImages }[];
 }
 
 export type PlayerId = string;
