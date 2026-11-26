@@ -5,6 +5,7 @@
  * envoyé sur le réseau, sauvegardé sur disque et rejoué.
  */
 
+import type { CombatState } from "./combat.js";
 import type { ManaPool } from "./mana.js";
 import type { TurnStep } from "./turn.js";
 
@@ -155,6 +156,14 @@ export interface CardInstance {
   attachedTo?: CardInstanceId;
   /** Joueurs qui ont vu cette carte alors qu'elle était cachée (révélée). */
   revealedTo: PlayerId[];
+  /** Arrivée (ou changée de contrôleur) depuis le début du dernier tour de son contrôleur : mal d'invocation. */
+  summoningSick?: boolean;
+  /** Blessures reçues ce tour (retirées au nettoyage). */
+  damage?: number;
+  /** Blessée par une source avec contact mortel ce tour. */
+  deathtouched?: boolean;
+  /** Bonus de force et d'endurance jusqu'à la fin du tour (+3/+3 d'une Croissance gigantesque…). */
+  ptBoost?: { power: number; toughness: number };
 }
 
 export interface PlayerState {
@@ -257,6 +266,8 @@ export interface GameState {
    * avance alors librement dans le tour).
    */
   priority: PriorityState | null;
+  /** Combat en cours (de l'étape de début de combat à la fin du combat). */
+  combat: CombatState | null;
   planarDeck: CardInstanceId[];
   plane: CardInstanceId[];
   turn: {

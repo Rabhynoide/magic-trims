@@ -65,6 +65,12 @@ export type GameAction =
    * scindées ou modales), `x` : la valeur de X.
    */
   | { type: "castSpell"; cardId: CardInstanceId; face?: number; x?: number }
+  /** Déclare les attaquants (étape des attaquants), chacun vers un joueur adverse. Une liste vide : pas d'attaque. */
+  | { type: "declareAttackers"; attackers: { cardId: CardInstanceId; defender: PlayerId }[] }
+  /** Déclare ses bloqueurs (étape des bloqueurs), chacun contre un attaquant. Une liste vide : pas de blocage. */
+  | { type: "declareBlockers"; blocks: { cardId: CardInstanceId; attackerId: CardInstanceId }[] }
+  /** Bonus de force/endurance jusqu'à la fin du tour, à la main (Croissance gigantesque…). */
+  | { type: "boostCreature"; cardId: CardInstanceId; power: number; toughness: number }
   /** Ajoute (ou retire, si négatif) du mana dans la réserve de l'acteur, à la main. */
   | { type: "adjustMana"; mana: ManaType; delta: number }
   | { type: "setFaceDown"; cardId: CardInstanceId; faceDown: boolean }

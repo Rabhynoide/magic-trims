@@ -124,6 +124,7 @@ export function createGame(options: NewGameOptions): GameState {
     cardData: {},
     stack: [],
     priority: null,
+    combat: null,
     planarDeck: [],
     plane: [],
     // La partie commence à l'entretien du premier joueur : il n'y a rien à dégager.
@@ -233,6 +234,7 @@ export function upgradeGame(g: GameState): GameState {
   g.settings = { ...DEFAULT_SETTINGS, ...g.settings };
   // Les anciennes parties n'avaient pas d'étapes : on reprend en phase principale.
   g.turn.step ??= "main1";
+  g.combat ??= null;
   for (const p of Object.values(g.players)) {
     p.mulliganBottom ??= 0;
     p.manaPool ??= emptyPool();

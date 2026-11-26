@@ -1,6 +1,6 @@
 import type { CardView, GameView, PlayerId, VisibleCardView, Zone } from "@magic-trims/core";
 import { formatMana, hasX } from "@magic-trims/core";
-import { cardData, cardManaOptions } from "./cards";
+import { cardData, cardManaOptions, creaturePT } from "./cards";
 import { session } from "./session";
 import { ui, type MenuItem } from "./ui-store";
 
@@ -55,6 +55,17 @@ export function cardMenu(view: GameView, card: CardView): MenuItem[] {
   if (zone === "battlefield") {
     const data = cardData(view, card);
     if (!card.tapped) items.push(...manaItems(view, card));
+    if (creaturePT(view, card)) {
+      items.push({
+        label: "Bonus jusqu'à la fin du tour…",
+        onClick: async () => {
+          const value = await ui.ask("Bonus jusqu'à la fin du tour (ex. +3/+3, -2/-0)", "+1/+1");
+          const m = value?.replace(/\s/g, "").match(/^([+-]?\d+)\/([+-]?\d+)$/);
+          if (!m) return;
+          void act({ type: "boostCreature", cardId: id, power: Number(m[1]), toughness: Number(m[2]) });
+        },
+      });
+    }
     items.push(
       {
         label: card.tapped ? "Dégager" : "Engager",

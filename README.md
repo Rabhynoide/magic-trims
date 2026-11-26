@@ -9,7 +9,7 @@ Projet privé, entre amis. Les données et images des cartes viennent de [Scryfa
 1. **Fondations et decks** : modèle de partie, système d'actions, import Moxfield + Scryfall. *(fait)*
 2. **Multijoueur** : chaque joueur peut héberger la partie depuis l'appli, sans serveur à payer. *(fait)*
 3. **Table virtuelle jouable (v1)** : interface, glisser-déposer, installateur Windows. *(fait)*
-4. **Moteur de règles** : tours et phases, mana, pile, puis effets des cartes courantes, petit à petit. *(en cours : tours et phases, priorité et pile, mana, terrains et sorts faits)* Le mode manuel reste toujours disponible pour ce que le moteur ne gère pas.
+4. **Moteur de règles** : tours et phases, mana, pile, puis effets des cartes courantes, petit à petit. *(en cours : tours et phases, priorité et pile, mana, terrains et sorts, combat faits)* Le mode manuel reste toujours disponible pour ce que le moteur ne gère pas.
 
 ## Modes de jeu
 
@@ -59,6 +59,7 @@ L'installateur est aussi fabriqué automatiquement par GitHub Actions à chaque 
   - points de vie, poison et blessures de commandant avec les boutons − / + (Maj+clic : ±5) ;
   - jetons (recherche Scryfall), dés, mulligan, journal de la partie et discussion ;
   - **mana** : double-clic sur un terrain (ou un permanent comme Sol Ring) pour l'engager et ajouter son mana à ta réserve, avec un menu quand il y a un choix (Command Tower, terrains doubles…). La réserve s'affiche à côté des points de vie : clic pour ajouter du mana à la main, clic droit pour en dépenser. Elle se vide à chaque changement d'étape. Une carte dont le moteur ne reconnaît pas le mana s'engage simplement ;
+  - **combat** : à l'étape des attaquants, choisis la cible et clique sur tes créatures, puis **Attaquer** (ou **Pas d'attaque**). Les joueurs attaqués cliquent sur une de leurs créatures puis sur l'attaquant à bloquer, puis **Bloquer** (ou **Pas de blocage**) ; le tour attend leurs blocages. Les blessures sont infligées automatiquement (blessures de commandant comprises) et les créatures mortes vont au cimetière. Mots-clés gérés : vol, portée, vigilance, célérité, initiative, double initiative, contact mortel, lien de vie, piétinement, menace, infection, flétrissure, défenseur, indestructible. Le mal d'invocation est vérifié. La force et l'endurance s'affichent sur les créatures ; le menu propose un **bonus jusqu'à la fin du tour** pour les effets du type Croissance gigantesque ;
   - **mulligan** : après un mulligan payant, on clique sur les cartes à mettre au-dessous de sa bibliothèque puis sur **Garder cette main** ; la partie n'avance pas tant que ce n'est pas fait.
 - **Langue des cartes** (accueil ou barre du bas de la table) : chaque joueur choisit la sienne (français par défaut). L'appli affiche l'impression Scryfall dans cette langue, de la même édition si elle existe, sinon d'une autre ; une carte jamais imprimée dans cette langue reste en anglais. Les traductions sont gardées en cache sur le PC.
 

@@ -30,6 +30,208 @@ const act = session.act.bind(session);
 
 type ZoneTarget = { zone: Zone; playerId: PlayerId };
 
+/** Joueurs adverses encore en lice, dans l'ordre du tour. */
+function opponents(view: GameView): PlayerId[] {
+  return view.turnOrder.filter(
+    (id) => !sameSide(view, view.turn.activePlayerId, id) && !view.outcome.eliminated[id] && !view.players[id]!.hasConceded,
+  );
+}
+
+/** Joueurs attaqués (ou leurs coéquipiers en tours partagés) qui doivent encore déclarer leurs bloqueurs. */
+function pendingBlockers(view: GameView): PlayerId[] {
+  const combat = view.combat;
+  if (!combat || view.turn.step !== "declareBlockers") return [];
+  const side = (id: PlayerId) => (view.settings.sharedTurns ? (view.teams.find((t) => t.includes(id)) ?? [id]) : [id]);
+  const attacked = new Set(Object.values(combat.attackers).flatMap(side));
+  return [...attacked].filter((id) => !combat.blocksDeclared.includes(id) && !view.players[id]!.hasConceded);
+}
+
+interface CombatUi {
+  mode: "attack" | "block" | null;
+  target: PlayerId | null;
+  setTarget: (id: PlayerId) => void;
+  attackPlan: Record<string, PlayerId>;
+  blockPlan: Record<string, string>;
+  blocker: string | null;
+  clear: () => void;
+  unblock: (blockerId: string) => void;
+  /** Props à ajouter à une carte du champ de bataille : étiquette de combat et sélection. */
+  cardProps: (card: CardView) => Partial<Parameters<typeof Card>[0]>;
+}
+
+/** Préparation des attaques et des blocages avant de les déclarer. */
+function useCombatUi(view: GameView, isActive: boolean): CombatUi {
+  const me = view.viewerId;
+  const combat = view.combat;
+  const mode: CombatUi["mode"] =
+    combat && view.turn.step === "declareAttackers" && !combat.attackersDeclared && isActive
+      ? "attack"
+      : pendingBlockers(view).includes(me)
+        ? "block"
+        : null;
+  const [target, setTarget] = useState<PlayerId | null>(null);
+  const [attackPlan, setAttackPlan] = useState<Record<string, PlayerId>>({});
+  const [blockPlan, setBlockPlan] = useState<Record<string, string>>({});
+  const [blocker, setBlocker] = useState<string | null>(null);
+  const clear = () => {
+    setAttackPlan({});
+    setBlockPlan({});
+    setBlocker(null);
+  };
+  useEffect(clear, [view.turn.number, view.turn.step]);
+  const foes = opponents(view);
+  const currentTarget = target && foes.includes(target) ? target : (foes[0] ?? null);
+  const name = (id: string) => {
+    const card = findCard(view, id);
+    return card ? cardName(view, card) : "?";
+  };
+
+  const cardProps = (card: CardView): Partial<Parameters<typeof Card>[0]> => {
+    const id = card.instanceId;
+    if (!id || card.zone !== "battlefield") return {};
+    const props: Partial<Parameters<typeof Card>[0]> = {};
+    // Étiquettes : ce qui est déclaré, sinon ce qui est prévu.
+    if (combat?.attackers[id]) props.combat = { kind: "attacking", label: `attaque ${view.players[combat.attackers[id]]!.name}` };
+    else if (combat?.blockers[id]) props.combat = { kind: "blocking", label: `bloque ${name(combat.blockers[id])}` };
+    else if (attackPlan[id]) props.combat = { kind: "attacking", label: `→ ${view.players[attackPlan[id]]!.name}` };
+    else if (blockPlan[id]) props.combat = { kind: "blocking", label: `bloquera ${name(blockPlan[id])}` };
+
+    const mine = card.controllerId === me || (mode === "attack" && sameSide(view, card.controllerId, me));
+    if (mode === "attack" && mine && !card.tapped) {
+      props.selected = Boolean(attackPlan[id]);
+      props.onSelect = () =>
+        setAttackPlan((plan) => {
+          const next = { ...plan };
+          if (next[id]) delete next[id];
+          else if (currentTarget) next[id] = currentTarget;
+          return next;
+        });
+    }
+    if (mode === "block") {
+      if (card.controllerId === me && !card.tapped) {
+        props.selected = blocker === id;
+        props.onSelect = () => {
+          if (blockPlan[id]) {
+            setBlockPlan((plan) => {
+              const next = { ...plan };
+              delete next[id];
+              return next;
+            });
+          } else setBlocker((b) => (b === id ? null : id));
+        };
+      } else if (combat?.attackers[id] && pendingBlockers(view).includes(me)) {
+        props.onSelect = () => {
+          if (!blocker) return session.toast("Choisis d'abord une de tes créatures, puis l'attaquant à bloquer.", "info");
+          setBlockPlan((plan) => ({ ...plan, [blocker]: id }));
+          setBlocker(null);
+        };
+      }
+    }
+    return props;
+  };
+
+  return {
+    mode,
+    target: currentTarget,
+    setTarget,
+    attackPlan,
+    blockPlan,
+    blocker,
+    clear,
+    unblock: (blockerId) =>
+      setBlockPlan((plan) => {
+        const next = { ...plan };
+        delete next[blockerId];
+        return next;
+      }),
+    cardProps,
+  };
+}
+
+function CombatPanel(props: { view: GameView; isActive: boolean; combat: CombatUi }) {
+  const { view, combat: ui } = props;
+  const combat = view.combat;
+  const name = (id: string) => {
+    const card = findCard(view, id);
+    return card ? cardName(view, card) : "?";
+  };
+  if (ui.mode === "attack") {
+    const planned = Object.entries(ui.attackPlan);
+    return (
+      <div className="combat-panel">
+        <span className="combat-title">Attaque</span>
+        <label>
+          Cible{" "}
+          <select value={ui.target ?? ""} onChange={(e) => ui.setTarget(e.target.value)}>
+            {opponents(view).map((id) => (
+              <option key={id} value={id}>
+                {view.players[id]!.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <span className="hint">Clique sur tes créatures pour les faire attaquer la cible choisie.</span>
+        <button
+          className="primary"
+          disabled={planned.length === 0}
+          onClick={() =>
+            void act({
+              type: "declareAttackers",
+              attackers: planned.map(([cardId, defender]) => ({ cardId, defender })),
+            })
+          }
+        >
+          Attaquer ({planned.length})
+        </button>
+        <button onClick={() => void act({ type: "declareAttackers", attackers: [] })}>Pas d'attaque</button>
+      </div>
+    );
+  }
+  if (ui.mode === "block") {
+    const planned = Object.entries(ui.blockPlan);
+    return (
+      <div className="combat-panel">
+        <span className="combat-title">Blocage</span>
+        <span className="hint">
+          {ui.blocker
+            ? `Clique sur l'attaquant que ${name(ui.blocker)} doit bloquer.`
+            : "Clique sur une de tes créatures, puis sur l'attaquant à bloquer."}
+        </span>
+        <span className="assignments">
+          {planned.map(([b, a]) => (
+            <span key={b} className="assignment">
+              {name(b)} bloque {name(a)}{" "}
+              <button className="link small" onClick={() => ui.unblock(b)} aria-label="Retirer">
+                ×
+              </button>
+            </span>
+          ))}
+        </span>
+        <button
+          className="primary"
+          disabled={planned.length === 0}
+          onClick={() =>
+            void act({ type: "declareBlockers", blocks: planned.map(([cardId, attackerId]) => ({ cardId, attackerId })) })
+          }
+        >
+          Bloquer ({planned.length})
+        </button>
+        <button onClick={() => void act({ type: "declareBlockers", blocks: [] })}>Pas de blocage</button>
+      </div>
+    );
+  }
+  const waiting = pendingBlockers(view);
+  if (combat && waiting.length > 0) {
+    return (
+      <div className="combat-panel">
+        <span className="combat-title">Combat</span>
+        <span className="hint">En attente des bloqueurs de {waiting.map((id) => view.players[id]!.name).join(", ")}.</span>
+      </div>
+    );
+  }
+  return null;
+}
+
 /** Même joueur, ou coéquipiers qui jouent ensemble (tours partagés). */
 function sameSide(view: GameView, a: PlayerId, b: PlayerId): boolean {
   return a === b || (view.settings.sharedTurns && view.teams.some((t) => t.includes(a) && t.includes(b)));
@@ -132,6 +334,7 @@ export function Table() {
   const myIndex = view.turnOrder.indexOf(me);
   const others = [...view.turnOrder.slice(myIndex + 1), ...view.turnOrder.slice(0, myIndex)];
   const isActive = sameSide(view, view.turn.activePlayerId, me);
+  const combatUi = useCombatUi(view, isActive);
   const winners = view.outcome.winners;
 
   return (
@@ -139,11 +342,12 @@ export function Table() {
       <div className="table-main">
         <div className={`opponents opponents-${others.length}`}>
           {others.map((id) => (
-            <PlayerArea key={id} view={view} playerId={id} compact onOpenZone={setZoneViewer} />
+            <PlayerArea key={id} view={view} playerId={id} compact onOpenZone={setZoneViewer} combat={combatUi} />
           ))}
         </div>
-        <PlayerArea view={view} playerId={me} onOpenZone={setZoneViewer} />
+        <PlayerArea view={view} playerId={me} onOpenZone={setZoneViewer} combat={combatUi} />
         <Hand view={view} />
+        <CombatPanel view={view} isActive={isActive} combat={combatUi} />
         <PhaseBar view={view} isActive={isActive} />
         <Toolbar view={view} isActive={isActive} onTokens={() => setTokens(true)} />
       </div>
@@ -177,6 +381,7 @@ function PlayerArea(props: {
   playerId: PlayerId;
   compact?: boolean;
   onOpenZone: (t: ZoneTarget) => void;
+  combat: CombatUi;
 }) {
   const { view, playerId } = props;
   const p = view.players[playerId]!;
@@ -206,6 +411,7 @@ function PlayerArea(props: {
       attachments={attachmentsOf(c.instanceId)}
       onMenu={(e) => openCardMenu(e, view, c)}
       onDoubleClick={(e) => c.instanceId && tapOrProduce(e, view, c)}
+      {...props.combat.cardProps(c)}
     />
   );
 

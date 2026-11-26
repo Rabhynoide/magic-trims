@@ -1,4 +1,4 @@
-import { manaOptions, type CardData, type CardView, type GameView, type ManaType, type VisibleCardView } from "@magic-trims/core";
+import { creatureStats, isCreature, manaOptions, type GameState, type CardData, type CardView, type GameView, type ManaType, type VisibleCardView } from "@magic-trims/core";
 
 export function cardData(view: GameView, card: CardView): CardData | undefined {
   return card.hidden ? undefined : view.cardData[card.cardId];
@@ -58,4 +58,19 @@ export function cardManaOptions(view: GameView, card: CardView): ManaType[][] {
 /** Image Scryfall d'un symbole de mana. */
 export function manaSymbolUrl(mana: string): string {
   return `https://svgs.scryfall.io/card-symbols/${mana}.svg`;
+}
+
+/** Force et endurance actuelles d'une créature sur le champ de bataille (null sinon). */
+export function creaturePT(view: GameView, card: CardView): { power: number; toughness: number; base: boolean } | null {
+  if (card.hidden || card.zone !== "battlefield") return null;
+  // Les fonctions du moteur ne lisent que les données des cartes, que la vue contient.
+  const g = view as unknown as GameState;
+  const c = card as VisibleCardView;
+  if (!isCreature(g, c)) return null;
+  const stats = creatureStats(g, c);
+  const data = cardData(view, card);
+  const face = data?.faces?.[c.faceIndex];
+  const base =
+    String(stats.power) === (face?.power ?? data?.power) && String(stats.toughness) === (face?.toughness ?? data?.toughness);
+  return { ...stats, base };
 }
