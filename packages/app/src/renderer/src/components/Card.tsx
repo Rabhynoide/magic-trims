@@ -28,6 +28,7 @@ export function Card(props: {
         e.dataTransfer.setData(DRAG_TYPE, id);
         e.dataTransfer.effectAllowed = "move";
         ui.setPreview(null);
+        ui.cancelZoom();
       }}
       onContextMenu={(e) => {
         if (!props.onMenu) return;
@@ -36,9 +37,16 @@ export function Card(props: {
       }}
       onClick={(e) => props.onMenu && e.button === 0 && e.altKey && props.onMenu(e)}
       onDoubleClick={props.onDoubleClick}
-      onMouseEnter={() => !card.hidden && ui.setPreview(card)}
-      onMouseLeave={() => ui.setPreview(null)}
-      title={name}
+      onMouseEnter={(e) => {
+        if (card.hidden) return;
+        ui.setPreview(card);
+        ui.hoverCard(card, e.currentTarget);
+      }}
+      onMouseLeave={() => {
+        ui.setPreview(null);
+        ui.cancelZoom();
+      }}
+      onMouseDown={() => ui.cancelZoom()}
       data-card-name={name}
     >
       {img ? (
