@@ -3,6 +3,7 @@ export * from "./actions.js";
 export { applyAction, ActionError, canSee, type ActionResult } from "./reducer.js";
 export * from "./setup.js";
 export * from "./modes.js";
+export * from "./turn.js";
 export * from "./view.js";
 export * from "./rng.js";
 export * from "./deck/parse.js";

@@ -15,6 +15,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   sharedTurns: false,
   teammatesSeeHands: false,
   planechase: false,
+  autoTurnActions: true,
 };
 
 export const MAX_PLAYERS = 5;
@@ -122,7 +123,8 @@ export function createGame(options: NewGameOptions): GameState {
     stack: [],
     planarDeck: [],
     plane: [],
-    turn: { number: 1, activePlayerId: turnOrder[0]!, planarDieRolls: 0 },
+    // La partie commence à l'entretien du premier joueur : il n'y a rien à dégager.
+    turn: { number: 1, activePlayerId: turnOrder[0]!, step: "upkeep", planarDieRolls: 0 },
     rngState,
     log: [],
   };
@@ -215,4 +217,15 @@ function interleave(teams: PlayerId[][]): PlayerId[] {
   const longest = Math.max(...teams.map((t) => t.length));
   for (let i = 0; i < longest; i++) for (const t of teams) if (t[i]) order.push(t[i]!);
   return order;
+}
+
+/**
+ * Complète une partie sauvegardée par une version précédente de l'appli
+ * (champs ajoutés depuis). Modifie et retourne `g`.
+ */
+export function upgradeGame(g: GameState): GameState {
+  g.settings = { ...DEFAULT_SETTINGS, ...g.settings };
+  // Les anciennes parties n'avaient pas d'étapes : on reprend en phase principale.
+  g.turn.step ??= "main1";
+  return g;
 }

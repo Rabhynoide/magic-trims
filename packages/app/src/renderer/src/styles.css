@@ -823,6 +823,55 @@ textarea:focus {
   align-items: center;
   flex-wrap: wrap;
 }
+.phase-bar {
+  flex: none;
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.phase {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.phase-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  padding-left: 2px;
+}
+.phase-steps {
+  display: flex;
+  gap: 2px;
+}
+.phase-step {
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-sunken);
+  color: var(--text-dim);
+}
+.phase-step:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.phase-step.past {
+  opacity: 0.5;
+}
+.phase-step.current {
+  background: var(--active);
+  border-color: var(--active);
+  color: #fff;
+  font-weight: 600;
+  opacity: 1;
+}
+.phase-step.future:not(:disabled):hover {
+  border-color: var(--active);
+  color: var(--text);
+}
 .turn-info {
   color: var(--text-dim);
   margin-right: 6px;

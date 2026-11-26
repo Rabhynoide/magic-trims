@@ -1,3 +1,4 @@
+import type { TurnStep } from "./turn.js";
 import type { CardData, CardInstanceId, PlayerId, Zone } from "./types.js";
 
 /**
@@ -59,6 +60,12 @@ export type GameAction =
     }
   | { type: "adjustPlayerCounter"; playerId: PlayerId; kind: string; delta: number }
   // Tour et table
+  /**
+   * Passe à l'étape suivante du tour, ou jusqu'à l'étape `to` (plus loin dans
+   * le même tour) en faisant les actions obligatoires des étapes traversées.
+   */
+  | { type: "nextStep"; to?: TurnStep }
+  /** Finit le tour (étapes restantes comprises) et donne la main au joueur suivant. */
   | { type: "passTurn" }
   | { type: "rollDie"; sides: number }
   // Variantes

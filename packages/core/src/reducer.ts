@@ -1,6 +1,7 @@
 import type { ActionEnvelope, GameAction } from "./actions.js";
 import { nextRandom, shuffleInPlace } from "./rng.js";
 import { isActivePlayer, lifeSharers, areTeammates, teamOf } from "./modes.js";
+import { MAX_HAND_SIZE, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
 import {
   HIDDEN_ORDERED_ZONES,
   PUBLIC_ZONES,
@@ -49,15 +50,7 @@ type Handler<T extends GameAction["type"]> = (
 const handlers: { [T in GameAction["type"]]: Handler<T> } = {
   draw(g, actor, { count }) {
     assertCount(count);
-    const library = actor.zones.library;
-    const drawn = Math.min(count, library.length);
-    for (let i = 0; i < drawn; i++) {
-      moveCardTo(g, library[0]!, "hand", "top");
-    }
-    log(g, actor.id, `${actor.name} pioche ${plural(drawn, "carte")}.`);
-    if (drawn < count) {
-      log(g, actor.id, `${actor.name} tente de piocher dans une bibliothèque vide.`);
-    }
+    drawCards(g, actor, count);
   },
 
   shuffleLibrary(g, actor) {
@@ -281,14 +274,21 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     log(g, actor.id, `${player.name} a ${value} ${kind}.`);
   },
 
-  passTurn(g, actor) {
-    if (!isActivePlayer(g, actor.id)) {
-      throw new ActionError("Ce n'est pas ton tour.");
+  nextStep(g, actor, { to }) {
+    assertActive(g, actor);
+    if (to === undefined && g.turn.step === "cleanup") return passTurn(g, actor);
+    if (to !== undefined && !isTurnStep(to)) throw new ActionError("Étape inconnue.");
+    const target = to ?? TURN_STEPS[stepIndex(g.turn.step) + 1]!;
+    if (stepIndex(target) <= stepIndex(g.turn.step)) {
+      throw new ActionError("On ne revient pas en arrière dans le tour.");
     }
-    const next = nextActivePlayer(g, g.turn.activePlayerId);
-    if (next === null) throw new ActionError("Plus aucun joueur en lice.");
-    startTurn(g, next);
-    log(g, actor.id, `Tour ${g.turn.number} : c'est à ${activeNames(g)}.`);
+    while (g.turn.step !== target) enterStep(g, TURN_STEPS[stepIndex(g.turn.step) + 1]!);
+    log(g, actor.id, `${actor.name} passe à ${STEP_PHRASES[target]}.`);
+  },
+
+  passTurn(g, actor) {
+    assertActive(g, actor);
+    passTurn(g, actor);
   },
 
   setSchemeInMotion(g, actor) {
@@ -589,10 +589,83 @@ function nextActivePlayer(g: GameState, from: PlayerId): PlayerId | null {
   return null;
 }
 
+function assertActive(g: GameState, actor: PlayerState): void {
+  if (!isActivePlayer(g, actor.id)) throw new ActionError("Ce n'est pas ton tour.");
+}
+
+function passTurn(g: GameState, actor: PlayerState): void {
+  const next = nextActivePlayer(g, g.turn.activePlayerId);
+  if (next === null) throw new ActionError("Plus aucun joueur en lice.");
+  // Les étapes restantes ont lieu (le nettoyage rappelle la taille de main).
+  while (g.turn.step !== "cleanup") enterStep(g, TURN_STEPS[stepIndex(g.turn.step) + 1]!);
+  startTurn(g, next);
+}
+
+/** Joueurs actifs encore en lice (plusieurs en tours partagés). */
+function activePlayers(g: GameState): PlayerState[] {
+  const ids = g.settings.sharedTurns ? teamOf(g, g.turn.activePlayerId) : [g.turn.activePlayerId];
+  return ids.map((id) => g.players[id]!).filter((p) => !p.hasConceded);
+}
+
+/**
+ * Début d'un tour : l'étape de dégagement n'a pas de priorité (règle 502.4),
+ * on enchaîne donc directement sur l'entretien.
+ */
 function startTurn(g: GameState, playerId: PlayerId): void {
   g.turn.number += 1;
   g.turn.activePlayerId = playerId;
   g.turn.planarDieRolls = 0;
+  log(g, null, `Tour ${g.turn.number} : c'est à ${activeNames(g)}.`);
+  enterStep(g, "untap");
+  enterStep(g, "upkeep");
+}
+
+/** Entre dans une étape et fait ses actions obligatoires (actions de tour). */
+function enterStep(g: GameState, step: TurnStep): void {
+  g.turn.step = step;
+  if (!g.settings.autoTurnActions) return;
+  const players = activePlayers(g);
+  switch (step) {
+    case "untap":
+      for (const p of players) {
+        for (const id of p.zones.battlefield) g.cards[id]!.tapped = false;
+      }
+      if (players.length > 0) log(g, null, `${names(players)} ${players.length > 1 ? "dégagent leurs" : "dégage ses"} permanents.`);
+      break;
+    case "draw":
+      if (skipsFirstDraw(g)) {
+        log(g, null, `${names(players)} ne ${players.length > 1 ? "piochent" : "pioche"} pas au premier tour.`);
+      } else {
+        for (const p of players) drawCards(g, p, 1);
+      }
+      break;
+    case "cleanup":
+      for (const p of players) {
+        const excess = p.zones.hand.length - MAX_HAND_SIZE;
+        if (excess > 0) {
+          log(g, null, `${p.name} a ${p.zones.hand.length} cartes en main et doit en défausser ${excess} (maximum ${MAX_HAND_SIZE}).`);
+        }
+      }
+      break;
+  }
+}
+
+/**
+ * Le premier joueur ne pioche pas à son premier tour dans une partie à deux
+ * (règle 103.8a), ni l'équipe qui commence en Géant à deux têtes (103.8b).
+ * En multijoueur, tout le monde pioche.
+ */
+function skipsFirstDraw(g: GameState): boolean {
+  if (g.turn.number !== 1) return false;
+  return g.turnOrder.length === 2 || g.settings.mode === "twoHeadedGiant";
+}
+
+function drawCards(g: GameState, player: PlayerState, count: number): void {
+  const library = player.zones.library;
+  const drawn = Math.min(count, library.length);
+  for (let i = 0; i < drawn; i++) moveCardTo(g, library[0]!, "hand", "top");
+  log(g, player.id, `${player.name} pioche ${plural(drawn, "carte")}.`);
+  if (drawn < count) log(g, player.id, `${player.name} tente de piocher dans une bibliothèque vide.`);
 }
 
 function activeNames(g: GameState): string {

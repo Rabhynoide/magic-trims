@@ -102,7 +102,7 @@ describe("Géant à deux têtes", () => {
     expect(refuse(g, "p1", { type: "passTurn" })).toMatch(/pas ton tour/);
     g = act(g, "p4", { type: "passTurn" });
     expect(g.turn.activePlayerId).toBe("p1");
-    expect(g.log.at(-1)!.message).toBe("Tour 3 : c'est à Alice et Bruno.");
+    expect(g.log.map((l) => l.message)).toContain("Tour 3 : c'est à Alice et Bruno.");
   });
 
   it("montre la main du coéquipier, pas celle des adversaires", () => {
