@@ -791,10 +791,13 @@ textarea:focus {
 .battlefield-row {
   display: flex;
   flex-wrap: wrap;
+  /* Pas d'écrasement des rangées : le champ de bataille défile s'il manque de place. */
+  flex-shrink: 0;
   gap: 6px;
   align-items: center;
   min-height: 20px;
 }
+.battlefield-row.others,
 .battlefield-row.lands {
   border-top: 1px dashed var(--border);
   padding-top: 6px;
