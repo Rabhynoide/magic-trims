@@ -120,3 +120,41 @@ export function viewFor(g: GameState, viewerId: PlayerId): GameView {
   if (g.archenemyId) view.archenemyId = g.archenemyId;
   return view;
 }
+
+const stateCache = new WeakMap<GameView, GameState>();
+
+/**
+ * Une partie minimale reconstruite depuis une vue, pour que l'interface
+ * puisse appeler les fonctions du moteur qui ne font que lire (force et
+ * endurance, mots-clés donnés par un équipement…). Les cartes cachées y sont
+ * des cartes face cachée sans données.
+ */
+export function stateFromView(view: GameView): GameState {
+  const cached = stateCache.get(view);
+  if (cached) return cached;
+  const cards: Record<CardInstanceId, CardInstance> = {};
+  let hidden = 0;
+  const add = (c: CardView): CardInstanceId => {
+    const id = c.instanceId ?? `hidden-${hidden++}`;
+    cards[id] = c.hidden
+      ? { ...c, instanceId: id, cardId: "", faceIndex: 0, isToken: false, isCommander: false, revealedTo: [], faceDown: true }
+      : (c as CardInstance);
+    return id;
+  };
+  const players: Record<PlayerId, PlayerState> = {};
+  for (const [pid, p] of Object.entries(view.players)) {
+    const zones = Object.fromEntries(PLAYER_ZONES.map((z) => [z, (p.zones[z] ?? []).map(add)])) as Record<PlayerZone, CardInstanceId[]>;
+    players[pid] = { ...p, zones };
+  }
+  const g = {
+    ...view,
+    players,
+    cards,
+    stack: view.stack.map(add),
+    planarDeck: view.planarDeck.map(add),
+    plane: view.plane.map(add),
+    rngState: 0,
+  } as unknown as GameState;
+  stateCache.set(view, g);
+  return g;
+}

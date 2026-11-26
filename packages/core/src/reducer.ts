@@ -13,17 +13,28 @@ import {
   type ManaType,
 } from "./mana.js";
 import {
+  KEYWORD_HELP,
   cardSupport,
   isLegalTarget,
   matchesPermanent,
   resolveAmount,
   spellEffectsOf,
+  permanentLabel,
   type Effect,
   type SpellEffects,
   type Target,
   type Who,
 } from "./effects.js";
 import { abilitiesOf, conditionMatches, type TriggerEvent } from "./triggers.js";
+import {
+  attackTaxPerCreature,
+  cantGainLife,
+  cantPlayLands,
+  castRestriction,
+  costReduction,
+  entersTapped,
+  hasNoMaxHandSize,
+} from "./statics.js";
 import { canAttack, canBlock, cantAttack, cantBlock, creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatState } from "./combat.js";
 import { MAX_HAND_SIZE, STEP_LABELS, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
 import {
@@ -234,12 +245,22 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       if (target.hasConceded) throw new ActionError(`${target.name} a abandonné.`);
       if (isActivePlayer(g, defender)) throw new ActionError("On n'attaque pas son propre camp.");
     }
+    // Taxes d'attaque (Ghostly Prison, Propaganda…) : payées d'office, en engageant des terrains au besoin.
+    if (g.settings.enforceRules) {
+      let tax = 0;
+      for (const { defender } of attackers) tax += attackTaxPerCreature(g, defender);
+      if (tax > 0) {
+        const paid = payMana(g, actor, "", 0, tax, undefined, `attaquer (taxe de {${tax}})`);
+        log(g, actor.id, `${actor.name} paie ${formatMana(paid.spent)} pour attaquer.`);
+      }
+    }
     const combat = g.combat;
     combat.attackersDeclared = true;
     for (const { cardId, defender } of attackers) {
       combat.attackers[cardId] = defender;
       const card = g.cards[cardId]!;
       if (!hasKeyword(g, card, "Vigilance")) card.tapped = true;
+      emit(g, { type: "attacks", cardId });
     }
     if (attackers.length === 0) {
       log(g, actor.id, `${actor.name} n'attaque pas.`);
@@ -284,7 +305,10 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
         throw new ActionError(`${name} ne peut pas bloquer ${cardName(g, attacker)}, qui vole.`);
       }
     }
-    for (const { cardId, attackerId } of blocks) combat.blockers[cardId] = attackerId;
+    for (const { cardId, attackerId } of blocks) {
+      combat.blockers[cardId] = attackerId;
+      emit(g, { type: "blocks", cardId });
+    }
     // La menace : bloquée par deux créatures ou plus, ou pas du tout.
     for (const attackerId of Object.keys(combat.attackers)) {
       const count = Object.values(combat.blockers).filter((a) => a === attackerId).length;
@@ -326,14 +350,16 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     if (!/\bLand\b/.test(faceTypeLine(g, card, faceIndex))) throw new ActionError(`${cardName(g, card)} n'est pas un terrain.`);
     assertSorceryTiming(g, actor, "jouer un terrain");
     if (actor.landsPlayed >= 1) throw new ActionError("Tu as déjà joué un terrain ce tour.");
+    if (g.settings.enforceRules && cantPlayLands(g, actor.id)) throw new ActionError("Un de tes permanents t'empêche de jouer des terrains.");
     const played = moveCardTo(g, cardId, "battlefield", "top");
     played.faceIndex = faceIndex;
+    if (g.settings.enforceRules && entersTapped(g.cardData[played.cardId], faceIndex)) played.tapped = true;
     actor.landsPlayed += 1;
     log(g, actor.id, `${actor.name} joue ${cardName(g, played)}.`);
     emit(g, { type: "landPlayed", playerId: actor.id });
   },
 
-  castSpell(g, actor, { cardId, face, x, targets }) {
+  castSpell(g, actor, { cardId, face, x, targets, sacrifice }) {
     const card = getCard(g, cardId);
     const fromCommand = card.zone === "command" && card.isCommander;
     if (card.ownerId !== actor.id || (card.zone !== "hand" && !fromCommand)) {
@@ -355,6 +381,11 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     }
     const xValue = x ?? 0;
     if (!Number.isInteger(xValue) || xValue < 0 || xValue > 100) throw new ActionError("Valeur de X invalide.");
+    const castThisTurn = actor.spellsCast?.turn === g.turn.number ? actor.spellsCast.count : 0;
+    if (g.settings.enforceRules) {
+      const restriction = castRestriction(g, actor.id, typeLine, castThisTurn);
+      if (restriction) throw new ActionError(restriction);
+    }
     // Cibles des effets que le moteur sait appliquer.
     const effects = g.settings.enforceRules ? spellEffectsOf(g, card, faceIndex) : null;
     const chosen = targets ?? [];
@@ -369,28 +400,29 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       });
     }
     const costText = faceData?.manaCost || data.manaCost;
-    const cost = parseManaCost(costText);
     const tax = fromCommand ? 2 * (actor.commanderCasts[card.instanceId] ?? 0) : 0;
     const name = cardName(g, card);
-
-    // Paie avec la réserve, en engageant des sources de mana quand il en manque.
-    let payment = payFromPool(actor.manaPool, cost, xValue, tax);
-    while (!payment.ok) {
-      const source = findManaSource(g, actor, payment.need, card.instanceId);
-      if (!source) {
-        const missing = payment.need.kind === "color" ? payment.need.options.map((m) => `{${m}}`).join(" ou ") : "du mana";
-        throw new ActionError(`Pas assez de mana pour lancer ${name} : il manque ${missing}.`);
+    // Coût supplémentaire : sacrifier un permanent (Village Rites…).
+    let sacrificed: CardInstance | undefined;
+    if (effects?.sacrifice) {
+      if (!sacrifice) throw new ActionError(`Choisis un(e) ${permanentLabel(effects.sacrifice)} à sacrifier pour lancer ${name}.`);
+      sacrificed = getCard(g, sacrifice);
+      if (!matchesPermanent(g, sacrificed, effects.sacrifice, actor.id) || sacrificed.controllerId !== actor.id) {
+        throw new ActionError(`Il faut sacrifier un(e) ${permanentLabel(effects.sacrifice)}.`);
       }
-      tapForMana(g, actor, source.card, source.choice);
-      payment = payFromPool(actor.manaPool, cost, xValue, tax);
     }
-    actor.manaPool = payment.pool;
-    if (payment.life > 0) {
-      actor.life -= payment.life;
-      emit(g, { type: "lifeLoss", playerId: actor.id, amount: payment.life });
+    // Réductions de coût (Jet Medallion…), seulement quand l'hôte applique les règles.
+    const reduction = g.settings.enforceRules ? costReduction(g, actor.id, { typeLine, colors: data.colors }) : 0;
+    const payment = payMana(g, actor, costText, xValue, tax - reduction, card.instanceId, `lancer ${name}`);
+    if (sacrificed) {
+      const sacName = cardName(g, sacrificed);
+      moveCardTo(g, sacrificed.instanceId, "graveyard", "top");
+      log(g, actor.id, `${actor.name} sacrifie ${sacName}.`);
     }
 
+    actor.spellsCast = { turn: g.turn.number, count: castThisTurn + 1 };
     const cast = moveCardTo(g, cardId, "stack", "top");
+    emit(g, { type: "cast", playerId: actor.id, cardId: cast.instanceId, typeLine });
     cast.faceIndex = faceIndex;
     if (effects) {
       cast.targets = effects.targets.length > 0 ? chosen.map((t) => ({ ...t })) : [];
@@ -399,7 +431,13 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const paid = [payment.spent.length > 0 ? formatMana(payment.spent) : "rien", payment.life > 0 ? `${payment.life} PV` : ""]
       .filter(Boolean)
       .join(" et ");
-    const details = [x !== undefined ? `X = ${xValue}` : "", tax > 0 ? `taxe de commandant {${tax}}` : ""].filter(Boolean).join(", ");
+    const details = [
+      x !== undefined ? `X = ${xValue}` : "",
+      tax > 0 ? `taxe de commandant {${tax}}` : "",
+      reduction > 0 ? `réduction de {${reduction}}` : "",
+    ]
+      .filter(Boolean)
+      .join(", ");
     const aimed = cast.targets && cast.targets.length > 0 ? ` sur ${cast.targets.map((t) => targetName(g, t)).join(", ")}` : "";
     log(g, actor.id, `${actor.name} lance ${cardName(g, cast)}${aimed}${details ? ` (${details})` : ""} en payant ${paid}.`);
   },
@@ -599,9 +637,43 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     log(g, actor.id, `${actor.name} vise ${targets.map((t) => targetName(g, t)).join(", ")} avec la capacité de ${ability.sourceName}.`);
   },
 
+  activateAbility(g, actor, { cardId, index, targets, sacrifice, color }) {
+    activateAbility(g, actor, cardId, index, targets ?? [], sacrifice, color);
+  },
+
+  decideOptional(g, actor, { cardId, accept, choice }) {
+    const card = getCard(g, cardId);
+    const ability = card.ability;
+    if (!ability?.awaitingDecision || card.zone !== "stack") throw new ActionError("Cette capacité n'attend pas de réponse.");
+    if (card.controllerId !== actor.id) throw new ActionError("Seul le contrôleur de la capacité décide.");
+    const trigger = abilitiesOf(g.cardData[card.cardId], ability.faceIndex).triggers[ability.index];
+    if (accept && trigger) {
+      const sac = trigger.effects.effects.find((e) => e.type === "sacrifice");
+      if (sac && sac.type === "sacrifice") {
+        const chosen = choice ? g.cards[choice] : undefined;
+        if (!chosen || chosen.controllerId !== actor.id || !matchesPermanent(g, chosen, sac.filter, actor.id)) {
+          throw new ActionError(`Choisis un(e) ${permanentLabel(sac.filter)} à sacrifier.`);
+        }
+        ability.choice = chosen.instanceId;
+      }
+      if (trigger.payMana) {
+        const paid = payMana(g, actor, trigger.payMana, 0, 0, undefined, "payer ce coût");
+        log(g, actor.id, `${actor.name} paie ${paid.spent.length > 0 ? formatMana(paid.spent) : "rien"}.`);
+      }
+    }
+    delete ability.awaitingDecision;
+    ability.accepted = accept;
+    log(g, actor.id, `${actor.name} ${accept ? "accepte" : "refuse"} : « ${ability.text} ».`);
+    resolveAbility(g, card);
+  },
+
   passPriority(g, actor) {
     const priority = g.priority;
     if (!priority) throw new ActionError("La pile est vide : personne n'a la priorité.");
+    const deciding = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.awaitingDecision);
+    if (deciding) {
+      throw new ActionError(`${g.players[deciding.controllerId]!.name} doit d'abord décider pour la capacité de ${deciding.ability!.sourceName}.`);
+    }
     const waiting = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.needsTargets);
     if (waiting) {
       throw new ActionError(
@@ -805,11 +877,16 @@ export function moveCardTo(
     delete card.xValue;
   }
   if (from === "battlefield" && to !== "battlefield") {
+    if (!card.faceDown) {
+      emit(g, { type: "leaves", cardId: card.instanceId, controllerId: card.controllerId, dataId: card.cardId, faceIndex: card.faceIndex });
+    }
     delete card.summoningSick;
     delete card.hasLoyalty;
     delete card.damage;
     delete card.deathtouched;
     delete card.ptBoost;
+    delete card.grants;
+    delete card.usedAbilities;
     if (g.combat) {
       delete g.combat.attackers[card.instanceId];
       delete g.combat.blockers[card.instanceId];
@@ -844,6 +921,10 @@ export function moveCardTo(
   card.faceDown = (to === "battlefield" || to === "exile") && (options.faceDown ?? false);
   if (to !== "battlefield") card.faceIndex = 0;
   if (to === "battlefield") card.tapped = options.tapped ?? false;
+  // « This land enters tapped. »
+  if (to === "battlefield" && from !== "battlefield" && g.settings.enforceRules && !card.faceDown && entersTapped(g.cardData[card.cardId], card.faceIndex)) {
+    card.tapped = true;
+  }
 
   if (card.faceDown) {
     card.revealedTo = [card.controllerId];
@@ -1019,7 +1100,7 @@ function updatePriority(before: GameState, g: GameState, actor: PlayerState): vo
   }
   const addedIds = g.stack.filter((id) => !before.stack.includes(id));
   // Un sort lancé : son lanceur reçoit la priorité ; seulement des capacités déclenchées : le joueur actif.
-  const added = addedIds.some((id) => !g.cards[id]?.ability);
+  const added = addedIds.some((id) => !g.cards[id]?.ability || g.cards[id]!.ability!.activated);
   if (!added && addedIds.length > 0) {
     g.priority = { playerId: g.turn.activePlayerId, passed: [] };
     return;
@@ -1075,7 +1156,7 @@ function flushTriggers(g: GameState): boolean {
       faceIndex: c.faceIndex,
     }));
     // « Quand ~ meurt » : la carte regarde en arrière, depuis le cimetière (ou disparue si c'est un jeton).
-    if (event.type === "dies") {
+    if (event.type === "dies" || event.type === "leaves") {
       const dead = g.cards[event.cardId] ?? ({ instanceId: event.cardId, controllerId: event.controllerId } as CardInstance);
       sources.push({ card: { ...dead, controllerId: event.controllerId }, dataId: event.dataId, faceIndex: event.faceIndex });
     }
@@ -1144,7 +1225,8 @@ function legalTargets(g: GameState, spec: Parameters<typeof isLegalTarget>[1], c
 function abilityEffects(g: GameState, card: CardInstance): SpellEffects | undefined {
   const ability = card.ability;
   if (!ability) return undefined;
-  return abilitiesOf(g.cardData[card.cardId], ability.faceIndex).triggers[ability.index]?.effects;
+  const abilities = abilitiesOf(g.cardData[card.cardId], ability.faceIndex);
+  return ability.activated ? abilities.activated[ability.index]?.effects : abilities.triggers[ability.index]?.effects;
 }
 
 function resolveAbility(g: GameState, card: CardInstance): void {
@@ -1155,12 +1237,24 @@ function resolveAbility(g: GameState, card: CardInstance): void {
     moveCardTo(g, card.instanceId, "graveyard", "top");
     return;
   }
+  // « You may » : le contrôleur répond d'abord (la capacité reste sur la pile en attendant).
+  const trigger = ability.activated ? undefined : abilitiesOf(g.cardData[card.cardId], ability.faceIndex).triggers[ability.index];
+  if (trigger?.optional && ability.accepted === undefined) {
+    ability.awaitingDecision = true;
+    log(g, null, `${g.players[card.controllerId]!.name} choisit s'il applique la capacité de ${ability.sourceName}.`);
+    return;
+  }
+  if (ability.accepted === false) {
+    moveCardTo(g, card.instanceId, "graveyard", "top");
+    return;
+  }
   const legal = targets.map((t, i) => isLegalTarget(g, effects.targets[i]!, t, card.controllerId, card.instanceId));
   if (targets.length > 0 && legal.every((ok) => !ok)) {
     log(g, null, `La capacité de ${ability.sourceName} n'a plus de cible valide : elle ne fait rien.`);
   } else {
     log(g, null, `La capacité de ${ability.sourceName} se résout.`);
     applySpellEffects(g, card, effects.effects, targets, legal);
+    if (effects.unknown.length > 0) log(g, null, `À appliquer à la main pour ${ability.sourceName} : « ${effects.unknown.join(" ")} »`);
   }
   if (g.cards[card.instanceId]) moveCardTo(g, card.instanceId, "graveyard", "top");
 }
@@ -1172,24 +1266,29 @@ function targetName(g: GameState, t: Target): string {
 }
 
 /** Inflige des blessures non liées au combat à un joueur ou à un permanent. */
-function dealDamage(g: GameState, sourceName: string, t: Target, amount: number): void {
-  if (amount <= 0) return;
+function dealDamage(g: GameState, sourceName: string, t: Target, amount: number): number {
+  if (amount <= 0) return 0;
   if (t.kind === "player") {
     const sharers = lifeSharers(g, t.id);
     for (const p of sharers) p.life -= amount;
     emit(g, { type: "lifeLoss", playerId: t.id, amount });
     log(g, null, `${sourceName} inflige ${amount} blessure${amount > 1 ? "s" : ""} à ${names(sharers)} (${sharers[0]!.life} PV).`);
-    return;
+    return amount;
   }
   const card = g.cards[t.id];
-  if (!card || card.zone !== "battlefield") return;
+  if (!card || card.zone !== "battlefield") return 0;
   if (card.hasLoyalty) card.counters["loyauté"] = Math.max(0, (card.counters["loyauté"] ?? 0) - amount);
   if (isCreature(g, card)) card.damage = (card.damage ?? 0) + amount;
   log(g, null, `${sourceName} inflige ${amount} blessure${amount > 1 ? "s" : ""} à ${cardName(g, card)}.`);
+  return amount;
 }
 
 function changeLife(g: GameState, playerId: PlayerId, delta: number): void {
   if (delta === 0) return;
+  if (delta > 0 && cantGainLife(g, playerId)) {
+    log(g, null, `${g.players[playerId]!.name} ne peut pas gagner de points de vie.`);
+    return;
+  }
   const sharers = lifeSharers(g, playerId);
   for (const p of sharers) p.life += delta;
   emit(g, delta > 0 ? { type: "lifeGain", playerId, amount: delta } : { type: "lifeLoss", playerId, amount: -delta });
@@ -1211,11 +1310,24 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
   const sourceName = ability?.sourceName ?? cardName(g, source);
   const eventAmount = ability?.eventAmount ?? 0;
   const eventPlayer = ability?.eventPlayerId ? g.players[ability.eventPlayerId] : undefined;
-  const amountOf = (a: Parameters<typeof resolveAmount>[0]) => resolveAmount(a, x, eventAmount);
+  let dealt = 0;
+  const given = () =>
+    Object.values(g.cards).filter((c) => c.zone === "battlefield" && c.ownerId === caster.id && opponentsOf(g, caster.id).some((p) => p.id === c.controllerId)).length;
+  const amountOf = (a: Parameters<typeof resolveAmount>[0]) =>
+    resolveAmount(a, x, eventAmount, { dealt, hand: caster.zones.hand.length, given: a === "given" ? given() : 0 });
+  // Contrôleurs des cibles au début de la résolution (« its controller » après « destroy target creature »).
+  const controllers = targets.map((t) => (t.kind === "card" ? g.cards[t.id]?.controllerId : undefined));
+  const self = ability ? g.cards[ability.sourceId] : undefined;
   const whoOf = (who: Who): PlayerState[] => {
     if (who === "you") return [caster];
     if (who === "opponents") return opponentsOf(g, caster.id);
+    if (who === "all") return g.turnOrder.map((id) => g.players[id]!).filter((p) => !p.hasConceded);
     if (who === "event") return eventPlayer && !eventPlayer.hasConceded ? [eventPlayer] : [];
+    if ("controllerOf" in who) {
+      const id = legal[who.controllerOf] ? controllers[who.controllerOf] : undefined;
+      const p = id ? g.players[id] : undefined;
+      return p && !p.hasConceded ? [p] : [];
+    }
     const p = player(who.target);
     return p ? [p] : [];
   };
@@ -1267,16 +1379,18 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         break;
       case "damage":
         if (effect.target === "event") {
-          if (eventPlayer && !eventPlayer.hasConceded) dealDamage(g, sourceName, { kind: "player", id: eventPlayer.id }, amountOf(effect.amount));
-        } else if (legal[effect.target]) dealDamage(g, sourceName, targets[effect.target]!, amountOf(effect.amount));
+          if (eventPlayer && !eventPlayer.hasConceded) dealt += dealDamage(g, sourceName, { kind: "player", id: eventPlayer.id }, amountOf(effect.amount));
+        } else if (effect.target === "you") {
+          dealt += dealDamage(g, sourceName, { kind: "player", id: caster.id }, amountOf(effect.amount));
+        } else if (legal[effect.target]) dealt += dealDamage(g, sourceName, targets[effect.target]!, amountOf(effect.amount));
         break;
       case "damageEach": {
         const n = amountOf(effect.amount);
         if (effect.who === "creatures") {
-          for (const c of allMatching({ types: ["creature"], notTypes: [] })) dealDamage(g, sourceName, { kind: "card", id: c.instanceId }, n);
+          for (const c of allMatching({ types: ["creature"], notTypes: [] })) dealt += dealDamage(g, sourceName, { kind: "card", id: c.instanceId }, n);
         } else {
           const players = effect.who === "opponents" ? opponentsOf(g, caster.id) : g.turnOrder.map((id) => g.players[id]!).filter((p) => !p.hasConceded);
-          for (const p of players) dealDamage(g, sourceName, { kind: "player", id: p.id }, n);
+          for (const p of players) dealt += dealDamage(g, sourceName, { kind: "player", id: p.id }, n);
         }
         break;
       }
@@ -1286,7 +1400,6 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         break;
       }
       case "counterSelf": {
-        const self = ability ? g.cards[ability.sourceId] : undefined;
         if (!self || self.zone !== "battlefield") break;
         self.counters[effect.kind] = (self.counters[effect.kind] ?? 0) + effect.count;
         log(g, null, `${cardName(g, self)} reçoit ${plural(effect.count, `marqueur ${effect.kind}`, `marqueurs ${effect.kind}`)}.`);
@@ -1316,15 +1429,17 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
           set: "tok",
           collectorNumber: "0",
         };
-        for (let i = 0; i < n; i++) {
-          const instance = newInstance(g, id, caster.id, "battlefield");
-          instance.isToken = true;
-          instance.tapped = effect.tapped;
-          instance.summoningSick = true;
-          caster.zones.battlefield.push(instance.instanceId);
-          emitEnters(g, instance);
+        for (const owner of effect.forOpponents ? opponentsOf(g, caster.id) : [caster]) {
+          for (let i = 0; i < n; i++) {
+            const instance = newInstance(g, id, owner.id, "battlefield");
+            instance.isToken = true;
+            instance.tapped = effect.tapped;
+            instance.summoningSick = true;
+            owner.zones.battlefield.push(instance.instanceId);
+            emitEnters(g, instance);
+          }
+          if (n > 0) log(g, null, `${owner.name} crée ${n > 1 ? `${n} jetons` : "un jeton"} ${name} ${power}/${toughness}.`);
         }
-        if (n > 0) log(g, null, `${caster.name} crée ${n > 1 ? `${n} jetons` : "un jeton"} ${name} ${power}/${toughness}.`);
         break;
       }
       case "counter": {
@@ -1343,6 +1458,87 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         for (const m of effect.mana) caster.manaPool[m as ManaType] += 1;
         log(g, null, `${caster.name} ajoute ${formatMana(effect.mana as ManaType[])}.`);
         break;
+      case "manaAny": {
+        const color = ability?.color ?? "B";
+        caster.manaPool[color] += effect.count;
+        log(g, null, `${caster.name} ajoute ${formatMana(Array(effect.count).fill(color))}.`);
+        break;
+      }
+      case "returnSelf": {
+        if (!self || self.zone !== "graveyard") break;
+        const name = cardName(g, self);
+        moveCardTo(g, self.instanceId, "hand", "top");
+        log(g, null, `${name} retourne du cimetière dans la main de ${g.players[self.ownerId]!.name}.`);
+        break;
+      }
+      case "pumpSelf": {
+        if (!self || self.zone !== "battlefield") break;
+        const boost = self.ptBoost ?? { power: 0, toughness: 0 };
+        self.ptBoost = { power: boost.power + effect.power, toughness: boost.toughness + effect.toughness };
+        const sign = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
+        log(g, null, `${cardName(g, self)} reçoit ${sign(effect.power)}/${sign(effect.toughness)} jusqu'à la fin du tour.`);
+        break;
+      }
+      case "grantAll": {
+        const all = allMatching(effect.filter);
+        for (const c of all) c.grants = [...new Set([...(c.grants ?? []), ...effect.keywords])];
+        const label = effect.keywords.map((k) => KEYWORD_HELP[k]?.name.toLowerCase() ?? k).join(", ");
+        log(g, null, `Les créatures de ${caster.name} gagnent ${label} jusqu'à la fin du tour.`);
+        break;
+      }
+      case "attach": {
+        const c = card(effect.target);
+        if (!c || !self || self.zone !== "battlefield") break;
+        self.attachedTo = c.instanceId;
+        log(g, null, `${cardName(g, self)} est attaché(e) à ${cardName(g, c)}.`);
+        break;
+      }
+      case "gainControl": {
+        const c = effect.permanent === "self" ? (self?.zone === "battlefield" ? self : undefined) : card(effect.permanent);
+        const p = player(effect.player);
+        if (!c || !p || c.zone !== "battlefield") break;
+        // « … you control » : le permanent doit toujours être à toi.
+        if (effect.permanent === "self" ? c.controllerId !== caster.id : false) break;
+        setController(g, c, p.id);
+        break;
+      }
+      case "exchangeControl": {
+        const a = card(effect.a);
+        const b = card(effect.b);
+        if (!a || !b || a.controllerId === b.controllerId) break;
+        const [ca, cb] = [a.controllerId, b.controllerId];
+        setController(g, a, cb);
+        setController(g, b, ca);
+        break;
+      }
+      case "winIf": {
+        const ok =
+          (effect.life !== undefined && caster.life >= effect.life) ||
+          (effect.handExactly !== undefined && caster.zones.hand.length === effect.handExactly);
+        if (!ok) break;
+        const losers = opponentsOf(g, caster.id);
+        for (const p of losers) p.lostReason = `${caster.name} gagne avec ${sourceName}`;
+        log(g, null, `${caster.name} gagne la partie grâce à ${sourceName} !`);
+        leaveGame(g, losers);
+        break;
+      }
+      case "loseGame": {
+        const losers = g.settings.sharedTeamLife ? lifeSharers(g, caster.id) : [caster];
+        for (const p of losers) p.lostReason = sourceName;
+        log(g, null, `${names(losers)} perd la partie (${sourceName}).`);
+        leaveGame(g, losers);
+        break;
+      }
+      case "sacrifice": {
+        const chosen = ability?.choice ? g.cards[ability.choice] : undefined;
+        if (!chosen || chosen.zone !== "battlefield" || chosen.controllerId !== caster.id || !matchesPermanent(g, chosen, effect.filter, caster.id)) break;
+        const name = cardName(g, chosen);
+        moveCardTo(g, chosen.instanceId, "graveyard", "top");
+        log(g, null, `${caster.name} sacrifie ${name}.`);
+        // Exploit : « quand ~ exploite une créature ».
+        if (ability && ability.text === "Exploit") emit(g, { type: "exploits", cardId: ability.sourceId });
+        break;
+      }
     }
   }
 }
@@ -1380,6 +1576,173 @@ function resolveTop(g: GameState): void {
     const manual = data && !card.faceDown && cardSupport(data).level !== "full";
     log(g, null, `${name} se résout et arrive sur le champ de bataille${manual ? " (ses capacités sont à gérer à la main)" : ""}.`);
   }
+}
+
+/**
+ * Paie un coût de mana avec la réserve, en engageant des sources de mana
+ * quand il en manque. `extraGeneric` : taxe (positive) ou réduction (négative).
+ */
+function payMana(
+  g: GameState,
+  actor: PlayerState,
+  costText: string,
+  x: number,
+  extraGeneric: number,
+  excludeId: CardInstanceId | undefined,
+  what: string,
+): { spent: ManaType[]; life: number } {
+  const cost = parseManaCost(costText);
+  let payment = payFromPool(actor.manaPool, cost, x, extraGeneric);
+  while (!payment.ok) {
+    const source = findManaSource(g, actor, payment.need, excludeId ?? "");
+    if (!source) {
+      const missing = payment.need.kind === "color" ? payment.need.options.map((m) => `{${m}}`).join(" ou ") : "du mana";
+      throw new ActionError(`Pas assez de mana pour ${what} : il manque ${missing}.`);
+    }
+    tapForMana(g, actor, source.card, source.choice);
+    payment = payFromPool(actor.manaPool, cost, x, extraGeneric);
+  }
+  actor.manaPool = payment.pool;
+  if (payment.life > 0) payLife(g, actor, payment.life);
+  return { spent: payment.spent, life: payment.life };
+}
+
+/** Le permanent passe sous le contrôle d'un autre joueur (il a de nouveau le mal d'invocation). */
+function setController(g: GameState, card: CardInstance, playerId: PlayerId): void {
+  if (card.controllerId === playerId) return;
+  removeFromZone(g, card);
+  card.controllerId = playerId;
+  card.summoningSick = true;
+  if (g.combat) {
+    delete g.combat.attackers[card.instanceId];
+    delete g.combat.blockers[card.instanceId];
+  }
+  g.players[playerId]!.zones.battlefield.push(card.instanceId);
+  log(g, null, `${g.players[playerId]!.name} prend le contrôle de ${cardName(g, card)}.`);
+}
+
+/** Payer des points de vie (une perte de points de vie). */
+function payLife(g: GameState, actor: PlayerState, amount: number): void {
+  for (const p of lifeSharers(g, actor.id)) p.life -= amount;
+  emit(g, { type: "lifeLoss", playerId: actor.id, amount });
+}
+
+/**
+ * Active une capacité d'un permanent (ou d'une carte du cimetière) : vérifie
+ * le moment et les cibles, paie le coût, puis met la capacité sur la pile
+ * (ou l'applique tout de suite pour une capacité de mana).
+ */
+function activateAbility(
+  g: GameState,
+  actor: PlayerState,
+  cardId: CardInstanceId,
+  index: number,
+  targets: Target[],
+  sacrificeId: CardInstanceId | undefined,
+  color: ManaType | undefined,
+): void {
+  if (!g.settings.enforceRules) throw new ActionError("L'hôte n'applique pas les règles : gère cette capacité à la main.");
+  const card = getCard(g, cardId);
+  const ability = card.faceDown ? undefined : abilitiesOf(g.cardData[card.cardId], card.faceIndex).activated[index];
+  if (!ability) throw new ActionError("Capacité inconnue.");
+  const name = cardName(g, card);
+  if (ability.zone === "battlefield") {
+    if (card.zone !== "battlefield" || card.controllerId !== actor.id) throw new ActionError(`Tu ne contrôles pas ${name}.`);
+  } else if (card.zone !== "graveyard" || card.ownerId !== actor.id) {
+    throw new ActionError(`Cette capacité s'active depuis ton cimetière.`);
+  }
+  // Moment : vitesse de rituel, ou dès qu'on a la priorité (les capacités de mana, à tout moment).
+  if (ability.ownTurn && !isActivePlayer(g, actor.id)) throw new ActionError("Cette capacité ne s'active que pendant ton tour.");
+  if (!ability.mana) {
+    if (ability.sorcery) assertSorceryTiming(g, actor, "activer cette capacité");
+    else if (g.priority && !samePriorityUnit(g, g.priority.playerId, actor.id)) {
+      throw new ActionError(`Attends d'avoir la priorité (c'est à ${g.players[g.priority.playerId]!.name}).`);
+    }
+  }
+  const { cost } = ability;
+  const loyaltyAbility = cost.loyalty !== undefined;
+  const usedKey = loyaltyAbility ? -1 : index;
+  const used = card.usedAbilities?.turn === g.turn.number ? card.usedAbilities.indices : [];
+  if (ability.oncePerTurn && used.includes(usedKey)) {
+    throw new ActionError(loyaltyAbility ? `${name} a déjà activé une capacité de loyauté ce tour.` : "Cette capacité s'active une seule fois par tour.");
+  }
+  if (cost.tap) {
+    if (card.tapped) throw new ActionError(`${name} est déjà engagé.`);
+    if (card.summoningSick && isCreature(g, card) && !hasKeyword(g, card, "Haste")) {
+      throw new ActionError(`${name} vient d'arriver : mal d'invocation.`);
+    }
+  }
+  if (cost.loyalty !== undefined && cost.loyalty < 0 && (card.counters["loyauté"] ?? 0) < -cost.loyalty) {
+    throw new ActionError(`${name} n'a pas assez de loyauté.`);
+  }
+  if (cost.life > 0 && actor.life < cost.life) throw new ActionError(`Tu n'as pas assez de points de vie.`);
+  let sacrificed: CardInstance | undefined;
+  if (cost.sacrifice) {
+    if (!sacrificeId) throw new ActionError(`Choisis un(e) ${permanentLabel(cost.sacrifice)} à sacrifier.`);
+    sacrificed = getCard(g, sacrificeId);
+    if (sacrificed.controllerId !== actor.id || !matchesPermanent(g, sacrificed, cost.sacrifice, actor.id)) {
+      throw new ActionError(`Il faut sacrifier un(e) ${permanentLabel(cost.sacrifice)} que tu contrôles.`);
+    }
+  }
+  const specs = ability.effects.targets;
+  if (targets.length !== specs.length) {
+    throw new ActionError(`Choisis ${specs.map((t) => `une cible (${t.label})`).join(", puis ")}.`);
+  }
+  specs.forEach((spec, i) => {
+    if (!isLegalTarget(g, spec, targets[i]!, actor.id, card.instanceId)) throw new ActionError(`Cible invalide : il faut un(e) ${spec.label}.`);
+  });
+  const anyColor = ability.effects.effects.some((e) => e.type === "manaAny");
+  if (anyColor && (!color || !isManaType(color) || color === "C")) throw new ActionError("Choisis la couleur du mana.");
+
+  // Paiement : mana d'abord (sans engager la source si elle s'engage pour le coût), puis le reste.
+  const paid = cost.mana ? payMana(g, actor, cost.mana, 0, 0, cost.tap ? card.instanceId : undefined, `activer ${name}`) : null;
+  if (cost.tap) card.tapped = true;
+  if (cost.life > 0) payLife(g, actor, cost.life);
+  if (cost.loyalty !== undefined) setCounter(card, "loyauté", (card.counters["loyauté"] ?? 0) + cost.loyalty);
+  if (ability.oncePerTurn) card.usedAbilities = { turn: g.turn.number, indices: [...used, usedKey] };
+  const costParts = [
+    paid && paid.spent.length > 0 ? formatMana(paid.spent) : "",
+    cost.tap ? "en l'engageant" : "",
+    cost.life > 0 ? `${cost.life} PV` : "",
+    cost.loyalty !== undefined ? `${cost.loyalty > 0 ? "+" : ""}${cost.loyalty} loyauté` : "",
+  ].filter(Boolean);
+  const sourceName = g.cardData[card.cardId]?.faces?.[card.faceIndex]?.name ?? g.cardData[card.cardId]?.name ?? name;
+  const stackAbility = {
+    sourceId: card.instanceId,
+    sourceName,
+    text: ability.text,
+    index,
+    faceIndex: card.faceIndex,
+    activated: true,
+    ...(anyColor ? { color: color! } : {}),
+  };
+  if (sacrificed) {
+    const sacName = cardName(g, sacrificed);
+    moveCardTo(g, sacrificed.instanceId, "graveyard", "top");
+    costParts.push(`en sacrifiant ${sacName}`);
+  }
+  const how = costParts.length > 0 ? ` (${costParts.join(", ")})` : "";
+  if (ability.mana) {
+    // Capacité de mana : pas de pile.
+    log(g, actor.id, `${actor.name} active ${name}${how}.`);
+    const source = { ...card, controllerId: actor.id, ability: stackAbility } as CardInstance;
+    if (cost.sacrificeSelf) moveCardTo(g, card.instanceId, "graveyard", "top");
+    applySpellEffects(g, source, ability.effects.effects, [], []);
+    return;
+  }
+  if (cost.sacrificeSelf) {
+    moveCardTo(g, card.instanceId, "graveyard", "top");
+    costParts.push("en le sacrifiant");
+  }
+  const instance = newInstance(g, card.cardId, actor.id, "stack");
+  instance.faceIndex = card.faceIndex;
+  instance.revealedTo = [...g.turnOrder];
+  instance.ability = stackAbility;
+  instance.targets = targets.map((t) => ({ ...t }));
+  g.stack.push(instance.instanceId);
+  const aimed = instance.targets.length > 0 ? ` sur ${instance.targets.map((t) => targetName(g, t)).join(", ")}` : "";
+  const how2 = costParts.length > 0 ? ` (${costParts.join(", ")})` : "";
+  log(g, actor.id, `${actor.name} active ${name}${aimed}${how2} : « ${ability.text} ».`);
 }
 
 function tapForMana(g: GameState, actor: PlayerState, card: CardInstance, choice: number): void {
@@ -1705,7 +2068,9 @@ function applyCombatHit(
     const what = infect ? plural(hit.amount, "marqueur poison", "marqueurs poison") : plural(hit.amount, "blessure");
     log(g, null, `${sourceName} inflige ${what} à ${names(sharers)}${infect ? "" : ` (${sharers[0]?.life ?? 0} PV)`}.`);
   }
-  if (hasKeyword(g, source, "Lifelink")) {
+  if (hasKeyword(g, source, "Lifelink") && cantGainLife(g, source.controllerId)) {
+    log(g, null, `${g.players[source.controllerId]!.name} ne peut pas gagner de points de vie.`);
+  } else if (hasKeyword(g, source, "Lifelink")) {
     const gainers = lifeSharers(g, source.controllerId);
     for (const p of gainers) p.life += hit.amount;
     emit(g, { type: "lifeGain", playerId: source.controllerId, amount: hit.amount });
@@ -1933,6 +2298,7 @@ function enterStep(g: GameState, step: TurnStep): void {
         delete card.damage;
         delete card.deathtouched;
         delete card.ptBoost;
+        delete card.grants;
       }
       break;
   }
@@ -1955,7 +2321,7 @@ function enterStep(g: GameState, step: TurnStep): void {
     case "cleanup":
       for (const p of players) {
         const excess = p.zones.hand.length - MAX_HAND_SIZE;
-        if (excess > 0) {
+        if (excess > 0 && !hasNoMaxHandSize(g, p.id)) {
           log(g, null, `${p.name} a ${p.zones.hand.length} cartes en main et doit en défausser ${excess} (maximum ${MAX_HAND_SIZE}).`);
         }
       }

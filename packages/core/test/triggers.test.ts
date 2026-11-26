@@ -81,7 +81,8 @@ describe("Lecture des capacités déclenchées", () => {
       creature("Morbid Opportunist", "Whenever one or more other creatures die, draw a card. This ability triggers only once each turn."),
     );
     expect(opportunist.triggers).toEqual([]);
-    expect(parse(permanent("Optional", "Whenever you gain life, you may draw a card.")).triggers).toEqual([]);
+    expect(parse(permanent("Optional", "Whenever you gain life, you may draw a card.")).triggers[0]).toMatchObject({ optional: true });
+    expect(parse(permanent("Unclear", "Whenever you gain life, its controller may pay 1 life.")).triggers).toEqual([]);
   });
 });
 

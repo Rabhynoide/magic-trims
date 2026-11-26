@@ -8,7 +8,7 @@
 import type { CombatState } from "./combat.js";
 import type { Target } from "./effects.js";
 import type { TriggerEvent } from "./triggers.js";
-import type { ManaPool } from "./mana.js";
+import type { ManaPool, ManaType } from "./mana.js";
 import type { TurnStep } from "./turn.js";
 
 /** Données d'une carte, issues de Scryfall (sous-ensemble utile au jeu). */
@@ -168,6 +168,10 @@ export interface CardInstance {
   hasLoyalty?: boolean;
   /** Bonus de force et d'endurance jusqu'à la fin du tour (+3/+3 d'une Croissance gigantesque…). */
   ptBoost?: { power: number; toughness: number };
+  /** Mots-clés gagnés jusqu'à la fin du tour (en minuscules : « lifelink »…). */
+  grants?: string[];
+  /** Capacités activées « une fois par tour » déjà utilisées (loyauté comprise) : le tour et leurs index. */
+  usedAbilities?: { turn: number; indices: number[] };
   /**
    * Sort lancé par le moteur (et non posé à la main sur la pile) : ses cibles,
    * dans l'ordre des cibles du texte. Ses effets s'appliquent à la résolution.
@@ -196,6 +200,16 @@ export interface StackAbility {
   eventAmount?: number;
   /** Le contrôleur doit encore choisir les cibles. */
   needsTargets?: boolean;
+  /** Capacité activée (et non déclenchée) : `index` désigne alors une capacité activée de la source. */
+  activated?: boolean;
+  /** Capacité facultative (« you may ») : le contrôleur doit dire oui ou non avant qu'elle se résolve. */
+  awaitingDecision?: boolean;
+  /** Réponse du contrôleur à une capacité facultative. */
+  accepted?: boolean;
+  /** Permanent choisi à la résolution (le sacrifice d'Exploit…). */
+  choice?: CardInstanceId;
+  /** Couleur choisie pour « Add one mana of any color ». */
+  color?: ManaType;
 }
 
 export interface PlayerState {
@@ -221,6 +235,8 @@ export interface PlayerState {
    * après ses mulligans (règle 103.5) : la partie n'avance pas avant.
    */
   mulliganBottom: number;
+  /** Sorts lancés ce tour (Moderation…). */
+  spellsCast?: { turn: number; count: number };
   /** Terrains joués ce tour (un seul par tour, règle 305.2). */
   landsPlayed: number;
   /** Réserve de mana ; elle se vide à la fin de chaque étape (règle 500.4). */
