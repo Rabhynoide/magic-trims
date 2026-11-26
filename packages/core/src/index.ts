@@ -9,3 +9,5 @@ export * from "./deck/parse.js";
 export * from "./deck/scryfall.js";
 export * from "./deck/resolve.js";
 export * from "./deck/validate.js";
+export * from "./protocol.js";
+export * from "./client.js";

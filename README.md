@@ -6,8 +6,8 @@ Projet privé, entre amis. Les données et images des cartes viennent de [Scryfa
 
 ## Feuille de route
 
-1. **Fondations et decks** : modèle de partie, système d'actions, import Moxfield + Scryfall. *(en cours)*
-2. **Multijoueur** : chaque joueur peut héberger la partie depuis l'appli, sans serveur à payer.
+1. **Fondations et decks** : modèle de partie, système d'actions, import Moxfield + Scryfall. *(fait)*
+2. **Multijoueur** : chaque joueur peut héberger la partie depuis l'appli, sans serveur à payer. *(en cours)*
 3. **Table virtuelle jouable (v1)** : interface, glisser-déposer, installateur Windows.
 4. **Moteur de règles** : tours et phases, mana, pile, puis effets des cartes courantes, petit à petit.
 
@@ -30,11 +30,24 @@ Tous les réglages (points de vie, poison, partage entre coéquipiers…) resten
 
 `evaluateOutcome()` indique les joueurs éliminés (points de vie, poison, blessures de commandant, abandon) et les vainqueurs selon le mode.
 
+## Héberger une partie
+
+N'importe quel joueur peut héberger : l'appli lance un petit serveur sur son PC (port 47474) et affiche des **codes de connexion** à donner aux amis (par exemple `60001-05EBJ`), ou l'adresse en clair.
+
+- **Par internet** : l'appli demande à la box d'ouvrir le port (UPnP). Ça marche sur la plupart des box ; sinon, il faut ouvrir le port 47474 à la main dans la box.
+- **Avec un réseau privé virtuel** (Radmin VPN, Tailscale) : tout le monde l'installe et rejoint le même réseau, et ça marche à coup sûr. L'appli affiche alors l'adresse correspondante.
+- Au premier lancement, Windows demande d'autoriser l'appli dans le pare-feu : il faut accepter.
+
+La partie est sauvegardée automatiquement chez l'hôte. S'il se déconnecte, la partie reprend là où elle en était ; les autres joueurs se reconnectent tout seuls.
+
+Pour tester sans interface : `npm run host` (ou `npm run host -- --reprendre` pour reprendre la dernière partie).
+
 ## Organisation du code
 
 ```
 packages/
-  core/   Logique de jeu pure (aucune dépendance à l'interface ni au réseau)
+  core/   Logique de jeu pure, protocole réseau et client de connexion
+  host/   Serveur de partie intégré à l'appli de l'hôte (Node.js)
 ```
 
 ### `@magic-trims/core`
@@ -46,6 +59,14 @@ packages/
 - `modes.ts` : les modes de jeu, les équipes et la détection des vainqueurs.
 - `view.ts` : `viewFor(état, joueur)` donne ce qu'un joueur a le droit de voir (pas les mains adverses, pas l'ordre des bibliothèques). C'est ce que le serveur enverra à chaque client.
 - `deck/` : lecture d'une liste Moxfield, résolution des cartes sur Scryfall (avec cache), vérification des règles de construction Commander.
+- `protocol.ts` : les messages échangés entre les joueurs et l'hôte, et les codes de connexion.
+- `client.ts` : `GameClient`, la connexion d'un joueur à la partie (reconnexion automatique, cache des cartes).
+
+### `@magic-trims/host`
+
+- `game-host.ts` : `GameHost`, l'arbitre : salon (decks, mode, équipes), lancement, actions, vue de chaque joueur, reprise d'une sauvegarde.
+- `server.ts` : `startHostServer()`, le serveur WebSocket que l'appli de l'hôte lance, avec sauvegarde automatique.
+- `upnp.ts` : ouverture du port sur la box.
 
 ## Développement
 
