@@ -7,6 +7,7 @@
 
 import type { CombatState } from "./combat.js";
 import type { Target } from "./effects.js";
+import type { TriggerEvent } from "./triggers.js";
 import type { ManaPool } from "./mana.js";
 import type { TurnStep } from "./turn.js";
 
@@ -174,6 +175,27 @@ export interface CardInstance {
   targets?: Target[];
   /** Valeur de X choisie au lancement. */
   xValue?: number;
+  /**
+   * Capacité déclenchée sur la pile (et non une carte) : elle montre l'image
+   * de sa source et disparaît quand elle se résout ou quitte la pile.
+   */
+  ability?: StackAbility;
+}
+
+export interface StackAbility {
+  sourceId: CardInstanceId;
+  sourceName: string;
+  /** Texte de la capacité. */
+  text: string;
+  /** Index de la capacité parmi celles de la source (pour retrouver ses effets). */
+  index: number;
+  /** Face de la source (pour retrouver ses effets). */
+  faceIndex: number;
+  /** Joueur et quantité de l'événement (« that player », « that much »). */
+  eventPlayerId?: PlayerId;
+  eventAmount?: number;
+  /** Le contrôleur doit encore choisir les cibles. */
+  needsTargets?: boolean;
 }
 
 export interface PlayerState {
@@ -296,6 +318,8 @@ export interface GameState {
    * Priorité, tant que la pile n'est pas vide (`null` sinon : le joueur actif
    * avance alors librement dans le tour).
    */
+  /** Événements de l'action en cours, en attente de déclencher des capacités (vidé après chaque action). */
+  events?: TriggerEvent[];
   priority: PriorityState | null;
   /** Combat en cours (de l'étape de début de combat à la fin du combat). */
   combat: CombatState | null;
