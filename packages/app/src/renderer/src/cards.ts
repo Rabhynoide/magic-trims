@@ -47,6 +47,20 @@ export function isLand(view: GameView, card: CardView): boolean {
   return /\bLand\b/.test(type);
 }
 
+/**
+ * Rangée du champ de bataille où ranger la carte : créatures, autres
+ * permanents (artefacts, enchantements, planeswalkers…) ou terrains.
+ * On lit le type de la face visible ; une carte face cachée est une créature 2/2.
+ */
+export function battlefieldRow(view: GameView, card: CardView): "creatures" | "others" | "lands" {
+  const data = cardData(view, card);
+  if (!data || card.hidden || (card as VisibleCardView).faceDown) return "creatures";
+  const type = data.faces?.[(card as VisibleCardView).faceIndex]?.typeLine ?? data.typeLine;
+  if (/\bCreature\b/.test(type)) return "creatures";
+  if (/\bLand\b/.test(type)) return "lands";
+  return "others";
+}
+
 /** Mana que la carte peut produire en s'engageant (texte anglais, celui que lit le moteur). */
 export function cardManaOptions(view: GameView, card: CardView): ManaType[][] {
   const data = cardData(view, card);

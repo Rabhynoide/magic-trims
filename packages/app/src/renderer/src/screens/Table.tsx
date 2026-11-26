@@ -21,7 +21,7 @@ import { Card, DRAG_TYPE } from "../components/Card";
 import { Chat } from "../components/Chat";
 import { Modal } from "../components/Modal";
 import { Overlays } from "../components/Overlays";
-import { cardData, cardImage, cardManaOptions, cardName, cardText, isLand, manaSymbolUrl } from "../cards";
+import { battlefieldRow, cardData, cardImage, cardManaOptions, cardName, cardText, manaSymbolUrl } from "../cards";
 import { CardLanguageSelect } from "../components/CardLanguage";
 import { CardZoom } from "../components/CardZoom";
 import { cardMenu, libraryMenu, manaItems, playItems } from "../menus";
@@ -400,8 +400,9 @@ function PlayerArea(props: {
 
   const battlefield = p.zones.battlefield.filter((c) => !c.attachedTo);
   const attachmentsOf = (id: string | null) => (id ? p.zones.battlefield.filter((c) => c.attachedTo === id) : []);
-  const lands = battlefield.filter((c) => isLand(view, c));
-  const others = battlefield.filter((c) => !isLand(view, c));
+  const creatures = battlefield.filter((c) => battlefieldRow(view, c) === "creatures");
+  const others = battlefield.filter((c) => battlefieldRow(view, c) === "others");
+  const lands = battlefield.filter((c) => battlefieldRow(view, c) === "lands");
 
   const renderCard = (c: CardView) => (
     <Card
@@ -516,8 +517,15 @@ function PlayerArea(props: {
         </div>
 
         <div className={`battlefield ${battlefieldDrop.className}`} {...battlefieldDrop.handlers}>
-          <div className="battlefield-row">{others.map(renderCard)}</div>
-          <div className="battlefield-row lands">{lands.map(renderCard)}</div>
+          <div className="battlefield-row creatures" title="Créatures">
+            {creatures.map(renderCard)}
+          </div>
+          <div className="battlefield-row others" title="Artefacts, enchantements, planeswalkers…">
+            {others.map(renderCard)}
+          </div>
+          <div className="battlefield-row lands" title="Terrains">
+            {lands.map(renderCard)}
+          </div>
           {battlefield.length === 0 && <span className="zone-label">Champ de bataille</span>}
         </div>
       </div>
