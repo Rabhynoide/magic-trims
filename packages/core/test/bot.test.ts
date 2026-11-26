@@ -46,8 +46,8 @@ function botGame(): GameState {
     mode: "duel",
     randomTurnOrder: false,
     players: [
-      { id: "b1", name: "Bot 1", deck: greenDeck("A") },
-      { id: "b2", name: "Bot 2", deck: greenDeck("B") },
+      { id: "b1", name: "Bot 1", deck: greenDeck("A"), priorityStops: [] },
+      { id: "b2", name: "Bot 2", deck: greenDeck("B"), priorityStops: [] },
     ],
   });
 }

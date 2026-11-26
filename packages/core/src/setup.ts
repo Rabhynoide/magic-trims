@@ -3,7 +3,7 @@ import { emptyPool } from "./mana.js";
 import { GAME_MODES } from "./modes.js";
 import { log, moveCardTo, newInstance, shuffleZone } from "./reducer.js";
 import { randomSeed, shuffleInPlace } from "./rng.js";
-import type { CardData, GameModeType, GameSettings, GameState, PlayerId, PlayerState } from "./types.js";
+import type { CardData, GameModeType, GameSettings, GameState, PlayerId, PlayerState, PriorityStops } from "./types.js";
 
 export const DEFAULT_SETTINGS: GameSettings = {
   mode: "freeForAll",
@@ -29,6 +29,8 @@ export interface NewGamePlayer {
   deck: ResolvedDeck;
   /** Pioche de machinations (mode Archenemy, pour l'archenemy). */
   schemes?: CardData[];
+  /** Arrêts pour répondre pendant le tour des autres (aucun pour un bot). */
+  priorityStops?: PriorityStops;
 }
 
 export interface NewGameOptions {
@@ -150,6 +152,7 @@ export function createGame(options: NewGameOptions): GameState {
       landsPlayed: 0,
       hasConceded: false,
     };
+    if (p.priorityStops) player.priorityStops = p.priorityStops;
     g.players[p.id] = player;
 
     for (const commander of p.deck.commanders) {

@@ -29,12 +29,17 @@ export function fakeDeck(prefix: string): ResolvedDeck {
   return { commanders: [commander], cards };
 }
 
-export function newTestGame(playerCount = 4, seed = 42): GameState {
+/**
+ * Partie de test. Les joueurs ne s'arrêtent pas pendant le tour des autres
+ * (`stops: true` pour garder les arrêts par défaut).
+ */
+export function newTestGame(playerCount = 4, seed = 42, stops = false): GameState {
   const names = ["Alice", "Bruno", "Chloé", "David", "Emma", "Farid"];
   const players: NewGamePlayer[] = Array.from({ length: playerCount }, (_, i) => ({
     id: `p${i + 1}`,
     name: names[i]!,
     deck: fakeDeck(names[i]!),
+    ...(stops ? {} : { priorityStops: [] }),
   }));
   return createGame({ id: "test", players, seed, randomTurnOrder: false });
 }

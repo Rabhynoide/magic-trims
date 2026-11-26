@@ -1,6 +1,6 @@
 import type { ActionEnvelope, GameAction } from "./actions.js";
 import { nextRandom, shuffleInPlace } from "./rng.js";
-import { isActivePlayer, lifeSharers, areTeammates, teamOf } from "./modes.js";
+import { eliminationReason, isActivePlayer, lifeSharers, areTeammates, teamOf } from "./modes.js";
 import {
   MANA_LABELS,
   emptyPool,
@@ -13,7 +13,7 @@ import {
   type ManaType,
 } from "./mana.js";
 import { creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatState } from "./combat.js";
-import { MAX_HAND_SIZE, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
+import { MAX_HAND_SIZE, STEP_LABELS, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
 import {
   HIDDEN_ORDERED_ZONES,
   PUBLIC_ZONES,
@@ -22,7 +22,9 @@ import {
   type CardInstanceId,
   type GameState,
   type PlayerId,
+  type PendingAdvance,
   type PlayerState,
+  type PriorityStops,
   type Zone,
 } from "./types.js";
 
@@ -42,9 +44,10 @@ export function applyAction(state: GameState, envelope: ActionEnvelope): ActionR
   try {
     const actor = getPlayer(draft, envelope.actorId);
     if (actor.hasConceded && envelope.action.type !== "concede") {
-      throw new ActionError("Tu as abandonné cette partie.");
+      throw new ActionError(actor.lostReason ? "Tu as perdu cette partie." : "Tu as abandonné cette partie.");
     }
     handlers[envelope.action.type](draft, actor, envelope.action as never);
+    checkStateBasedActions(draft);
     if (envelope.action.type !== "passPriority") updatePriority(state, draft, actor);
     draft.version += 1;
     return { ok: true, state: draft };
@@ -515,27 +518,35 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     assertActive(g, actor);
     assertStackEmpty(g);
     assertMulligansDone(g);
-    if (to === undefined && g.turn.step === "cleanup") return passTurn(g, actor);
+    assertNoResponseWindow(g);
+    if (to === undefined && g.turn.step === "cleanup") return advanceTurn(g, actor, { type: "passTurn" });
     if (to !== undefined && !isTurnStep(to)) throw new ActionError("Étape inconnue.");
     const target = to ?? TURN_STEPS[stepIndex(g.turn.step) + 1]!;
     if (stepIndex(target) <= stepIndex(g.turn.step)) {
       throw new ActionError("On ne revient pas en arrière dans le tour.");
     }
-    const reached = advanceTo(g, target);
-    log(g, actor.id, `${actor.name} passe à ${STEP_PHRASES[reached]}.`);
-    if (reached !== target) logWaitingBlockers(g);
+    advanceTurn(g, actor, { type: "nextStep", to: target });
   },
 
   passTurn(g, actor) {
     assertActive(g, actor);
     assertStackEmpty(g);
     assertMulligansDone(g);
-    passTurn(g, actor);
+    assertNoResponseWindow(g);
+    if (nextActivePlayer(g, g.turn.activePlayerId) === null) throw new ActionError("Plus aucun joueur en lice.");
+    advanceTurn(g, actor, { type: "passTurn" });
+  },
+
+  setPriorityStops(g, actor, { stops }) {
+    if (!Array.isArray(stops) || !stops.every((s) => RESPONSE_STEPS.has(s))) {
+      throw new ActionError("On ne peut s'arrêter qu'aux étapes clés.");
+    }
+    actor.priorityStops = TURN_STEPS.filter((s) => stops.includes(s));
   },
 
   passPriority(g, actor) {
     const priority = g.priority;
-    if (!priority || g.stack.length === 0) throw new ActionError("La pile est vide : personne n'a la priorité.");
+    if (!priority) throw new ActionError("La pile est vide : personne n'a la priorité.");
     if (!samePriorityUnit(g, priority.playerId, actor.id)) {
       throw new ActionError(`C'est à ${g.players[priority.playerId]!.name} d'agir.`);
     }
@@ -543,6 +554,21 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const unit = units.find((u) => u.includes(actor.id))!;
     priority.passed = [...new Set([...priority.passed, ...unit])];
     log(g, actor.id, `${names(unit.map((id) => g.players[id]!))} ${unit.length > 1 ? "passent" : "passe"}.`);
+    if (priority.pending && g.stack.length === 0) {
+      // Pile vide : on cherche le prochain qui veut répondre, sinon le tour avance.
+      const from = units.indexOf(unit);
+      const next = units
+        .slice(from + 1)
+        .find((u) => !u.some((id) => priority.passed.includes(id)) && unitWantsToRespond(g, u, g.turn.step));
+      if (next) {
+        priority.playerId = next[0]!;
+        return;
+      }
+      const pending = priority.pending;
+      g.priority = null;
+      advanceTurn(g, g.players[g.turn.activePlayerId]!, pending, true);
+      return;
+    }
     if (units.every((u) => u.some((id) => priority.passed.includes(id)))) {
       resolveTop(g);
       g.priority = g.stack.length > 0 ? { playerId: g.turn.activePlayerId, passed: [] } : null;
@@ -599,20 +625,8 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     if (actor.hasConceded) throw new ActionError("Tu as déjà abandonné.");
     // Quand les points de vie sont partagés, l'équipe perd ensemble.
     const leaving = g.settings.sharedTeamLife ? lifeSharers(g, actor.id) : [actor];
-    for (const p of leaving) p.hasConceded = true;
     log(g, actor.id, `${names(leaving)} ${leaving.length > 1 ? "abandonnent" : "abandonne"} la partie.`);
-    const active = g.players[g.turn.activePlayerId]!;
-    if (active.hasConceded) {
-      const stillActive = g.settings.sharedTurns
-        ? teamOf(g, active.id).find((id) => !g.players[id]!.hasConceded)
-        : undefined;
-      if (stillActive) {
-        g.turn.activePlayerId = stillActive;
-      } else {
-        const next = nextActivePlayer(g, active.id);
-        if (next !== null) startTurn(g, next);
-      }
-    }
+    leaveGame(g, leaving);
   },
 };
 
@@ -705,9 +719,19 @@ export function moveCardTo(
   const wasPublic = isVisibleToAll(card);
   removeFromZone(g, card);
 
-  if (to === "battlefield" && from !== "battlefield") card.summoningSick = true;
+  if (to === "battlefield" && from !== "battlefield") {
+    card.summoningSick = true;
+    // Un planeswalker arrive avec ses marqueurs de loyauté.
+    const data = g.cardData[card.cardId];
+    const loyalty = parseInt(data?.faces?.[card.faceIndex]?.loyalty ?? data?.loyalty ?? "", 10);
+    if (!card.faceDown && Number.isFinite(loyalty) && /\bPlaneswalker\b/.test(currentTypeLine(g, card))) {
+      card.counters["loyauté"] = loyalty;
+      card.hasLoyalty = true;
+    }
+  }
   if (from === "battlefield" && to !== "battlefield") {
     delete card.summoningSick;
+    delete card.hasLoyalty;
     delete card.damage;
     delete card.deathtouched;
     delete card.ptBoost;
@@ -719,7 +743,13 @@ export function moveCardTo(
     card.counters = {};
     delete card.attachedTo;
     for (const other of Object.values(g.cards)) {
-      if (other.attachedTo === card.instanceId) delete other.attachedTo;
+      if (other.attachedTo !== card.instanceId) continue;
+      delete other.attachedTo;
+      // Une aura sans hôte va au cimetière (règle 704.5m).
+      if (g.settings.enforceRules && other.zone === "battlefield" && /\bAura\b/.test(currentTypeLine(g, other))) {
+        moveCardTo(g, other.instanceId, "graveyard", "top");
+        log(g, null, `${cardName(g, other)} n'est plus attachée et va au cimetière.`);
+      }
     }
     if (card.isToken) {
       delete g.cards[card.instanceId];
@@ -900,7 +930,13 @@ function samePriorityUnit(g: GameState, a: PlayerId, b: PlayerId): boolean {
  */
 function updatePriority(before: GameState, g: GameState, actor: PlayerState): void {
   if (g.stack.length === 0) {
-    g.priority = null;
+    // Une fenêtre de réponse (pile vide) reste ouverte tant que le tour n'a pas changé.
+    const keep =
+      g.priority?.pending &&
+      g.turn.number === before.turn.number &&
+      g.turn.activePlayerId === before.turn.activePlayerId &&
+      !g.players[g.priority.playerId]!.hasConceded;
+    if (!keep) g.priority = null;
     return;
   }
   const added = g.stack.some((id) => !before.stack.includes(id));
@@ -975,6 +1011,7 @@ function findManaSource(
 /** Vitesse de rituel : son propre tour, phase principale, pile vide. */
 function assertSorceryTiming(g: GameState, actor: PlayerState, what: string): void {
   if (!isActivePlayer(g, actor.id)) throw new ActionError(`Tu ne peux ${what} que pendant ton tour.`);
+  assertNoResponseWindow(g);
   if (g.turn.step !== "main1" && g.turn.step !== "main2") {
     throw new ActionError(`Tu ne peux ${what} que pendant une phase principale.`);
   }
@@ -1003,6 +1040,83 @@ function currentTypeLine(g: GameState, card: CardInstance): string {
 
 function assertActive(g: GameState, actor: PlayerState): void {
   if (!isActivePlayer(g, actor.id)) throw new ActionError("Ce n'est pas ton tour.");
+}
+
+/** Étapes où les autres joueurs peuvent répondre avant que le joueur actif avance. */
+export const RESPONSE_STEPS: ReadonlySet<TurnStep> = new Set<TurnStep>([
+  "upkeep",
+  "draw",
+  "beginCombat",
+  "declareAttackers",
+  "declareBlockers",
+  "end",
+]);
+
+/** Arrêts d'un joueur : ceux qu'il a choisis, sinon toutes les étapes clés. */
+export function priorityStopsOf(p: Pick<PlayerState, "priorityStops">): PriorityStops {
+  return p.priorityStops ?? [...RESPONSE_STEPS];
+}
+
+/**
+ * Le joueur s'arrête-t-il à cette étape du tour d'un autre ? Ne dépend que
+ * de ses réglages, jamais de sa main.
+ */
+export function wantsToRespond(g: GameState, playerId: PlayerId, step: TurnStep = g.turn.step): boolean {
+  if (!RESPONSE_STEPS.has(step)) return false;
+  const p = g.players[playerId];
+  if (!p || p.hasConceded) return false;
+  return priorityStopsOf(p).includes(step);
+}
+
+function unitWantsToRespond(g: GameState, unit: PlayerId[], step: TurnStep): boolean {
+  return unit.some((id) => wantsToRespond(g, id, step));
+}
+
+function assertNoResponseWindow(g: GameState): void {
+  if (g.priority?.pending && g.stack.length === 0) {
+    throw new ActionError(`${g.players[g.priority.playerId]!.name} peut encore répondre.`);
+  }
+}
+
+/**
+ * Ouvre une fenêtre de réponse à l'étape en cours si un autre joueur veut
+ * répondre : il reçoit la priorité, pile vide. Retourne vrai si elle s'ouvre.
+ */
+function openResponseWindow(g: GameState, request: PendingAdvance): boolean {
+  if (!g.settings.enforceRules) return false;
+  const [active, ...others] = priorityUnits(g);
+  const responder = others.find((u) => unitWantsToRespond(g, u, g.turn.step));
+  if (!active || !responder) return false;
+  g.priority = { playerId: responder[0]!, passed: [...active], pending: request };
+  log(g, null, `${names(responder.map((id) => g.players[id]!))} peut répondre (${STEP_LABELS[g.turn.step]}).`);
+  return true;
+}
+
+/**
+ * Fait avancer le tour comme le demande le joueur actif. Avant de quitter
+ * chaque étape clé, les autres joueurs qui le veulent peuvent répondre :
+ * l'avancée reprend quand ils ont tous passé (`resumed` : la fenêtre de
+ * l'étape en cours a déjà eu lieu).
+ */
+function advanceTurn(g: GameState, actor: PlayerState, request: PendingAdvance, resumed = false): void {
+  const target: TurnStep = request.type === "passTurn" ? "cleanup" : request.to ?? TURN_STEPS[stepIndex(g.turn.step) + 1]!;
+  const start = g.turn.step;
+  while (stepIndex(g.turn.step) < stepIndex(target)) {
+    const first = g.turn.step === start;
+    if (g.turn.step === "declareBlockers" && pendingBlockers(g).length > 0) {
+      if (first) throw new ActionError(`En attente des bloqueurs de ${names(pendingBlockers(g))}.`);
+      log(g, actor.id, `${actor.name} passe à ${STEP_PHRASES[g.turn.step]}.`);
+      logWaitingBlockers(g);
+      return;
+    }
+    if (!(first && resumed) && openResponseWindow(g, request)) {
+      if (!first) log(g, actor.id, `${actor.name} passe à ${STEP_PHRASES[g.turn.step]}.`);
+      return;
+    }
+    enterStep(g, TURN_STEPS[stepIndex(g.turn.step) + 1]!);
+  }
+  if (request.type === "passTurn") passTurn(g, actor);
+  else log(g, actor.id, `${actor.name} passe à ${STEP_PHRASES[g.turn.step]}.`);
 }
 
 function passTurn(g: GameState, actor: PlayerState): void {
@@ -1160,6 +1274,135 @@ function applyCombatHit(
   }
 }
 
+/**
+ * Des joueurs quittent la partie (abandon ou défaite). Avec les règles, leurs
+ * cartes la quittent aussi (règle 800.4a) : on les range dans leur exil, et
+ * les permanents qu'ils contrôlaient sans les posséder reviennent à leur
+ * propriétaire. Si c'était leur tour, le tour passe au suivant.
+ */
+function leaveGame(g: GameState, leaving: PlayerState[]): void {
+  for (const p of leaving) p.hasConceded = true;
+  if (g.settings.enforceRules) {
+    const ids = new Set(leaving.map((p) => p.id));
+    for (const card of Object.values(g.cards)) {
+      if (card.zone === "exile" || card.zone === "planarDeck" || card.zone === "plane") continue;
+      if (ids.has(card.ownerId)) {
+        if (card.zone !== "library" && card.zone !== "schemes") moveCardTo(g, card.instanceId, "exile", "top");
+      } else if (ids.has(card.controllerId) && card.zone === "battlefield") {
+        removeFromZone(g, card);
+        card.controllerId = card.ownerId;
+        g.players[card.ownerId]!.zones.battlefield.push(card.instanceId);
+      }
+    }
+    if (g.combat) {
+      for (const [id, defender] of Object.entries(g.combat.attackers)) {
+        if (ids.has(defender)) delete g.combat.attackers[id];
+      }
+    }
+  }
+  const active = g.players[g.turn.activePlayerId]!;
+  if (active.hasConceded) {
+    const stillActive = g.settings.sharedTurns
+      ? teamOf(g, active.id).find((id) => !g.players[id]!.hasConceded)
+      : undefined;
+    if (stillActive) {
+      g.turn.activePlayerId = stillActive;
+    } else {
+      const next = nextActivePlayer(g, active.id);
+      // Partie finie : on donne la main sans dérouler de nouveau tour.
+      if (next !== null && evaluateOutcomeOver(g)) g.turn.activePlayerId = next;
+      else if (next !== null) startTurn(g, next);
+    }
+  }
+}
+
+/** La partie est-elle finie (une seule équipe en lice) ? */
+function evaluateOutcomeOver(g: GameState): boolean {
+  const alive = g.turnOrder.filter((id) => !g.players[id]!.hasConceded);
+  return alive.length === 0 || g.teams.filter((t) => t.some((id) => alive.includes(id))).length <= 1;
+}
+
+/**
+ * Actions d'état (règle 704), vérifiées après chaque action jusqu'à ce que
+ * plus rien ne change. Les blessures mortelles s'appliquent toujours ; le
+ * reste seulement quand l'hôte fait respecter les règles.
+ */
+function checkStateBasedActions(g: GameState): void {
+  for (let guard = 0; guard < 20; guard++) {
+    const before = g.log.length;
+    destroyLethal(g);
+    if (g.settings.enforceRules) {
+      // Défaites : points de vie, poison, blessures de commandant, pioche dans une bibliothèque vide.
+      const losers = g.turnOrder
+        .map((id) => g.players[id]!)
+        .filter((p) => !p.hasConceded)
+        .map((p) => [p, eliminationReason(g, p)] as const)
+        .filter(([, reason]) => reason !== null);
+      if (losers.length > 0 && !evaluateOutcomeOver(g)) {
+        for (const [p, reason] of losers) {
+          p.lostReason = reason!;
+          log(g, null, `${p.name} perd la partie (${reason}).`);
+        }
+        leaveGame(g, losers.map(([p]) => p));
+      }
+      for (const card of Object.values(g.cards)) {
+        if (card.zone !== "battlefield") continue;
+        // Marqueurs +1/+1 et -1/-1 : ils s'annulent.
+        const plus = card.counters["+1/+1"] ?? 0;
+        const minus = card.counters["-1/-1"] ?? 0;
+        if (plus > 0 && minus > 0) {
+          const n = Math.min(plus, minus);
+          setCounter(card, "+1/+1", plus - n);
+          setCounter(card, "-1/-1", minus - n);
+        }
+        // Planeswalker sans loyauté.
+        if (card.hasLoyalty && (card.counters["loyauté"] ?? 0) <= 0 && /\bPlaneswalker\b/.test(currentTypeLine(g, card))) {
+          const name = cardName(g, card);
+          moveCardTo(g, card.instanceId, "graveyard", "top");
+          log(g, null, `${name} n'a plus de loyauté et va au cimetière.`);
+        }
+      }
+      legendRule(g);
+      // Un commandant au cimetière ou en exil retourne dans la zone de commandement (règle 903.9a).
+      for (const card of Object.values(g.cards)) {
+        if (card.isCommander && (card.zone === "graveyard" || card.zone === "exile") && !card.faceDown) {
+          if (g.players[card.ownerId]!.hasConceded) continue;
+          moveCardTo(g, card.instanceId, "command", "top");
+          log(g, null, `${cardName(g, card)} retourne dans la zone de commandement.`);
+        }
+      }
+    }
+    if (g.log.length === before) return;
+  }
+}
+
+function setCounter(card: CardInstance, kind: string, value: number): void {
+  if (value > 0) card.counters[kind] = value;
+  else delete card.counters[kind];
+}
+
+/**
+ * Règle des légendes : un joueur qui contrôle deux permanents légendaires du
+ * même nom garde le plus récent ; les autres vont au cimetière.
+ */
+function legendRule(g: GameState): void {
+  for (const player of Object.values(g.players)) {
+    const seen = new Map<string, CardInstanceId>();
+    // Le champ de bataille est dans l'ordre d'arrivée : on part du plus récent.
+    for (const id of [...player.zones.battlefield].reverse()) {
+      const card = g.cards[id]!;
+      if (card.faceDown || !/\bLegendary\b/.test(currentTypeLine(g, card))) continue;
+      const name = cardName(g, card);
+      if (seen.has(name)) {
+        moveCardTo(g, id, "graveyard", "top");
+        log(g, null, `Règle des légendes : ${name} (le plus ancien) va au cimetière.`);
+      } else {
+        seen.set(name, id);
+      }
+    }
+  }
+}
+
 /** Les créatures blessées mortellement (ou d'endurance nulle) vont au cimetière. */
 function destroyLethal(g: GameState): void {
   for (const id of Object.values(g.players).flatMap((p) => [...p.zones.battlefield])) {
@@ -1276,7 +1519,10 @@ function drawCards(g: GameState, player: PlayerState, count: number): void {
   const drawn = Math.min(count, library.length);
   for (let i = 0; i < drawn; i++) moveCardTo(g, library[0]!, "hand", "top");
   log(g, player.id, `${player.name} pioche ${plural(drawn, "carte")}.`);
-  if (drawn < count) log(g, player.id, `${player.name} tente de piocher dans une bibliothèque vide.`);
+  if (drawn < count) {
+    player.drewFromEmpty = true;
+    log(g, player.id, `${player.name} tente de piocher dans une bibliothèque vide.`);
+  }
 }
 
 function activeNames(g: GameState): string {

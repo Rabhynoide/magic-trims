@@ -83,7 +83,7 @@ describe("actions", () => {
     let g = newTestGame(2);
     g = act(g, "p1", { type: "draw", count: 100 });
     expect(g.players.p1!.zones.library).toHaveLength(0);
-    expect(g.log.at(-1)!.message).toContain("bibliothèque vide");
+    expect(g.log.map((l) => l.message).join("\n")).toContain("Alice perd la partie (bibliothèque vide).");
   });
 
   it("nomme une carte jouée et remet à zéro une carte qui quitte le champ de bataille", () => {

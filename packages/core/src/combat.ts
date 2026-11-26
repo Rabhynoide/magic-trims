@@ -85,6 +85,11 @@ export function creatureStats(g: GameState, card: CardInstance): { power: number
   };
 }
 
+/** L'endurance imprimée est-elle un nombre (et non « * » ou absente) ? */
+export function hasKnownToughness(g: GameState, card: CardInstance): boolean {
+  return card.faceDown || /^-?\d+$/.test(faceOf(g, card).toughness ?? "");
+}
+
 /** Blessures qu'il faut encore infliger pour détruire la créature. */
 export function lethalDamage(g: GameState, card: CardInstance, sourceHasDeathtouch: boolean): number {
   const remaining = Math.max(0, creatureStats(g, card).toughness - (card.damage ?? 0));
@@ -93,6 +98,8 @@ export function lethalDamage(g: GameState, card: CardInstance, sourceHasDeathtou
 
 /** La créature a-t-elle reçu des blessures mortelles (ou une endurance nulle) ? */
 export function hasLethalDamage(g: GameState, card: CardInstance): boolean {
+  // Endurance inconnue (« * », données manquantes) : on laisse les joueurs gérer à la main.
+  if (!hasKnownToughness(g, card)) return false;
   const { toughness } = creatureStats(g, card);
   if (toughness <= 0) return true;
   if (hasKeyword(g, card, "Indestructible")) return false;

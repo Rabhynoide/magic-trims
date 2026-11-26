@@ -25,10 +25,11 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
     return { type: "bottomMulligan", cardIds: sorted.slice(0, me.mulliganBottom) };
   }
 
-  // Une pile non vide : le bot laisse tout se résoudre.
-  if (g.stack.length > 0) {
-    const holder = g.priority?.playerId;
-    if (holder && (holder === botId || (g.settings.sharedTurns && areTeammates(g, holder, botId)))) {
+  // Le bot ne répond jamais : il passe la priorité (pile non vide, ou avant
+  // qu'un autre joueur avance dans son tour) et attend sinon.
+  if (g.priority) {
+    const holder = g.priority.playerId;
+    if (holder === botId || (g.settings.sharedTurns && areTeammates(g, holder, botId))) {
       return { type: "passPriority" };
     }
     return null;

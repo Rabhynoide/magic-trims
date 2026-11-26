@@ -1,6 +1,14 @@
 export * from "./types.js";
 export * from "./actions.js";
-export { applyAction, ActionError, canSee, type ActionResult } from "./reducer.js";
+export {
+  applyAction,
+  ActionError,
+  canSee,
+  priorityStopsOf,
+  RESPONSE_STEPS,
+  wantsToRespond,
+  type ActionResult,
+} from "./reducer.js";
 export * from "./setup.js";
 export * from "./modes.js";
 export * from "./turn.js";
