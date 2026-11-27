@@ -781,6 +781,30 @@ textarea:focus {
   font-size: 18px;
   color: var(--accent-strong);
 }
+.hand-count {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  background: var(--bg-sunken);
+  border-radius: 6px;
+  padding: 1px 8px;
+  font-size: 18px;
+  font-weight: 600;
+}
+.hand-count small {
+  color: var(--text-dim);
+  font-weight: 400;
+  font-size: 10px;
+}
+.hand-count-icon {
+  align-self: center;
+  width: 11px;
+  height: 15px;
+  border-radius: 2px;
+  border: 1px solid var(--border);
+  background: linear-gradient(135deg, #5b3b22, #2b1a0e);
+  box-shadow: 3px -2px 0 -1px var(--text-dim);
+}
 .commander-damage {
   display: flex;
   gap: 4px;
@@ -853,10 +877,6 @@ textarea:focus {
   text-align: center;
   background: rgb(0 0 0 / 0.75);
   border-radius: 0 0 5px 5px;
-}
-.side-zones > .pile-label {
-  position: static;
-  background: none;
 }
 .command-zone {
   display: flex;
