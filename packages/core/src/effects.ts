@@ -295,6 +295,8 @@ export interface SpellEffects {
   sacrifice?: PermanentFilter;
   /** Coût alternatif (« You may pay {1}{B} rather than pay this spell's mana cost »). */
   alternativeCost?: string;
+  /** Le coût alternatif n'est permis que si l'on contrôle un commandant (Flawless Maneuver : « {0} »). */
+  alternativeIf?: "commander";
   /** « Cast this spell only during combat on an opponent's turn » (Wake the Dead). */
   castOnly?: "opponentCombat";
   /**
@@ -730,6 +732,11 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       }
     }
 
+    if (/^if you control a commander, you may cast ~ without paying its mana cost$/i.test(s)) {
+      result.alternativeCost = "{0}";
+      result.alternativeIf = "commander";
+      continue;
+    }
     if ((m = /^you may pay ((?:\{[^}]+\})+) rather than pay ~'s mana cost$/i.exec(s))) {
       result.alternativeCost = m[1]!;
       continue;
