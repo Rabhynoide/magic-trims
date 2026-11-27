@@ -1124,7 +1124,7 @@ export function moveCardTo(
   }
   insertAt(zoneList(g, card), id, to, position);
   if (dies) emit(g, dies);
-  if (to === "battlefield" && from !== "battlefield") emitEnters(g, g.cards[id]!);
+  if (to === "battlefield" && from !== "battlefield") emitEnters(g, g.cards[id]!, from === "stack");
   return g.cards[id]!;
 }
 
@@ -1329,8 +1329,14 @@ function emit(g: GameState, event: TriggerEvent): void {
   (g.events ??= []).push(event);
 }
 
-function emitEnters(g: GameState, card: CardInstance): void {
-  emit(g, { type: "enters", cardId: card.instanceId, controllerId: card.controllerId, creature: !card.faceDown && isCreature(g, card) });
+function emitEnters(g: GameState, card: CardInstance, cast = false): void {
+  emit(g, {
+    type: "enters",
+    cardId: card.instanceId,
+    controllerId: card.controllerId,
+    creature: !card.faceDown && isCreature(g, card),
+    ...(cast ? { cast } : {}),
+  });
 }
 
 /** Les capacités déclenchées « une fois par tour » sont notées dans `usedAbilities` à partir de cet index. */
@@ -1898,6 +1904,20 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         if (!c || c.zone !== "battlefield") break;
         c.grantedTriggers = [...(c.grantedTriggers ?? []), effect.text];
         log(g, null, `${cardName(g, c)} gagne « ${effect.text} » jusqu'à la fin du tour.`);
+        break;
+      }
+      case "copyToken": {
+        const t = targets[effect.player];
+        const self3 = ability ? g.cards[ability.sourceId] : undefined;
+        if (!t || t.kind !== "player" || !self3) break;
+        const owner = g.players[t.id]!;
+        const instance = newInstance(g, self3.cardId, owner.id, "battlefield");
+        instance.faceIndex = self3.faceIndex;
+        instance.isToken = true;
+        instance.summoningSick = true;
+        owner.zones.battlefield.push(instance.instanceId);
+        emitEnters(g, instance);
+        log(g, null, `${owner.name} crée un jeton copie de ${cardName(g, self3)}.`);
         break;
       }
       case "shuffleIntoLibrary": {

@@ -624,3 +624,23 @@ describe("Deck Zedruu : Chaos Warp et Approach of the Second Sun", () => {
     for (const name of ["Chaos Warp", "Approach of the Second Sun"]) expect(cardSupport(real(name)).level, name).toBe("full");
   });
 });
+
+describe("Deck Zedruu : Wedding Ring", () => {
+  it("lancée, elle donne une copie à un adversaire ; ses pioches et gains de PV pendant son tour profitent au lanceur", () => {
+    let g = toMain(newTestGame(2));
+    let ring: string;
+    [g, ring] = inHand(g, "p1", real("Wedding Ring"));
+    g = mana(g, "p1", "WWCC");
+    g = act(g, "p1", { type: "castSpell", cardId: ring });
+    g = resolveAll(g);
+    const copy = g.players.p2!.zones.battlefield.find((id) => g.cards[id]!.isToken);
+    expect(copy && g.cardData[g.cards[copy]!.cardId]!.name).toBe("Wedding Ring");
+    const hand = g.players.p1!.zones.hand.length;
+    g = endTurn(g, "p1");
+    // Pioche de p2 pendant son tour : p1 pioche aussi.
+    g = act(g, "p2", { type: "nextStep", to: "main1" });
+    g = resolveAll(g);
+    expect(g.players.p1!.zones.hand.length).toBe(hand + 1);
+    for (const name of ["Wedding Ring"]) expect(cardSupport(real(name)).level, name).toBe("full");
+  });
+});

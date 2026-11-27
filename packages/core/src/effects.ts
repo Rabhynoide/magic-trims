@@ -140,6 +140,8 @@ export type Effect =
   | { type: "exchangeControl"; a: number; b: number; relation?: ExchangeRelation }
   /** Chaos Warp : le propriétaire mélange le permanent dans sa bibliothèque ; `revealPermanent` : puis révèle et met en jeu un permanent. */
   | { type: "shuffleIntoLibrary"; target: number; revealPermanent?: boolean }
+  /** Wedding Ring : « target opponent creates a token that's a copy of it ». */
+  | { type: "copyToken"; player: number }
   /** Approach of the Second Sun. */
   | { type: "approach"; position: number; life: number }
   /** Modify Memory : « If you control neither creature, draw three cards. » */
@@ -484,6 +486,9 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
     if (filter) return [{ type: "sacrifice", filter: { ...filter, controller: "you" }, another: true }];
   }
   if (/^tap ~$/i.test(s)) return [{ type: "tapSelf" }];
+  if ((m = /^(target opponent|target player) creates a token that's a copy of (?:it|~)$/i.exec(s))) {
+    return [{ type: "copyToken", player: target(playerTarget(m[1]!)) }];
+  }
   // Bronze Bombshell : « that player sacrifices it. »
   if (/^that player sacrifices (?:it|~)$/i.test(s)) return [{ type: "sacrificeSelf" }];
   return null;

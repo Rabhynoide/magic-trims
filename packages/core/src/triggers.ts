@@ -13,12 +13,13 @@ import { parseActivatedLine, type ActivatedAbility } from "./activated.js";
 import { parseSpellEffects, selfToTilde, type SpellEffects } from "./effects.js";
 import { joinModes } from "./text.js";
 import { parseStaticLine, type StaticAbility } from "./statics.js";
-import { areTeammates } from "./modes.js";
+import { areTeammates, isActivePlayer } from "./modes.js";
 import type { TurnStep } from "./turn.js";
 import type { CardData, CardInstanceId, GameState, PlayerId, StackAbility, Zone } from "./types.js";
 
 export type TriggerEvent =
-  | { type: "enters"; cardId: CardInstanceId; controllerId: PlayerId; creature: boolean }
+  /** `cast` : le permanent arrive depuis la pile (il a été lancé). */
+  | { type: "enters"; cardId: CardInstanceId; controllerId: PlayerId; creature: boolean; cast?: boolean }
   /** `granted` : capacités données à la créature jusqu'à la fin du tour (Malakir Rebirth). */
   | { type: "dies"; cardId: CardInstanceId; controllerId: PlayerId; dataId: string; faceIndex: number; isToken: boolean; granted?: string[] }
   /** `nth` : combientième carte piochée par ce joueur ce tour-ci. */
@@ -57,11 +58,13 @@ export type TriggerEvent =
 type Whose = "you" | "opponent" | "any";
 
 export type TriggerCondition =
-  | { on: "enters"; self: boolean; another: boolean; creature: boolean; whose: Whose }
+  /** `ifCast` : « When ~ enters, if it was cast, … » (Wedding Ring). */
+  | { on: "enters"; self: boolean; another: boolean; creature: boolean; whose: Whose; ifCast?: boolean }
   /** `batched` : « one or more … die » se déclenche une fois par action, quel que soit le nombre de morts. */
   | { on: "dies"; self: boolean; others: boolean; whose: Whose; batched?: boolean }
   /** `nth` : « draw your second card each turn ». */
-  | { on: "draw" | "lifeGain" | "lifeLoss" | "landPlayed"; whose: Whose; nth?: number }
+  /** `controlsSameName` : « an opponent who controls an artifact named ~ » ; `theirTurn` : « during their turn ». */
+  | { on: "draw" | "lifeGain" | "lifeLoss" | "landPlayed"; whose: Whose; nth?: number; controlsSameName?: boolean; theirTurn?: boolean }
   | { on: "step"; step: "upkeep" | "draw" | "main1" | "end"; whose: Whose }
   | { on: "cast"; whose: Whose; types: string[]; notTypes: string[] }
   /** « Whenever ~ attacks », « … blocks », « … attacks or blocks ». */
@@ -122,7 +125,14 @@ function whose(text: string): Whose | null {
 
 /** Lit la condition d'une capacité déclenchée (sans « When »/« Whenever »/« At »). */
 export function parseTriggerCondition(text: string): TriggerCondition | null {
-  const t = text.trim();
+  let t = text.trim();
+  // Wedding Ring : « an opponent who controls an artifact named ~ draws a card during their turn ».
+  const named = /^an opponent who controls an? (?:artifact|permanent|creature|enchantment) named ~ (draws a card|gains life) during their turn$/i.exec(t);
+  if (named) {
+    const base = parseTriggerCondition(`an opponent ${named[1]}`);
+    if (base && (base.on === "draw" || base.on === "lifeGain")) return { ...base, controlsSameName: true, theirTurn: true };
+    return null;
+  }
   let m: RegExpExecArray | null;
   if (/^~ enters(?: the battlefield)?$/i.test(t)) {
     return { on: "enters", self: true, another: false, creature: false, whose: "you" };
@@ -317,6 +327,11 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         body = body.replace(/\s*This ability triggers only once each turn\.?$/i, "");
       }
       let ifUntapped = false;
+      const wasCast = /^if it was cast, (.+)$/i.exec(body);
+      if (wasCast && condition?.on === "enters") {
+        condition.ifCast = true;
+        body = wasCast[1]!;
+      }
       const untapped = /^if ~ is untapped, (.+)$/i.exec(body);
       if (untapped) {
         ifUntapped = true;
@@ -394,9 +409,19 @@ export function conditionMatches(
   source: { instanceId: CardInstanceId; controllerId: PlayerId },
 ): boolean {
   const c = condition;
+  // Wedding Ring : « an opponent who controls an artifact named ~ draws a card during their turn ».
+  if ((c.on === "draw" || c.on === "lifeGain") && (event.type === "draw" || event.type === "lifeGain")) {
+    if (c.theirTurn && !isActivePlayer(g, event.playerId)) return false;
+    if (c.controlsSameName) {
+      const name = g.cardData[g.cards[source.instanceId]?.cardId ?? ""]?.name;
+      const controls = g.players[event.playerId]?.zones.battlefield.some((id) => g.cardData[g.cards[id]!.cardId]?.name === name);
+      if (!name || !controls) return false;
+    }
+  }
   switch (event.type) {
     case "enters":
       if (c.on !== "enters") return false;
+      if (c.ifCast && !event.cast) return false;
       if (c.self) return event.cardId === source.instanceId;
       if (c.another && event.cardId === source.instanceId) return false;
       if (c.creature && !event.creature) return false;
