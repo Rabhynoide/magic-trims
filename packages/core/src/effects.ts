@@ -198,6 +198,8 @@ type EffectBase =
   | { type: "grantAll"; filter: PermanentFilter; keywords: string[] }
   /** Équiper : attache la source à la cible. */
   | { type: "attach"; target: number }
+  /** Hero's Blade : « attach ~ to it » (la créature de l'événement). */
+  | { type: "attachEvent" }
   /** « Sacrifice a creature » (au choix du contrôleur, à la résolution). */
   | { type: "sacrifice"; filter: PermanentFilter; another?: boolean; orElse?: Effect[] }
   /** « tap ~ ». */
@@ -207,6 +209,10 @@ type EffectBase =
   | { type: "selfCounterDamage"; kind: string }
   /** « it gets +2/+0 until end of turn » : la créature de l'événement (Crown of Doom). */
   | { type: "pumpEvent"; power: number; toughness: number }
+  /** « put a +1/+1 counter on it » : la créature de l'événement (The Great Henge). */
+  | { type: "counterEvent"; kind: string; count: number }
+  /** Odric, Lunarch Marshal : chaque mot-clé qu'a une de vos créatures est donné à toutes jusqu'à la fin du tour. */
+  | { type: "shareKeywords"; keywords: string[] }
   /** « Target opponent gains control of target permanent you control » ; `permanent` : une cible, ou la source. */
   | { type: "gainControl"; permanent: number | "self"; player: number }
   /** « Exchange control of target land you control and target land an opponent controls. » */
@@ -214,7 +220,7 @@ type EffectBase =
   /** Chaos Warp : le propriétaire mélange le permanent dans sa bibliothèque ; `revealPermanent` : puis révèle et met en jeu un permanent. */
   | { type: "shuffleIntoLibrary"; target: number; revealPermanent?: boolean }
   /** Ashling : « create a token that's a copy of it » (la carte sacrifiée), avec la célérité et un sacrifice à la fin du tour. */
-  | { type: "copyEventCard"; haste?: boolean; endStepUnless?: string }
+  | { type: "copyEventCard"; haste?: boolean; endStepUnless?: string; sacrificeAtEnd?: boolean }
   /** Paradox Haze : « that player gets an additional upkeep step after this step ». */
   | { type: "extraUpkeep" }
   /** Wedding Ring : « target opponent creates a token that's a copy of it ». */
@@ -466,6 +472,15 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
     }
   }
   if ((m = /^(?:you )?draw that many cards$/i.exec(s))) return [{ type: "draw", who: "you", count: "event" }];
+  if (/^attach ~ to (?:it|that creature)$/i.test(s) && lastTarget() < 0) return [{ type: "attachEvent" }];
+  // The Great Henge : « put a +1/+1 counter on it and draw a card » (la créature arrivée).
+  if ((m = new RegExp(`^put ${NUM} ([+-]1/[+-]1|\\w+) counters? on (?:it|that creature)(?: and draw ${NUM} cards?)?$`, "i").exec(s)) && lastTarget() < 0) {
+    const n = amount(m[1]!);
+    if (typeof n === "number") {
+      const draw = m[3] ? amount(m[3]) : null;
+      return [{ type: "counterEvent", kind: counterKind(m[2]!), count: n }, ...(draw !== null ? [{ type: "draw" as const, who: "you" as const, count: draw }] : [])];
+    }
+  }
   if (/^(?:you )?draw an additional card$/i.test(s)) return [{ type: "draw", who: "you", count: 1 }];
   if (/^discard your hand$/i.test(s)) return [{ type: "discardHand", who: "you" }];
   if (/^sacrifice ~$/i.test(s)) return [{ type: "sacrificeSelf" }];
@@ -861,12 +876,17 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       result.effects.push({ type: "copyEventCard" });
       continue;
     }
-    if (/^the token gains haste until end of turn$/i.test(s) && prev?.type === "copyEventCard") {
+    if (/^(?:the|that) token gains haste(?: until end of turn)?$/i.test(s) && prev?.type === "copyEventCard") {
       prev.haste = true;
       continue;
     }
     if ((m = /^at the beginning of your next end step, sacrifice it unless you pay ((?:\{[^}]+\})+)$/i.exec(s)) && prev?.type === "copyEventCard") {
       prev.endStepUnless = m[1]!;
+      continue;
+    }
+    // Cadric, Soul Kindler : « Sacrifice it at the beginning of the next end step. »
+    if (/^sacrifice it at the beginning of the next end step$/i.test(s) && prev?.type === "copyEventCard" && !prev.endStepUnless) {
+      prev.sacrificeAtEnd = true;
       continue;
     }
     // Chaos Warp.
@@ -1438,6 +1458,7 @@ export const KEYWORD_HELP: Record<string, { name: string; help: string }> = {
   exploit: { name: "Exploitation", help: "En arrivant, tu peux sacrifier une créature (le moteur te le demande)." },
   flash: { name: "Flash", help: "Peut se lancer à tout moment où l'on a la priorité." },
   fear: { name: "Peur", help: "Ne peut être bloquée que par des créatures-artefacts et/ou noires." },
+  skulk: { name: "Rôder", help: "Ne peut pas être bloquée par des créatures de plus grande force." },
   goad: { name: "Provocation", help: "Jusqu'au prochain tour du joueur qui provoque, la créature doit attaquer à chaque combat, et un autre joueur que lui si possible." },
   myriad: { name: "Myriade", help: "Quand elle attaque, une copie attaque chacun des autres adversaires ; les copies sont exilées à la fin du combat." },
   cascade: { name: "Cascade", help: "Quand tu la lances, exile des cartes jusqu'à une carte non-terrain de plus petite valeur de mana : tu peux la lancer gratuitement." },
