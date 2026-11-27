@@ -216,7 +216,16 @@ describe("Deck Zedruu : blessures modifiées et effets simples", () => {
     let g = toMain(newTestGame(3));
     let bolt: string, bolt2: string;
     [g] = put(g, "p1", real("Pyromancer's Swath"));
+    // Glacial Chasm fait sacrifier un terrain en arrivant : il en faut un autre.
+    let plateau: string;
+    [g, plateau] = put(g, "p3", real("Plateau"));
     [g] = put(g, "p3", real("Glacial Chasm"));
+    g = resolveAll(g);
+    const sac = g.stack.at(-1)!;
+    expect(g.cards[sac]!.cardChoice?.options).toContain(plateau);
+    g = act(g, "p3", { type: "chooseCards", cardId: sac, cardIds: [plateau] });
+    g = resolveAll(g);
+    expect(g.players.p3!.zones.graveyard).toContain(plateau);
     [g, bolt] = inHand(g, "p1", fakeCard("Shock", { typeLine: "Instant", oracleText: "Shock deals 2 damage to any target.", manaCost: "{R}" }), 1);
     [g, bolt2] = inHand(g, "p1", fakeCard("Shock", { typeLine: "Instant", oracleText: "Shock deals 2 damage to any target.", manaCost: "{R}" }), 2);
     g = mana(g, "p1", "RR");
@@ -511,6 +520,72 @@ describe("Deck Zedruu : échanges de contrôle sous condition", () => {
     expect(g.cards[big]!.controllerId).toBe("p2");
     expect(g.log.some((l) => /n'a pas lieu/.test(l.message))).toBe(true);
     for (const name of ["Daring Thief", "Djinn of Infinite Deceits", "Modify Memory", "Role Reversal", "Puca's Mischief"]) {
+      expect(cardSupport(real(name)).level, name).toBe("full");
+    }
+  });
+});
+
+describe("Deck Zedruu : artefacts qu'on donne", () => {
+  it("Jinxed Choker change de camp à l'étape de fin avec un marqueur, puis blesse son contrôleur", () => {
+    let g = toMain(newTestGame(2));
+    let choker: string;
+    [g, choker] = put(g, "p1", real("Jinxed Choker"));
+    g = act(g, "p1", { type: "nextStep", to: "end" });
+    g = resolveAll(g);
+    expect(g.cards[choker]!.controllerId).toBe("p2");
+    expect(g.cards[choker]!.counters["charge"]).toBe(1);
+    g = endTurn(g, "p1");
+    g = resolveAll(g);
+    expect(g.players.p2!.life).toBe(39);
+    // {3} : ajouter ou retirer un marqueur (au choix, à la résolution).
+    g = act(g, "p2", { type: "nextStep", to: "main1" });
+    g = mana(g, "p2", "CCC");
+    g = act(g, "p2", { type: "activateAbility", cardId: choker, index: 0 });
+    g = act(g, "p2", { type: "passPriority" });
+    g = act(g, "p1", { type: "passPriority" });
+    const ability = g.stack.at(-1)!;
+    g = act(g, "p2", { type: "chooseModes", cardId: ability, modes: [1] });
+    expect(g.cards[choker]!.counters["charge"]).toBeUndefined();
+  });
+
+  it("Crown of Doom : +2/+0 aux créatures qui attaquent son contrôleur ; on ne peut pas la rendre à son propriétaire", () => {
+    let g = toMain(newTestGame(2));
+    let crown: string, bear1: string;
+    [g, crown] = put(g, "p1", real("Crown of Doom"));
+    g = mana(g, "p1", "CC");
+    expect(refuse(g, "p1", { type: "activateAbility", cardId: crown, index: 0, targets: [{ kind: "player", id: "p1" }] })).toBeTruthy();
+    g = act(g, "p1", { type: "activateAbility", cardId: crown, index: 0, targets: [{ kind: "player", id: "p2" }] });
+    g = resolveAll(g);
+    expect(g.cards[crown]!.controllerId).toBe("p2");
+    [g, bear1] = put(g, "p1", bear("A"), 1);
+    g = act(g, "p1", { type: "nextStep", to: "declareAttackers" });
+    g = act(g, "p1", { type: "declareAttackers", attackers: [{ cardId: bear1, defender: "p2" }] });
+    g = resolveAll(g);
+    expect(creatureStats(g, g.cards[bear1]!).power).toBe(4);
+  });
+
+  it("Rust Elemental : sans autre artefact, il s'engage et on perd 4 PV", () => {
+    let g = toMain(newTestGame(2));
+    let rust: string;
+    [g, rust] = put(g, "p1", real("Rust Elemental"));
+    g = endTurn(g, "p1");
+    g = endTurn(g, "p2");
+    g = resolveAll(g);
+    expect(g.cards[rust]!.tapped).toBe(true);
+    expect(g.players.p1!.life).toBe(36);
+  });
+
+  it("Bronze Bombshell explose chez le joueur qui la reçoit", () => {
+    let g = toMain(newTestGame(2));
+    let bomb: string, offering: string;
+    [g, bomb] = put(g, "p1", real("Bronze Bombshell"));
+    [g, offering] = inHand(g, "p1", real("Harmless Offering"), 1);
+    g = mana(g, "p1", "RCC");
+    g = act(g, "p1", { type: "castSpell", cardId: offering, targets: [{ kind: "player", id: "p2" }, { kind: "card", id: bomb }] });
+    g = resolveAll(g);
+    expect(g.players.p1!.zones.graveyard).toContain(bomb);
+    expect(g.players.p2!.life).toBe(33);
+    for (const name of ["Jinxed Choker", "Crown of Doom", "Rust Elemental", "Bronze Bombshell"]) {
       expect(cardSupport(real(name)).level, name).toBe("full");
     }
   });

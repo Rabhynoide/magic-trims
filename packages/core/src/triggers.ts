@@ -31,6 +31,8 @@ export type TriggerEvent =
   | { type: "attacks"; cardId: CardInstanceId }
   | { type: "blocks"; cardId: CardInstanceId }
   | { type: "exploits"; cardId: CardInstanceId }
+  /** Un permanent change de contrôleur. */
+  | { type: "controlChanged"; cardId: CardInstanceId; controllerId: PlayerId }
   /** Un permanent engagé se dégage. */
   | { type: "untapped"; cardId: CardInstanceId }
   /** Un permanent subit des blessures (Body of Knowledge). */
@@ -63,7 +65,9 @@ export type TriggerCondition =
   | { on: "step"; step: "upkeep" | "draw" | "main1" | "end"; whose: Whose }
   | { on: "cast"; whose: Whose; types: string[]; notTypes: string[] }
   /** « Whenever ~ attacks », « … blocks », « … attacks or blocks ». */
-  | { on: "combat"; attacks: boolean; blocks: boolean }
+  | { on: "combat"; attacks: boolean; blocks: boolean; anyCreature?: boolean; defender?: "you" }
+  /** Bronze Bombshell : « When a player other than ~'s owner controls it ». */
+  | { on: "controlledByNonOwner" }
   /** « When ~ exploits a creature ». */
   | { on: "exploits" }
   /** « Whenever ~ becomes untapped ». */
@@ -165,6 +169,8 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   }
   if (/^~ exploits a creature$/i.test(t)) return { on: "exploits" };
   if (/^~ becomes untapped$/i.test(t)) return { on: "untapped" };
+  if (/^a creature attacks you(?: or a planeswalker you control)?$/i.test(t)) return { on: "combat", attacks: true, blocks: false, anyCreature: true, defender: "you" };
+  if (/^a player other than ~'s owner controls it$/i.test(t)) return { on: "controlledByNonOwner" };
   if (/^~ is dealt damage$/i.test(t)) return { on: "damaged" };
   if ((m = /^(~|a creature|a creature you control|a creature an opponent controls) deals combat damage to (a player|an opponent|one of your opponents|you)$/i.exec(t))) {
     const who = m[1]!.toLowerCase();
@@ -409,7 +415,11 @@ export function conditionMatches(
     }
     case "attacks":
     case "blocks":
-      return c.on === "combat" && (event.type === "attacks" ? c.attacks : c.blocks) && event.cardId === source.instanceId;
+      if (c.on !== "combat" || !(event.type === "attacks" ? c.attacks : c.blocks)) return false;
+      if (c.defender === "you" && g.combat?.attackers[event.cardId] !== source.controllerId) return false;
+      return c.anyCreature ? true : event.cardId === source.instanceId;
+    case "controlChanged":
+      return c.on === "controlledByNonOwner" && event.cardId === source.instanceId && g.cards[source.instanceId]?.ownerId !== event.controllerId;
     case "exploits":
       return c.on === "exploits" && event.cardId === source.instanceId;
     case "untapped":

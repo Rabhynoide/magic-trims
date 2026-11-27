@@ -1441,6 +1441,8 @@ function flushTriggers(g: GameState): boolean {
     if (ev.type === "dies" || ev.type === "leaves") {
       instance.ability.eventCardId = ev.cardId;
       instance.ability.eventZone = ev.type === "dies" ? "graveyard" : ev.to;
+    } else if (ev.type === "attacks") {
+      instance.ability.eventCardId = ev.cardId;
     }
     if ("playerId" in ev) instance.ability.eventPlayerId = ev.playerId;
     if ("amount" in ev) instance.ability.eventAmount = ev.amount;
@@ -1779,8 +1781,11 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         const self2 = ability ? g.cards[ability.sourceId] : undefined;
         if (self2?.zone === "battlefield") {
           const name = cardName(g, self2);
+          const victim = self2.controllerId;
           moveCardTo(g, self2.instanceId, "graveyard", "top");
-          log(g, null, `${g.players[self2.controllerId]?.name ?? caster.name} sacrifie ${name}.`);
+          log(g, null, `${g.players[victim]?.name ?? caster.name} sacrifie ${name}.`);
+          // Bronze Bombshell : « If the player does, ~ deals 7 damage to the player. »
+          if (effect.thenDamage) dealt += dealDamage(g, name, { kind: "player", id: victim }, effect.thenDamage, damageFrom);
         }
         break;
       }
@@ -1915,10 +1920,24 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
       }
       case "counterSelf": {
         if (!self || self.zone !== "battlefield") break;
-        self.counters[effect.kind] = (self.counters[effect.kind] ?? 0) + effect.count;
-        log(g, null, `${cardName(g, self)} reçoit ${plural(effect.count, `marqueur ${effect.kind}`, `marqueurs ${effect.kind}`)}.`);
+        const value = Math.max(0, (self.counters[effect.kind] ?? 0) + effect.count);
+        if (value === 0) delete self.counters[effect.kind];
+        else self.counters[effect.kind] = value;
+        const n = Math.abs(effect.count);
+        log(g, null, `${cardName(g, self)} ${effect.count >= 0 ? "reçoit" : "perd"} ${plural(n, `marqueur ${effect.kind}`, `marqueurs ${effect.kind}`)}.`);
         break;
       }
+      case "selfCounterDamage": {
+        const n = self?.counters[effect.kind] ?? 0;
+        if (self && n > 0) dealt += dealDamage(g, sourceName, { kind: "player", id: caster.id }, n, damageFrom);
+        break;
+      }
+      case "tapSelf":
+        if (self?.zone === "battlefield" && !self.tapped) {
+          self.tapped = true;
+          log(g, null, `${cardName(g, self)} s'engage.`);
+        }
+        break;
       case "token": {
         const n = amountOf(effect.count);
         const { token } = effect;
@@ -1985,12 +2004,14 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         log(g, null, `${name} retourne du cimetière dans la main de ${g.players[self.ownerId]!.name}.`);
         break;
       }
+      case "pumpEvent":
       case "pumpSelf": {
-        if (!self || self.zone !== "battlefield") break;
-        const boost = self.ptBoost ?? { power: 0, toughness: 0 };
-        self.ptBoost = { power: boost.power + effect.power, toughness: boost.toughness + effect.toughness };
+        const pumped = effect.type === "pumpSelf" ? (ability ? g.cards[ability.sourceId] : undefined) : ability?.eventCardId ? g.cards[ability.eventCardId] : undefined;
+        if (!pumped || pumped.zone !== "battlefield") break;
+        const boost = pumped.ptBoost ?? { power: 0, toughness: 0 };
+        pumped.ptBoost = { power: boost.power + effect.power, toughness: boost.toughness + effect.toughness };
         const sign = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
-        log(g, null, `${cardName(g, self)} reçoit ${sign(effect.power)}/${sign(effect.toughness)} jusqu'à la fin du tour.`);
+        log(g, null, `${cardName(g, pumped)} reçoit ${sign(effect.power)}/${sign(effect.toughness)} jusqu'à la fin du tour.`);
         break;
       }
       case "grantAll": {
@@ -2048,8 +2069,16 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         break;
       }
       case "sacrifice": {
-        const chosen = ability?.choice ? g.cards[ability.choice] : undefined;
-        if (!chosen || chosen.zone !== "battlefield" || chosen.controllerId !== caster.id || !matchesPermanent(g, chosen, effect.filter, caster.id)) break;
+        const picked = source.choices?.[effects.indexOf(effect)]?.[0];
+        const chosenId = ability?.choice ?? picked;
+        const chosen = chosenId ? g.cards[chosenId] : undefined;
+        const valid = (c: CardInstance | undefined): c is CardInstance =>
+          !!c && c.zone === "battlefield" && c.controllerId === caster.id && matchesPermanent(g, c, effect.filter, caster.id) && !(effect.another && c.instanceId === ability?.sourceId);
+        if (!valid(chosen)) {
+          // Rust Elemental : « If you can't, tap ~ and you lose 4 life. »
+          if (effect.orElse && !caster.zones.battlefield.some((id) => valid(g.cards[id]))) applySpellEffects(g, source, effect.orElse, targets, legal);
+          break;
+        }
         const name = cardName(g, chosen);
         moveCardTo(g, chosen.instanceId, "graveyard", "top");
         log(g, null, `${caster.name} sacrifie ${name}.`);
@@ -2085,8 +2114,22 @@ function startScry(g: GameState, card: CardInstance, effects: SpellEffects): boo
 function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], targets: Target[], legal: boolean[]): boolean {
   const controller = g.players[card.controllerId]!;
   for (const [index, effect] of effects.entries()) {
-    if (effect.type !== "search" && effect.type !== "chooseDiscard") continue;
     if (card.choices?.[index]) continue;
+    // Sacrifice obligatoire (« sacrifice another artifact ») : le contrôleur choisit dans la fenêtre commune.
+    if (effect.type === "sacrifice" && !card.ability?.choice) {
+      const sourceId = card.ability?.sourceId;
+      const options = controller.zones.battlefield.filter(
+        (id) => matchesPermanent(g, g.cards[id]!, effect.filter, controller.id) && !(effect.another && id === sourceId),
+      );
+      if (options.length <= 1) {
+        card.choices = { ...(card.choices ?? {}), [index]: options };
+        continue;
+      }
+      card.cardChoice = { index, options, min: 1, max: 1, label: `Choisis un(e) ${permanentLabel(effect.filter)} à sacrifier` };
+      log(g, null, `${controller.name} choisit quoi sacrifier pour ${cardName(g, card)}.`);
+      return true;
+    }
+    if (effect.type !== "search" && effect.type !== "chooseDiscard") continue;
     const typeOk = (id: CardInstanceId, types: string[]) => {
       const data = g.cardData[g.cards[id]!.cardId];
       const typeLine = (data?.faces?.[0]?.typeLine ?? data?.typeLine ?? "").toLowerCase();
@@ -2237,6 +2280,7 @@ function setController(g: GameState, card: CardInstance, playerId: PlayerId): vo
   }
   g.players[playerId]!.zones.battlefield.push(card.instanceId);
   log(g, null, `${g.players[playerId]!.name} prend le contrôle de ${cardName(g, card)}.`);
+  emit(g, { type: "controlChanged", cardId: card.instanceId, controllerId: playerId });
 }
 
 /** Payer des points de vie (une perte de points de vie). */

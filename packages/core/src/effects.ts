@@ -38,6 +38,8 @@ export interface TargetSpec {
   hand?: boolean;
   /** Une carte dans un cimetière (« target creature card from your graveyard »). */
   graveyard?: GraveyardFilter;
+  /** « target player other than ~'s owner » (Crown of Doom). */
+  notOwner?: boolean;
 }
 
 export interface GraveyardFilter {
@@ -125,7 +127,13 @@ export type Effect =
   /** Équiper : attache la source à la cible. */
   | { type: "attach"; target: number }
   /** « Sacrifice a creature » (au choix du contrôleur, à la résolution). */
-  | { type: "sacrifice"; filter: PermanentFilter }
+  | { type: "sacrifice"; filter: PermanentFilter; another?: boolean; orElse?: Effect[] }
+  /** « tap ~ ». */
+  | { type: "tapSelf" }
+  /** Jinxed Choker : « deals damage to you equal to the number of charge counters on it ». */
+  | { type: "selfCounterDamage"; kind: string }
+  /** « it gets +2/+0 until end of turn » : la créature de l'événement (Crown of Doom). */
+  | { type: "pumpEvent"; power: number; toughness: number }
   /** « Target opponent gains control of target permanent you control » ; `permanent` : une cible, ou la source. */
   | { type: "gainControl"; permanent: number | "self"; player: number }
   /** « Exchange control of target land you control and target land an opponent controls. » */
@@ -158,7 +166,7 @@ export type Effect =
   | { type: "chooseDiscard"; who: Who; types: string[] }
   | { type: "discardHand"; who: Who }
   /** « Sacrifice ~. » */
-  | { type: "sacrificeSelf" }
+  | { type: "sacrificeSelf"; thenDamage?: number }
   /** « Flip a coin. If you lose the flip, ~ deals 3 damage to you. » */
   | { type: "coinFlipDamage"; amount: number }
   /** « Shuffle ~ and your graveyard into their owner's library. » */
@@ -385,10 +393,19 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
     ];
   }
   if ((m = new RegExp(`^~ deals ${NUM} damage to you$`, "i").exec(s))) return [{ type: "damage", target: "you", amount: amount(m[1]!) }];
-  if ((m = /^(target opponent|target player|an opponent) gains control of (~|it|target (.+))$/i.exec(s))) {
+  if ((m = /^(target opponent|target player other than ~'s owner|target player|an opponent) gains control of (~|it|target (.+?))(?: and puts an? (\w+) counter on it)?$/i.exec(s))) {
     const who = m[1]!.toLowerCase();
-    const player = who === "an opponent" ? target({ label: "adversaire", player: true, opponent: true, choice: true }) : target(playerTarget(who));
-    if (!m[3]) return [{ type: "gainControl", permanent: "self", player }];
+    const player =
+      who === "an opponent"
+        ? target({ label: "adversaire", player: true, opponent: true, choice: true })
+        : /other than/.test(who)
+          ? target({ label: "joueur autre que le propriétaire", player: true, notOwner: true })
+          : target(playerTarget(who));
+    if (!m[3]) {
+      const counter: Effect[] = m[4] ? [{ type: "counterSelf", kind: counterKind(m[4]), count: 1 }] : [];
+      return [{ type: "gainControl", permanent: "self", player }, ...counter];
+    }
+    if (m[4]) return null;
     const filter = parsePermanentFilter(m[3]);
     if (!filter) return null;
     return [{ type: "gainControl", permanent: target({ label: permanentLabel(filter), permanent: filter }), player }];
@@ -449,10 +466,29 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
     const filter = parsePermanentFilter(m[1]!);
     if (filter) return [{ type: "sacrifice", filter: { ...filter, controller: "you" } }];
   }
-  if ((m = new RegExp(`^put ${NUM} (\\+1/\\+1|-1/-1) counters? on ~$`, "i").exec(s))) {
-    return [{ type: "counterSelf", kind: m[2]!, count: amount(m[1]!) as number }];
+  if ((m = new RegExp(`^put ${NUM} (\\+1/\\+1|-1/-1|\\w+) counters? on ~$`, "i").exec(s))) {
+    return [{ type: "counterSelf", kind: counterKind(m[2]!), count: amount(m[1]!) as number }];
   }
+  if ((m = /^~ deals damage to you equal to the number of (\w+) counters on it$/i.exec(s))) {
+    return [{ type: "selfCounterDamage", kind: counterKind(m[1]!) }];
+  }
+  if ((m = /^it gets \+(\d+)\/\+(\d+) until end of turn$/i.exec(s))) {
+    return [{ type: "pumpEvent", power: parseInt(m[1]!, 10), toughness: parseInt(m[2]!, 10) }];
+  }
+  if ((m = /^sacrifice another (.+)$/i.exec(s))) {
+    const filter = parsePermanentFilter(m[1]!);
+    if (filter) return [{ type: "sacrifice", filter: { ...filter, controller: "you" }, another: true }];
+  }
+  if (/^tap ~$/i.test(s)) return [{ type: "tapSelf" }];
+  // Bronze Bombshell : « that player sacrifices it. »
+  if (/^that player sacrifices (?:it|~)$/i.test(s)) return [{ type: "sacrificeSelf" }];
   return null;
+}
+
+/** Nom d'un type de marqueur, comme l'affiche la table (« charge », « âge »…). */
+const COUNTER_KINDS: Record<string, string> = { age: "âge", lore: "savoir", loyalty: "loyauté", charge: "charge", time: "temps", oil: "huile", stun: "étourdissement" };
+function counterKind(word: string): string {
+  return COUNTER_KINDS[word.toLowerCase()] ?? word.toLowerCase();
 }
 
 /** Cibles de blessures : « any target », « target creature or planeswalker »… */
@@ -621,6 +657,33 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     if (wheel) {
       result.unknown.push("puts the cards in their hand on the bottom of their library");
       wheel = null;
+    }
+    // Rust Elemental : « If you can't, tap ~ and you lose 4 life. » (après « sacrifice another artifact »).
+    const prev = result.effects.at(-1);
+    if ((m = /^if you can't, (.+)$/i.exec(s)) && prev?.type === "sacrifice" && !prev.orElse) {
+      const parts = m[1]!.split(/ and (?=you |tap |~ )/i).map((p) => parseSpellEffects(p.charAt(0).toUpperCase() + p.slice(1), "~"));
+      if (parts.every((p) => p.unknown.length === 0 && p.targets.length === 0 && p.effects.length > 0)) {
+        prev.orElse = parts.flatMap((p) => p.effects);
+        continue;
+      }
+    }
+    // Bronze Bombshell : « If the player does, ~ deals 7 damage to the player. »
+    if ((m = /^if the player does, ~ deals (\d+) damage to the player$/i.exec(s)) && prev?.type === "sacrificeSelf" && !prev.thenDamage) {
+      prev.thenDamage = parseInt(m[1]!, 10);
+      continue;
+    }
+    // Jinxed Choker : « Put a charge counter on ~ or remove one from it. »
+    if ((m = /^put an? (\w+) counter on ~ or remove one from it$/i.exec(s)) && result.effects.length === 0 && !result.modes) {
+      const kind = counterKind(m[1]!);
+      result.modes = {
+        min: 1,
+        max: 1,
+        list: [
+          { label: `Ajouter un marqueur ${kind}`, effects: [{ type: "counterSelf", kind, count: 1 }] },
+          { label: `Retirer un marqueur ${kind}`, effects: [{ type: "counterSelf", kind, count: -1 }] },
+        ],
+      };
+      continue;
     }
     const triggered = parseTriggerSentence(s, target, () => result.targets.length - 1);
     if (triggered) {
@@ -810,6 +873,11 @@ export function isLegalTarget(g: GameState, spec: TargetSpec, target: Target, ca
     const p = g.players[target.id];
     if (!spec.player || !p || p.hasConceded) return false;
     if (!spec.choice && playerHasShroud(g, p.id)) return false;
+    if (spec.notOwner && sourceId) {
+      const src = g.cards[sourceId];
+      const perm = src?.ability ? g.cards[src.ability.sourceId] : src;
+      if (perm && perm.ownerId === p.id) return false;
+    }
     return !spec.opponent || (p.id !== casterId && !areTeammates(g, p.id, casterId));
   }
   const card = g.cards[target.id];
@@ -907,7 +975,7 @@ function permanentLineStatus(line: string, typeLine: string, name: string): Line
   if (activated) {
     const title = activated.equip ? "Équipement" : activated.cost.loyalty !== undefined ? "Capacité de loyauté" : activated.mana ? "Capacité de mana" : "Capacité activée";
     const { effects, unknown } = activated.effects;
-    if (unknown.length === 0 && effects.length > 0) return { title, status: "auto" };
+    if (unknown.length === 0 && (effects.length > 0 || activated.effects.modes)) return { title, status: "auto" };
     // Le coût est payé par le moteur ; l'effet (ou une partie) reste à faire à la main.
     return { title, status: "partial", manual: unknown };
   }
