@@ -18,6 +18,8 @@ export type GameAction =
   | { type: "mulligan" }
   /** Après un mulligan : met les cartes choisies de la main au-dessous de la bibliothèque (dans cet ordre). */
   | { type: "bottomMulligan"; cardIds: CardInstanceId[] }
+  /** Étape de nettoyage : défausse les cartes choisies pour revenir à la taille maximale de main (règle 514.1). */
+  | { type: "discardToHandSize"; cardIds: CardInstanceId[] }
   /** Déplace les N cartes du dessus de la bibliothèque (meule, exil…). */
   | { type: "moveTopOfLibrary"; count: number; to: Zone; faceDown?: boolean }
   /** Regarde les N cartes du dessus (regard, surveillance…). */

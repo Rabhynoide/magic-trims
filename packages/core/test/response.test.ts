@@ -51,6 +51,9 @@ describe("Réponses pendant le tour des autres", () => {
     expect(g.turn.step).toBe("end");
     expect(g.priority).toMatchObject({ playerId: "p2", pending: { type: "passTurn" } });
     g = act(g, "p2", { type: "passPriority" });
+    // Alice a 8 cartes : le tour s'arrête au nettoyage le temps qu'elle défausse.
+    expect(g.turn.step).toBe("cleanup");
+    g = act(g, "p1", { type: "discardToHandSize", cardIds: [g.players.p1!.zones.hand[0]!] });
     expect(g.turn.activePlayerId).toBe("p2");
     expect(refuse(g, "p2", { type: "setPriorityStops", stops: ["main1"] })).toMatch(/étapes clés/);
   });
