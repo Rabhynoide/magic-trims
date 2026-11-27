@@ -7,6 +7,8 @@ import {
   formatMana,
   isManaType,
   manaOptions,
+  manaOptionsDetailed,
+  MANA_TYPES,
   parseManaCost,
   payFromPool,
   type ManaNeed,
@@ -44,6 +46,11 @@ import {
   type DamageSource,
   evokeOptions,
   type EvokeCost,
+  chooseTypeOf,
+  costReductions,
+  mostCommonCreatureType,
+  hasCreatureType,
+  typeLineHasCreatureType,
 } from "./statics.js";
 import { canAttack, canBlock, cantAttack, cantBlock, creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatState } from "./combat.js";
 import { MAX_HAND_SIZE, STEP_LABELS, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
@@ -374,7 +381,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     destroyLethal(g);
   },
 
-  playLand(g, actor, { cardId, face }) {
+  playLand(g, actor, { cardId, face, chosenType }) {
     const card = getCard(g, cardId);
     if (card.ownerId !== actor.id || card.zone !== "hand") throw new ActionError("Joue un terrain de ta main.");
     const faceIndex = face ?? 0;
@@ -382,6 +389,9 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     assertSorceryTiming(g, actor, "jouer un terrain");
     if (actor.landsPlayed >= 1) throw new ActionError("Tu as déjà joué un terrain ce tour.");
     if (g.settings.enforceRules && cantPlayLands(g, actor.id)) throw new ActionError("Un de tes permanents t'empêche de jouer des terrains.");
+    const what = chooseTypeOf(g.cardData[card.cardId], faceIndex);
+    const chosen = what ? checkChosenType(what, chosenType) : undefined;
+    if (chosen) card.chosenType = chosen;
     const played = moveCardTo(g, cardId, "battlefield", "top");
     played.faceIndex = faceIndex;
     if (g.settings.enforceRules && entersTapped(g.cardData[played.cardId], faceIndex)) played.tapped = true;
@@ -390,7 +400,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     emit(g, { type: "landPlayed", playerId: actor.id });
   },
 
-  castSpell(g, actor, { cardId, face, x, targets, sacrifice, alternative, chapter, evoke, evokeExile }) {
+  castSpell(g, actor, { cardId, face, x, targets, sacrifice, alternative, chapter, evoke, evokeExile, chosenType }) {
     const card = getCard(g, cardId);
     const fromCommand = card.zone === "command" && card.isCommander;
     if (card.ownerId !== actor.id || (card.zone !== "hand" && !fromCommand)) {
@@ -465,8 +475,14 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       }
     }
     // Réductions de coût (Jet Medallion…), seulement quand l'hôte applique les règles.
-    const reduction = g.settings.enforceRules ? costReduction(g, actor.id, { typeLine, colors: data.colors }) : 0;
-    const payment = payMana(g, actor, costText, xValue, tax - reduction, card.instanceId, `lancer ${name}`);
+    const reductions = g.settings.enforceRules
+      ? costReductions(g, actor.id, { typeLine, colors: data.colors, oracleText: faceData?.oracleText ?? data.oracleText })
+      : { generic: 0, colored: [] as string[] };
+    const reduction = reductions.generic;
+    // Morophon : retire du coût le mana coloré indiqué (une fois chaque symbole).
+    let paidCost = costText;
+    for (const c of reductions.colored) paidCost = paidCost.replace(`{${c}}`, "");
+    const payment = payMana(g, actor, paidCost, xValue, tax - reduction, card.instanceId, `lancer ${name}`, { typeLine, oracleText: faceData?.oracleText ?? data.oracleText });
     if (sacrificed) {
       const sacName = cardName(g, sacrificed);
       sacrificePermanent(g, sacrificed);
@@ -487,6 +503,9 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     cast.faceIndex = faceIndex;
     if (alternative) cast.alternative = true;
     if (evokeCost) cast.evoked = true;
+    const what = chooseTypeOf(data, faceIndex);
+    const chosenOne = what ? checkChosenType(what, chosenType) : undefined;
+    if (chosenOne) cast.chosenType = chosenOne;
     // Lecture anticipée : le chapitre de départ (1 par défaut).
     const chapters = sagaChapters(data, faceIndex);
     if (chapter !== undefined && chapters > 0 && /\bRead ahead\b/i.test(faceData?.oracleText ?? data.oracleText)) {
@@ -1103,6 +1122,7 @@ export function moveCardTo(
     card.counters = {};
     delete card.attachedTo;
     delete card.attachedPlayer;
+    delete card.chosenType;
     for (const other of Object.values(g.cards)) {
       if (other.attachedTo !== card.instanceId) continue;
       delete other.attachedTo;
@@ -1159,7 +1179,14 @@ export function moveCardTo(
   }
   insertAt(zoneList(g, card), id, to, position);
   if (dies) emit(g, dies);
-  if (to === "battlefield" && from !== "battlefield") emitEnters(g, g.cards[id]!, from === "stack");
+  if (to === "battlefield" && from !== "battlefield") {
+    // « As ~ enters, choose a creature type » : sans choix (posée à la main, copie), le type le plus courant.
+    const entered = g.cards[id]!;
+    const what = !entered.faceDown && chooseTypeOf(g.cardData[entered.cardId], entered.faceIndex);
+    if (what && !entered.chosenType) entered.chosenType = what === "card" ? "creature" : mostCommonCreatureType(g, entered.controllerId);
+    if (what) log(g, null, `${cardName(g, entered)} : type choisi « ${entered.chosenType} ».`);
+    emitEnters(g, entered, from === "stack");
+  }
   return g.cards[id]!;
 }
 
@@ -2418,19 +2445,44 @@ function payMana(
   extraGeneric: number,
   excludeId: CardInstanceId | undefined,
   what: string,
+  spell?: { typeLine: string; oracleText: string; ability?: boolean },
 ): { spent: ManaType[]; life: number } {
   const cost = parseManaCost(costText);
-  let payment = payFromPool(actor.manaPool, cost, x, extraGeneric);
+  // Le mana réservé (Primal Beyond…) compte seulement pour les sorts du bon type.
+  const usable = () => (actor.restrictedMana ?? []).filter((r) => restrictionFits(r, spell));
+  const poolWith = () => {
+    const pool = { ...actor.manaPool };
+    for (const r of usable()) pool[r.mana] += 1;
+    return pool;
+  };
+  let payment = payFromPool(poolWith(), cost, x, extraGeneric);
   while (!payment.ok) {
-    const source = findManaSource(g, actor, payment.need, excludeId ?? "");
+    const source = findManaSource(g, actor, payment.need, excludeId ?? "", spell);
     if (!source) {
       const missing = payment.need.kind === "color" ? payment.need.options.map((m) => `{${m}}`).join(" ou ") : "du mana";
       throw new ActionError(`Pas assez de mana pour ${what} : il manque ${missing}.`);
     }
     tapForMana(g, actor, source.card, source.choice);
-    payment = payFromPool(actor.manaPool, cost, x, extraGeneric);
+    payment = payFromPool(poolWith(), cost, x, extraGeneric);
   }
-  actor.manaPool = payment.pool;
+  // Le mana réservé est dépensé en premier.
+  const reserved = usable();
+  const before = poolWith();
+  const newPool = { ...actor.manaPool };
+  for (const m of MANA_TYPES) {
+    const used = before[m] - payment.pool[m];
+    const fromReserved = Math.min(used, reserved.filter((r) => r.mana === m).length);
+    newPool[m] -= used - fromReserved;
+    let left = fromReserved;
+    actor.restrictedMana = (actor.restrictedMana ?? []).filter((r) => {
+      if (left > 0 && r.mana === m && reserved.includes(r)) {
+        left--;
+        return false;
+      }
+      return true;
+    });
+  }
+  actor.manaPool = newPool;
   if (payment.life > 0) payLife(g, actor, payment.life);
   return { spent: payment.spent, life: payment.life };
 }
@@ -2484,6 +2536,19 @@ function untap(g: GameState, card: CardInstance): void {
   if (!card.tapped) return;
   card.tapped = false;
   emit(g, { type: "untapped", cardId: card.instanceId });
+}
+
+/** Le type choisi en arrivant : un type de créature (un mot), ou un type de carte (Cloud Key). */
+function checkChosenType(what: "creature" | "card", value: string | undefined): string | undefined {
+  if (value === undefined || value === "") return undefined;
+  const v = value.trim();
+  if (what === "card") {
+    const t = v.toLowerCase();
+    if (!["artifact", "creature", "enchantment", "instant", "sorcery"].includes(t)) throw new ActionError("Choisis : artifact, creature, enchantment, instant ou sorcery.");
+    return t;
+  }
+  if (!/^[A-Za-z][A-Za-z'-]*$/.test(v)) throw new ActionError("Type de créature invalide (un seul mot, en anglais : Elemental, Elf…).");
+  return v.charAt(0).toUpperCase() + v.slice(1).toLowerCase();
 }
 
 const COMBAT_STEPS: TurnStep[] = ["beginCombat", "declareAttackers", "declareBlockers", "combatDamage", "endCombat"];
@@ -2582,7 +2647,9 @@ function activateAbility(
   if (anyColor && (!color || !isManaType(color) || color === "C")) throw new ActionError("Choisis la couleur du mana.");
 
   // Paiement : mana d'abord (sans engager la source si elle s'engage pour le coût), puis le reste.
-  const paid = cost.mana ? payMana(g, actor, cost.mana, 0, 0, cost.tap ? card.instanceId : undefined, `activer ${name}`) : null;
+  const sourceData = g.cardData[card.cardId];
+  const asSpell = { typeLine: currentTypeLine(g, card), oracleText: sourceData?.faces?.[card.faceIndex]?.oracleText ?? sourceData?.oracleText ?? "", ability: true };
+  const paid = cost.mana ? payMana(g, actor, cost.mana, 0, 0, cost.tap ? card.instanceId : undefined, `activer ${name}`, asSpell) : null;
   if (cost.tap) card.tapped = true;
   if (cost.life > 0) payLife(g, actor, cost.life);
   if (cost.loyalty !== undefined) setCounter(card, "loyauté", (card.counters["loyauté"] ?? 0) + cost.loyalty);
@@ -2640,7 +2707,14 @@ function tapForMana(g: GameState, actor: PlayerState, card: CardInstance, choice
   const mana = cardManaOptions(g, card)[choice];
   if (!mana) throw new ActionError("Choix de mana invalide.");
   card.tapped = true;
-  const pool = g.players[card.controllerId]!.manaPool;
+  const owner = g.players[card.controllerId]!;
+  const pool = owner.manaPool;
+  const only = cardManaRestrictions(g, card)[choice];
+  if (only) {
+    for (const m of mana) (owner.restrictedMana ??= []).push({ mana: m, ...only });
+    log(g, actor.id, `${actor.name} engage ${cardName(g, card)} pour ${formatMana(mana)} (réservé : ${only.subtype || "type choisi"}).`);
+    return;
+  }
   // Bubbling Muck : du mana en plus pour un terrain de ce type.
   const typeLine = faceTypeLine(g, card, card.faceIndex);
   const bonus = (g.manaBonuses ?? []).filter((b) => b.turn === g.turn.number && new RegExp(`\\b${b.subtype}\\b`).test(typeLine)).map((b) => b.mana);
@@ -2659,13 +2733,17 @@ function findManaSource(
   actor: PlayerState,
   need: ManaNeed,
   exclude: CardInstanceId,
+  spell?: { typeLine: string; oracleText: string; ability?: boolean },
 ): { card: CardInstance; choice: number } | null {
   let best: { card: CardInstance; choice: number; score: number } | null = null;
   for (const id of actor.zones.battlefield) {
     const card = g.cards[id]!;
     if (card.tapped || id === exclude || card.controllerId !== actor.id) continue;
     const options = cardManaOptions(g, card);
+    const restrictions = cardManaRestrictions(g, card);
     options.forEach((mana, choice) => {
+      const only = restrictions[choice];
+      if (only && !restrictionFits(only, spell)) return;
       const fits = need.kind === "any" || mana.some((m: ManaType) => need.options.includes(m));
       if (!fits) return;
       const isLandCard = /\bLand\b/.test(faceTypeLine(g, card, card.faceIndex));
@@ -2695,6 +2773,23 @@ function faceTypeLine(g: GameState, card: CardInstance, faceIndex: number): stri
 }
 
 /** Mana que la carte (sur sa face visible) peut produire en s'engageant. */
+/** Les restrictions des choix de mana de la carte (le type choisi remplacé par celui de la carte). */
+function cardManaRestrictions(g: GameState, card: CardInstance): ({ subtype: string; abilities: boolean } | undefined)[] {
+  const data = g.cardData[card.cardId];
+  if (!data) return [];
+  const face = data.faces?.[card.faceIndex];
+  return manaOptionsDetailed(face?.typeLine ?? data.typeLine, face?.oracleText ?? data.oracleText).map((o) =>
+    o.only ? { subtype: o.only.subtype === "chosen" ? (card.chosenType ?? "") : o.only.subtype, abilities: o.only.abilities } : undefined,
+  );
+}
+
+/** Ce mana réservé peut-il payer ce sort (ou cette capacité) ? */
+function restrictionFits(r: { subtype: string; abilities: boolean }, spell: { typeLine: string; oracleText: string; ability?: boolean } | undefined): boolean {
+  if (!spell || !r.subtype) return false;
+  if (spell.ability && !r.abilities) return false;
+  return typeLineHasCreatureType(spell.typeLine, spell.oracleText, r.subtype);
+}
+
 export function cardManaOptions(g: GameState, card: CardInstance) {
   const data = g.cardData[card.cardId];
   if (!data) return [];
@@ -3254,6 +3349,27 @@ function enterStep(g: GameState, step: TurnStep): void {
   if (step === "upkeep" || step === "draw" || step === "main1" || step === "end") {
     for (const p of activePlayers(g)) emit(g, { type: "step", step, playerId: p.id });
   }
+  // Herald's Horn : la carte du dessus va en main si c'est une créature du type choisi.
+  if (step === "upkeep" && g.settings.enforceRules) {
+    for (const p of activePlayers(g)) {
+      for (const id of p.zones.battlefield) {
+        const horn = g.cards[id]!;
+        if (!horn.chosenType || !staticsOf(g, horn).some((st) => st.kind === "heraldsHorn")) continue;
+        const topId = p.zones.library[0];
+        const top = topId ? g.cards[topId] : undefined;
+        if (!top) continue;
+        const data = g.cardData[top.cardId];
+        const typeLine = data?.typeLine ?? "";
+        if (/\bCreature\b/.test(typeLine) && typeLineHasCreatureType(typeLine, data?.oracleText ?? "", horn.chosenType)) {
+          addRevealed(top, g.turnOrder);
+          moveCardTo(g, top.instanceId, "hand", "top");
+          log(g, null, `${p.name} révèle ${cardName(g, top)} avec ${cardName(g, horn)} et le met dans sa main.`);
+        } else {
+          log(g, null, `${p.name} regarde la carte du dessus de sa bibliothèque (${cardName(g, horn)}).`);
+        }
+      }
+    }
+  }
   // Au début de la première phase principale, un marqueur de savoir sur chaque saga (règle 714.3b).
   if (step === "main1" && g.settings.enforceRules) {
     for (const p of activePlayers(g)) {
@@ -3268,7 +3384,10 @@ function enterStep(g: GameState, step: TurnStep): void {
     }
   }
   // Le mana inutilisé disparaît entre deux étapes (règle 500.4).
-  for (const p of Object.values(g.players)) p.manaPool = emptyPool();
+  for (const p of Object.values(g.players)) {
+    p.manaPool = emptyPool();
+    delete p.restrictedMana;
+  }
   switch (step) {
     case "beginCombat":
       g.combat = newCombat();
