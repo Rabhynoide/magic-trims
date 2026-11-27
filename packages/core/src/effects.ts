@@ -93,6 +93,10 @@ export interface PermanentFilter {
   maxTotalPT?: number;
   /** Un sous-type (« Enchant Forest »). */
   subtype?: string;
+  /** L'un de ces sous-types (« Equip Shaman, Warlock, or Wizard »). */
+  anySubtype?: string[];
+  /** « legendary creature » : seulement les permanents légendaires. */
+  legendary?: boolean;
   /** « nonblack » : aucune de ces couleurs. */
   notColors?: string[];
 }
@@ -379,6 +383,10 @@ function parsePermanentFilter(text: string): PermanentFilter | null {
     filter.state = state[1] as PermanentFilter["state"];
     t = t.slice(state[0].length);
   }
+  if (/^legendary [a-z]/.test(t)) {
+    filter.legendary = true;
+    t = t.slice("legendary ".length);
+  }
   const words = t.replace(/,? or /g, ",").split(/,\s*/).map((w) => w.trim()).filter(Boolean);
   if (words.length === 0) return null;
   for (const raw of words) {
@@ -420,6 +428,8 @@ export function permanentLabel(f: PermanentFilter): string {
     legendary: "légendaire",
   };
   let label = f.subtype ? (f.types.includes("creature") ? `créature ${f.subtype}` : f.subtype) : f.types.length > 0 ? f.types.map((t) => labels[t]).join(" ou ") : "permanent";
+  if (f.anySubtype?.length) label += ` ${f.anySubtype.join(", ").replace(/, ([^,]+)$/, " ou $1")}`;
+  if (f.legendary) label += " légendaire";
   if (f.notTypes.length > 0) label += ` non-${f.notTypes.map((t) => labels[t]).join(", non-")}`;
   if (f.notColors?.length) label += ` non-${f.notColors.map((c) => ({ W: "blanche", U: "bleue", B: "noire", R: "rouge", G: "verte" })[c] ?? c).join(", non-")}`;
   if (f.state) label += { attacking: " attaquant(e)", blocking: " bloqueur(se)", tapped: " engagé(e)", untapped: " dégagé(e)" }[f.state];
@@ -1164,6 +1174,8 @@ export function permanentMatches(facts: PermanentFacts, filter: PermanentFilter,
   if (filter.maxTotalPT !== undefined && (facts.power ?? 0) + (facts.toughness ?? 0) > filter.maxTotalPT) return false;
   if (filter.notColors?.some((c) => facts.colors?.includes(c))) return false;
   if (filter.subtype && !new RegExp(`\\b${filter.subtype}\\b`).test(facts.typeLine.split("—")[1] ?? "")) return false;
+  if (filter.anySubtype && !filter.anySubtype.some((s) => new RegExp(`\\b${s}\\b`).test(facts.typeLine.split("—")[1] ?? ""))) return false;
+  if (filter.legendary && !/\bLegendary\b/.test(facts.typeLine)) return false;
   return true;
 }
 
