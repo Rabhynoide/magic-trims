@@ -21,12 +21,15 @@ import {
   matchesPermanent,
   resolveAmount,
   spellEffectsOf,
+  flattenModes,
+  modesTargeted,
   auraTarget,
   permanentLabel,
   type Effect,
   type ExchangeRelation,
   type SpellEffects,
   type Target,
+  type TargetSpec,
   type Who,
   type PermanentFilter,
   type TokenSpec,
@@ -441,7 +444,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     log(g, actor.id, `${actor.name} présage une carte (exilée face cachée).`);
   },
 
-  castSpell(g, actor, { cardId, face, x, targets, sacrifice, alternative, chapter, evoke, evokeExile, chosenType }) {
+  castSpell(g, actor, { cardId, face, x, targets, sacrifice, alternative, chapter, evoke, evokeExile, chosenType, modes }) {
     const card = getCard(g, cardId);
     const fromCommand = card.zone === "command" && card.isCommander;
     // Rebond, cascade : lancée depuis l'exil, avec la permission notée sur la carte.
@@ -472,7 +475,10 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       if (restriction) throw new ActionError(restriction);
     }
     // Cibles des effets que le moteur sait appliquer.
-    const effects = g.settings.enforceRules ? spellEffectsOf(g, card, faceIndex, alternative ?? false) : null;
+    const parsedEffects = g.settings.enforceRules ? spellEffectsOf(g, card, faceIndex, alternative ?? false) : null;
+    // Modes avec des cibles (Ashling's Command) : choisis en lançant le sort, leurs cibles s'ajoutent à celles du sort.
+    const earlyModes = parsedEffects && modesTargeted(parsedEffects) ? checkModes(parsedEffects.modes!, modes ?? []) : undefined;
+    const effects = parsedEffects && earlyModes ? flattenModes(parsedEffects, earlyModes) : parsedEffects;
     if (alternative && !effects?.alternativeCost) throw new ActionError("Ce sort n'a pas de coût alternatif.");
     if (effects?.castOnly === "opponentCombat" && (isActivePlayer(g, actor.id) || !["beginCombat", "declareAttackers", "declareBlockers", "combatDamage", "endCombat"].includes(g.turn.step))) {
       throw new ActionError("Ce sort ne se lance que pendant le combat, au tour d'un adversaire.");
@@ -551,6 +557,10 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     if (alternative) cast.alternative = true;
     if (evokeCost) cast.evoked = true;
     if (permission?.foretell) cast.foretold = true;
+    if (earlyModes) {
+      cast.modes = { chosen: earlyModes };
+      log(g, actor.id, `${actor.name} choisit : ${earlyModes.map((i) => `« ${parsedEffects!.modes!.list[i]!.label} »`).join(", ")}.`);
+    }
     const what = chooseTypeOf(data, faceIndex);
     const chosenOne = what ? checkChosenType(what, chosenType) : undefined;
     if (chosenOne) cast.chosenType = chosenOne;
@@ -876,12 +886,14 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const effects = card.ability ? abilityEffects(g, card) : spellEffectsOf(g, card);
     const spec = effects?.modes;
     if (!spec) throw new ActionError("Ce sort n'a pas de modes.");
-    const chosen = [...new Set(modes)].sort((a, b) => a - b);
-    if (chosen.length < Math.max(1, spec.min) || chosen.length > spec.max || chosen.some((i) => !Number.isInteger(i) || i < 0 || i >= spec.list.length)) {
-      throw new ActionError(spec.min === spec.max ? `Choisis ${plural(spec.min, "mode")}.` : `Choisis entre ${Math.max(1, spec.min)} et ${spec.max} modes.`);
-    }
+    const chosen = checkModes(spec, modes);
     card.modes.chosen = chosen;
     log(g, actor.id, `${actor.name} choisit : ${chosen.map((i) => `« ${spec.list[i]!.label} »`).join(", ")}.`);
+    // Capacité déclenchée aux modes ciblés (Titan of Industry) : les modes sont choisis en la mettant sur la pile, puis ses cibles.
+    if (card.ability && modesTargeted(effects)) {
+      assignAbilityTargets(g, card, abilityEffects(g, card)!.targets);
+      return;
+    }
     if (card.ability) resolveAbility(g, card);
     else resolveTop(g, card.instanceId);
   },
@@ -1626,29 +1638,23 @@ function flushTriggers(g: GameState): boolean {
     if (p.batch) instance.ability.batch = [...p.batch];
     if ("playerId" in ev) instance.ability.eventPlayerId = ev.playerId;
     if ("amount" in ev) instance.ability.eventAmount = ev.amount;
+    // Modes ciblés (Titan of Industry) : le contrôleur choisit les modes, puis les cibles.
+    if (modesTargeted(trigger.effects)) {
+      instance.modes = {};
+      instance.targets = [];
+      g.stack.push(instance.instanceId);
+      added++;
+      log(g, null, `Capacité de ${sourceName} : « ${trigger.text} » (${g.players[p.controllerId]!.name} choisit les modes).`);
+      continue;
+    }
     // Cibles : choisies d'office quand il n'y a qu'un choix possible.
-    const specs = trigger.effects.targets;
-    if (specs.length > 0) {
-      const choices = specs.map((spec) => legalTargets(g, spec, p.controllerId, instance.instanceId));
-      const required = requiredTargets(specs);
-      if (choices.slice(0, required).some((c) => c.length === 0)) {
-        delete g.cards[instance.instanceId];
-        log(g, null, `La capacité de ${sourceName} n'a pas de cible valide.`);
-        continue;
-      }
-      // « up to one target » sans aucune cible possible : on s'arrête aux cibles obligatoires.
-      if (required < specs.length && choices.slice(required).every((c) => c.length === 0)) {
-        instance.targets = choices.slice(0, required).length === required && choices.slice(0, required).every((c) => c.length === 1) ? choices.slice(0, required).map((c) => c[0]!) : [];
-        if (instance.targets.length < required) instance.ability.needsTargets = true;
-      } else if (required === specs.length && choices.every((c) => c.length === 1)) instance.targets = choices.map((c) => c[0]!);
-      else {
-        instance.targets = [];
-        instance.ability.needsTargets = true;
-      }
-    } else instance.targets = [];
+    if (!assignAbilityTargets(g, instance, trigger.effects.targets)) {
+      log(g, null, `La capacité de ${sourceName} n'a pas de cible valide.`);
+      continue;
+    }
     g.stack.push(instance.instanceId);
     added++;
-    const aimed = instance.targets.length > 0 ? ` (cible : ${instance.targets.map((t) => targetName(g, t)).join(", ")})` : "";
+    const aimed = (instance.targets ?? []).length > 0 ? ` (cible : ${instance.targets!.map((t) => targetName(g, t)).join(", ")})` : "";
     log(g, null, `Capacité de ${sourceName} : « ${trigger.text} »${aimed}.`);
   }
   return added > 0;
@@ -1669,8 +1675,10 @@ function legalTargets(g: GameState, spec: Parameters<typeof isLegalTarget>[1], c
 function abilityEffects(g: GameState, card: CardInstance): SpellEffects | undefined {
   const ability = card.ability;
   if (!ability) return undefined;
-  if (ability.activated) return abilitiesOf(g.cardData[card.cardId], ability.faceIndex).activated[ability.index]?.effects;
-  return stackTrigger(g.cardData[card.cardId], ability)?.effects;
+  const effects = ability.activated
+    ? abilitiesOf(g.cardData[card.cardId], ability.faceIndex).activated[ability.index]?.effects
+    : stackTrigger(g.cardData[card.cardId], ability)?.effects;
+  return effects && flattenModes(effects, card.modes?.chosen);
 }
 
 function resolveAbility(g: GameState, card: CardInstance): void {
@@ -1731,6 +1739,35 @@ function resolveAbility(g: GameState, card: CardInstance): void {
   if (g.cards[card.instanceId]) moveCardTo(g, card.instanceId, "graveyard", "top");
 }
 
+/**
+ * Les cibles d'une capacité déclenchée : choisies d'office quand il n'y a qu'un choix possible,
+ * sinon le contrôleur les choisit (`needsTargets`). `false` (et la capacité retirée) s'il n'y en a aucune.
+ */
+function assignAbilityTargets(g: GameState, instance: CardInstance, specs: TargetSpec[]): boolean {
+  const ability = instance.ability!;
+  if (specs.length === 0) {
+    instance.targets = [];
+    return true;
+  }
+  const choices = specs.map((spec) => legalTargets(g, spec, instance.controllerId, instance.instanceId));
+  const required = requiredTargets(specs);
+  if (choices.slice(0, required).some((c) => c.length === 0)) {
+    g.stack = g.stack.filter((id) => id !== instance.instanceId);
+    delete g.cards[instance.instanceId];
+    return false;
+  }
+  // « up to one target » sans aucune cible possible : on s'arrête aux cibles obligatoires.
+  if (required < specs.length && choices.slice(required).every((c) => c.length === 0)) {
+    instance.targets = choices.slice(0, required).length === required && choices.slice(0, required).every((c) => c.length === 1) ? choices.slice(0, required).map((c) => c[0]!) : [];
+    if (instance.targets.length < required) ability.needsTargets = true;
+  } else if (required === specs.length && choices.every((c) => c.length === 1)) instance.targets = choices.map((c) => c[0]!);
+  else {
+    instance.targets = [];
+    ability.needsTargets = true;
+  }
+  return true;
+}
+
 function targetName(g: GameState, t: Target): string {
   if (t.kind === "player") return g.players[t.id]?.name ?? "?";
   const card = g.cards[t.id];
@@ -1755,11 +1792,22 @@ function dealDamage(g: GameState, sourceName: string, t: Target, raw: number, fr
   }
   const card = g.cards[t.id];
   if (!card || card.zone !== "battlefield") return 0;
+  if (useShield(g, card)) return 0;
   if (card.hasLoyalty) card.counters["loyauté"] = Math.max(0, (card.counters["loyauté"] ?? 0) - amount);
   if (isCreature(g, card)) card.damage = (card.damage ?? 0) + amount;
   emit(g, { type: "damaged", cardId: card.instanceId, amount });
   log(g, null, `${sourceName} inflige ${amount} blessure${amount > 1 ? "s" : ""} à ${cardName(g, card)}.`);
   return amount;
+}
+
+/** Marqueur bouclier : il est retiré à la place des blessures ou de la destruction. */
+function useShield(g: GameState, card: CardInstance): boolean {
+  const shields = card.counters.shield ?? 0;
+  if (shields <= 0) return false;
+  if (shields > 1) card.counters.shield = shields - 1;
+  else delete card.counters.shield;
+  log(g, null, `${cardName(g, card)} perd un marqueur bouclier à la place.`);
+  return true;
 }
 
 function changeLife(g: GameState, playerId: PlayerId, delta: number): void {
@@ -1843,6 +1891,7 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
       log(g, null, `${cardName(g, c)} est indestructible.`);
       return false;
     }
+    if (useShield(g, c)) return false;
     const name = cardName(g, c);
     moveCardTo(g, c.instanceId, "graveyard", "top");
     log(g, null, `${name} est détruit(e).`);
@@ -2265,14 +2314,16 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
           set: "tok",
           collectorNumber: "0",
         };
-        for (let i = 0; i < n; i++) {
-          const instance = newInstance(g, id, caster.id, "battlefield");
-          instance.isToken = true;
-          instance.tapped = effect.tapped;
-          caster.zones.battlefield.push(instance.instanceId);
-          emitEnters(g, instance);
+        for (const owner of effect.who ? whoOf(effect.who) : [caster]) {
+          for (let i = 0; i < n; i++) {
+            const instance = newInstance(g, id, owner.id, "battlefield");
+            instance.isToken = true;
+            instance.tapped = effect.tapped;
+            owner.zones.battlefield.push(instance.instanceId);
+            emitEnters(g, instance);
+          }
+          log(g, null, `${owner.name} crée ${n > 1 ? `${n} jetons` : "un jeton"} ${effect.name}.`);
         }
-        log(g, null, `${caster.name} crée ${n > 1 ? `${n} jetons` : "un jeton"} ${effect.name}.`);
         break;
       }
       case "manaBonus":
@@ -2312,6 +2363,37 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         caster.zones.battlefield.push(instance.instanceId);
         emitEnters(g, instance);
         log(g, null, `${caster.name} crée un jeton copie de ${cardName(g, instance)}.`);
+        break;
+      }
+      case "copyTarget": {
+        // Ashling's Command : un jeton copie d'un permanent ciblé.
+        const c = card(effect.target);
+        if (!c || c.zone !== "battlefield") break;
+        const instance = newInstance(g, c.cardId, caster.id, "battlefield");
+        instance.faceIndex = c.faceIndex;
+        instance.isToken = true;
+        instance.summoningSick = true;
+        caster.zones.battlefield.push(instance.instanceId);
+        emitEnters(g, instance);
+        log(g, null, `${caster.name} crée un jeton copie de ${cardName(g, c)}.`);
+        break;
+      }
+      case "damageCreaturesOf": {
+        const t = targets[effect.target];
+        if (!t || t.kind !== "player" || !legal[effect.target]) break;
+        const n = amountOf(effect.amount);
+        for (const id of [...g.players[t.id]!.zones.battlefield]) {
+          const c = g.cards[id]!;
+          if (isCreature(g, c)) dealt += dealDamage(g, sourceName, { kind: "card", id }, n, damageFrom);
+        }
+        break;
+      }
+      case "shieldCounter": {
+        const [id] = source.choices?.[effects.indexOf(effect)] ?? [];
+        const c = id ? g.cards[id] : undefined;
+        if (!c || c.zone !== "battlefield") break;
+        c.counters.shield = (c.counters.shield ?? 0) + 1;
+        log(g, null, `${cardName(g, c)} reçoit un marqueur bouclier.`);
         break;
       }
       case "copyToken": {
@@ -2785,6 +2867,16 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
       card.cardChoice = { index, options, min: 1, max: 1, label: "Choisis la créature à sacrifier" };
       return true;
     }
+    // Titan of Industry : la créature qui reçoit le marqueur bouclier.
+    if (effect.type === "shieldCounter") {
+      const options = controller.zones.battlefield.filter((id) => isCreature(g, g.cards[id]!));
+      if (options.length <= 1) {
+        card.choices = { ...(card.choices ?? {}), [index]: options };
+        continue;
+      }
+      card.cardChoice = { index, options, min: 1, max: 1, label: "Choisis la créature qui reçoit un marqueur bouclier" };
+      return true;
+    }
     // Haunting Voyage, Wake the Dead : des cartes de créature de son cimetière.
     if (effect.type === "returnCards") {
       const type = effect.chosenType ? card.chosenType : undefined;
@@ -2917,6 +3009,15 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
   return false;
 }
 
+/** Les modes choisis, triés, s'ils respectent « Choose two — » et compagnie. */
+function checkModes(spec: NonNullable<SpellEffects["modes"]>, modes: number[]): number[] {
+  const chosen = [...new Set(modes)].sort((a, b) => a - b);
+  if (chosen.length < Math.max(1, spec.min) || chosen.length > spec.max || chosen.some((i) => !Number.isInteger(i) || i < 0 || i >= spec.list.length)) {
+    throw new ActionError(spec.min === spec.max ? `Choisis ${plural(spec.min, "mode")}.` : `Choisis entre ${Math.max(1, spec.min)} et ${spec.max} modes.`);
+  }
+  return chosen;
+}
+
 /** Un sort ou une capacité modale (« Choose one or more — ») attend le choix de son contrôleur. */
 function startModes(g: GameState, card: CardInstance, effects: SpellEffects): boolean {
   if (!effects.modes || card.modes?.chosen) return false;
@@ -2927,9 +3028,9 @@ function startModes(g: GameState, card: CardInstance, effects: SpellEffects): bo
 
 /** Les effets à appliquer : ceux du sort, puis ceux des modes choisis (dans l'ordre imprimé). */
 function withModes(effects: SpellEffects, card: CardInstance): Effect[] {
-  if (!effects.modes) return effects.effects;
-  const chosen = card.modes?.chosen ?? [];
-  return [...effects.effects, ...chosen.flatMap((i) => effects.modes!.list[i]?.effects ?? [])];
+  // Les effets des modes choisis sont déjà ajoutés (`flattenModes`) par `spellEffectsOf` et `abilityEffects`.
+  void card;
+  return effects.effects;
 }
 
 /** La carte exilée peut-elle encore être lancée (rebond, cascade) ? */
@@ -3696,6 +3797,7 @@ function applyCombatHit(
     log(g, null, `Les blessures de ${sourceName} sont prévenues.`);
     return;
   }
+  if (hit.card && useShield(g, g.cards[hit.card]!)) return;
   hit = { ...hit, amount: modified };
   if (hit.card) {
     const target = g.cards[hit.card]!;

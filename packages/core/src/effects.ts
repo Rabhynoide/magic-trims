@@ -263,7 +263,13 @@ type EffectBase =
   /** « Untap up to three lands. » (les terrains engagés du lanceur, choisis d'office) */
   | { type: "untapLands"; count: number }
   /** Jeton prédéfini : Treasure, Food, Clue, Blood. */
-  | { type: "namedToken"; name: string; count: Amount; tapped: boolean }
+  | { type: "namedToken"; name: string; count: Amount; tapped: boolean; who?: Who }
+  /** « Create a token that's a copy of target Elemental you control. » */
+  | { type: "copyTarget"; target: number }
+  /** « ~ deals 2 damage to each creature target player controls. » */
+  | { type: "damageCreaturesOf"; target: number; amount: Amount }
+  /** « Put a shield counter on a creature you control. » (choisie à la résolution) */
+  | { type: "shieldCounter" }
   /** « Scry 2 » : le contrôleur range les cartes du dessus avant le reste de la résolution (seulement en premier effet). */
   /** `shuffleEventFirst` : Cavalier of Gales, la carte morte est d'abord mélangée dans la bibliothèque. */
   | { type: "scry"; count: number; shuffleEventFirst?: boolean };
@@ -286,8 +292,11 @@ export interface SpellEffects {
   alternativeCost?: string;
   /** « Cast this spell only during combat on an opponent's turn » (Wake the Dead). */
   castOnly?: "opponentCombat";
-  /** « Choose one or more — • … » : les modes, choisis à la résolution (sans cible pour l'instant). */
-  modes?: { min: number; max: number; list: { label: string; effects: Effect[] }[] };
+  /**
+   * « Choose one or more — • … » : les modes. Sans cible, ils sont choisis à la résolution ;
+   * si un mode a des cibles (`targets`, numérotées dans le mode), ils sont choisis en lançant le sort.
+   */
+  modes?: { min: number; max: number; list: { label: string; effects: Effect[]; targets?: TargetSpec[] }[] };
   effects: Effect[];
   /** Phrases que le moteur ne sait pas appliquer. */
   unknown: string[];
@@ -653,14 +662,13 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     const result = before ? parseSpellEffects(before, cardName, options) : { targets: [], effects: [], unknown: [] };
     const kind = modal[2]!.toLowerCase();
     const min = kind === "two" ? 2 : kind === "three" ? 3 : kind === "any number" ? 0 : 1;
-    const list: { label: string; effects: Effect[] }[] = [];
+    const list: { label: string; effects: Effect[]; targets?: TargetSpec[] }[] = [];
     const bullets = modal[3]!.split("•").map((b) => b.trim()).filter(Boolean);
     for (const bullet of bullets) {
       const named = /^([^—.]+?) — (.+)$/s.exec(bullet);
       const parsed = parseSpellEffects(named ? named[2]! : bullet, cardName, options);
-      // Un mode avec des cibles reste à faire à la main pour l'instant.
-      if (parsed.targets.length > 0 || parsed.unknown.length > 0 || parsed.effects.length === 0) result.unknown.push(bullet);
-      list.push({ label: bullet, effects: parsed.targets.length > 0 ? [] : parsed.effects });
+      if (parsed.unknown.length > 0 || parsed.effects.length === 0) result.unknown.push(bullet);
+      list.push({ label: bullet, effects: parsed.effects, ...(parsed.targets.length > 0 ? { targets: parsed.targets } : {}) });
     }
     const max = kind === "one or more" || kind === "any number" ? list.length : min;
     result.modes = { min, max, list };
@@ -1023,6 +1031,8 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
         continue;
       }
       result.effects.push({ type: "bounce", target: target({ label: permanentLabel(filter), permanent: filter }) });
+    } else if ((m = new RegExp(`^~ deals ${NUM} damage to each creature target player controls$`, "i").exec(s))) {
+      result.effects.push({ type: "damageCreaturesOf", target: target({ label: "joueur", player: true }), amount: amount(m[1]!) });
     } else if ((m = new RegExp(`^~ deals ${NUM} damage to each (opponent|player|creature)$`, "i").exec(s))) {
       const who = ({ opponent: "opponents", player: "players", creature: "creatures" } as const)[
         m[2]!.toLowerCase() as "opponent" | "player" | "creature"
@@ -1048,6 +1058,14 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       const t = target(playerTarget(m[1]!));
       const loses = m[2]!.toLowerCase() === "loses";
       result.effects.push({ type: "life", who: { target: t }, amount: loses ? (n === "X" ? "-X" : -(n as number)) : n });
+    } else if ((m = new RegExp(`^target player creates ${NUM} (tapped )?(Treasure|Food|Clue|Blood) tokens?$`, "i").exec(s))) {
+      const name = m[3]!.charAt(0).toUpperCase() + m[3]!.slice(1).toLowerCase();
+      result.effects.push({ type: "namedToken", name, count: amount(m[1]!), tapped: !!m[2], who: { target: target({ label: "joueur", player: true }) } });
+    } else if ((m = /^create a token that's a copy of target (.+)$/i.exec(s)) && parsePermanentFilter(m[1]!)) {
+      const filter = parsePermanentFilter(m[1]!)!;
+      result.effects.push({ type: "copyTarget", target: target({ label: permanentLabel(filter), permanent: filter }) });
+    } else if (/^put a shield counter on a creature you control$/i.test(s)) {
+      result.effects.push({ type: "shieldCounter" });
     } else if ((m = new RegExp(`^(?:you )?create ${NUM} (tapped )?(Treasure|Food|Clue|Blood) tokens?$`, "i").exec(s))) {
       const name = m[3]!.charAt(0).toUpperCase() + m[3]!.slice(1).toLowerCase();
       result.effects.push({ type: "namedToken", name, count: amount(m[1]!), tapped: !!m[2] });
@@ -1225,6 +1243,39 @@ export function isLegalTarget(g: GameState, spec: TargetSpec, target: Target, ca
   return false;
 }
 
+/** Les modes ont-ils des cibles (et se choisissent donc en lançant le sort ou en mettant la capacité sur la pile) ? */
+export function modesTargeted(effects: SpellEffects | null | undefined): boolean {
+  return !!effects?.modes?.list.some((m) => (m.targets?.length ?? 0) > 0);
+}
+
+const TARGET_KEYS = ["target", "player", "permanent", "a", "b", "controllerOf"];
+
+/** Décale les numéros de cible d'un effet (les cibles d'un mode passent après celles du sort). */
+function offsetTargets<T>(value: T, offset: number): T {
+  if (offset === 0 || !value || typeof value !== "object") return value;
+  const copy: Record<string, unknown> = { ...(value as Record<string, unknown>) };
+  for (const [k, v] of Object.entries(copy)) {
+    if (TARGET_KEYS.includes(k) && typeof v === "number") copy[k] = v + offset;
+    else if (v && typeof v === "object" && !Array.isArray(v) && k !== "filter" && k !== "token") copy[k] = offsetTargets(v, offset);
+  }
+  return copy as T;
+}
+
+/** Les effets et les cibles du sort avec ceux des modes choisis, dans l'ordre imprimé. */
+export function flattenModes(effects: SpellEffects, chosen: number[] | undefined): SpellEffects {
+  if (!effects.modes || !chosen) return effects;
+  const targets = [...effects.targets];
+  const list = [...effects.effects];
+  for (const i of [...chosen].sort((a, b) => a - b)) {
+    const mode = effects.modes.list[i];
+    if (!mode) continue;
+    const offset = targets.length;
+    targets.push(...(mode.targets ?? []));
+    list.push(...mode.effects.map((e) => offsetTargets(e, offset)));
+  }
+  return { ...effects, targets, effects: list };
+}
+
 /** Effets d'une carte sur sa face visible, s'il s'agit d'un éphémère ou d'un rituel. */
 export function spellEffectsOf(g: GameState, card: CardInstance, faceIndex = card.faceIndex, alternative = card.alternative ?? false): SpellEffects | null {
   const data = g.cardData[card.cardId];
@@ -1232,7 +1283,7 @@ export function spellEffectsOf(g: GameState, card: CardInstance, faceIndex = car
   const face = data.faces?.[faceIndex];
   const typeLine = face?.typeLine ?? data.typeLine;
   if (!/\b(Instant|Sorcery)\b/.test(typeLine)) return null;
-  return parseSpellEffects(face?.oracleText ?? data.oracleText, face?.name ?? data.name, { alternative });
+  return flattenModes(parseSpellEffects(face?.oracleText ?? data.oracleText, face?.name ?? data.name, { alternative }), card.modes?.chosen);
 }
 
 /** Valeur d'un nombre d'effet, avec la valeur de X choisie au lancement. */

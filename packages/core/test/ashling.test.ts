@@ -56,7 +56,7 @@ function inHand(g: GameState, playerId: string, card: CardData, n = 0): [GameSta
 
 function resolveAll(g: GameState, max = 100): GameState {
   for (let i = 0; i < max && g.priority && g.stack.length > 0; i++) {
-    if (g.stack.some((id) => g.cards[id]!.ability?.awaitingDecision || g.cards[id]!.ability?.needsTargets || g.cards[id]!.cardChoice)) break;
+    if (g.stack.some((id) => g.cards[id]!.ability?.awaitingDecision || g.cards[id]!.ability?.needsTargets || g.cards[id]!.cardChoice || (g.cards[id]!.modes && !g.cards[id]!.modes!.chosen))) break;
     g = act(g, g.priority.playerId, { type: "passPriority" });
   }
   return g;
@@ -216,7 +216,7 @@ describe("Deck Ashling : recherches de terrains", () => {
 describe("Deck Ashling : bilan", () => {
   it("compte les cartes entièrement gérées", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "", manaCost: c.manaCost ?? "" })).level);
-    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(95);
+    expect(levels.filter((l) => l === "full").length).toBe(97);
   });
 });
 
@@ -1049,5 +1049,66 @@ describe("Deck Ashling : présage, retour du cimetière, Pyre, Descendants' Fury
     g = resolveAll(g);
     expect(g.players.p1!.zones.hand.length).toBe(hand + 2);
     expect(cardSupport(real("Subterfuge")).level).toBe("full");
+  });
+});
+
+describe("Deck Ashling : modes avec cibles", () => {
+  const elemental = (name: string) => fakeCard(name, { typeLine: "Creature — Elemental", power: "2", toughness: "2", manaCost: "{R}", colors: ["R"] });
+
+  it("Ashling's Command : les modes se choisissent en lançant, puis leurs cibles", () => {
+    let g = toMain(newTestGame(2));
+    let elem: string, foe: string, cmd: string;
+    [g, elem] = put(g, "p1", elemental("Flammèche"));
+    [g, foe] = put(g, "p2", elemental("Ennemi"));
+    [g, cmd] = inHand(g, "p1", real("Ashling's Command", { manaValue: 5, colors: ["U", "R"] }));
+    g = mana(g, "p1", "URCCC");
+    expect(refuse(g, "p1", { type: "castSpell", cardId: cmd, modes: [0] })).toMatch(/2 modes/);
+    // Copier l'Élémental et 2 blessures à chaque créature de p2.
+    expect(refuse(g, "p1", { type: "castSpell", cardId: cmd, modes: [0, 2], targets: [{ kind: "card", id: foe }, { kind: "player", id: "p2" }] })).toMatch(/Cible invalide/);
+    g = act(g, "p1", { type: "castSpell", cardId: cmd, modes: [0, 2], targets: [{ kind: "card", id: elem }, { kind: "player", id: "p2" }] });
+    g = resolveAll(g);
+    const copies = g.players.p1!.zones.battlefield.filter((id) => g.cards[id]!.isToken && g.cardData[g.cards[id]!.cardId]!.name === "Flammèche");
+    expect(copies).toHaveLength(1);
+    expect(g.cards[foe]!.zone).toBe("graveyard");
+    expect(g.cards[elem]!.zone).toBe("battlefield");
+    expect(cardSupport(real("Ashling's Command")).level).toBe("full");
+  });
+
+  it("Ashling's Command : pioche et Trésors pour des joueurs ciblés", () => {
+    let g = toMain(newTestGame(2));
+    let cmd: string;
+    [g, cmd] = inHand(g, "p1", real("Ashling's Command", { manaValue: 5, colors: ["U", "R"] }));
+    g = mana(g, "p1", "URCCC");
+    const hand = g.players.p2!.zones.hand.length;
+    g = act(g, "p1", { type: "castSpell", cardId: cmd, modes: [3, 1], targets: [{ kind: "player", id: "p2" }, { kind: "player", id: "p1" }] });
+    g = resolveAll(g);
+    expect(g.players.p2!.zones.hand.length).toBe(hand + 2);
+    expect(g.players.p1!.zones.battlefield.filter((id) => g.cardData[g.cards[id]!.cardId]!.name === "Treasure")).toHaveLength(2);
+  });
+
+  it("Titan of Industry : deux modes à l'arrivée, avec leurs cibles, et le marqueur bouclier", () => {
+    let g = toMain(newTestGame(2));
+    let titan: string, rock: string;
+    [g, rock] = put(g, "p2", fakeCard("Caillou", { typeLine: "Artifact", manaCost: "{1}" }));
+    [g, titan] = inHand(g, "p1", real("Titan of Industry", { manaValue: 7, colors: ["G"] }));
+    g = mana(g, "p1", "GGGCCCC");
+    g = act(g, "p1", { type: "castSpell", cardId: titan });
+    g = resolveAll(g);
+    const trigger = g.stack.map((id) => g.cards[id]!).find((c) => c.modes && !c.modes.chosen)!;
+    expect(trigger).toBeDefined();
+    g = act(g, "p1", { type: "chooseModes", cardId: trigger.instanceId, modes: [0, 3] });
+    // Une seule cible possible (le Caillou) : choisie d'office ; le bouclier va sur le Titan, seule créature.
+    expect(g.cards[trigger.instanceId]!.targets).toEqual([{ kind: "card", id: rock }]);
+    g = resolveAll(g);
+    expect(g.cards[rock]!.zone).toBe("graveyard");
+    expect(g.cards[titan]!.counters.shield).toBe(1);
+    // Le bouclier part à la place de la destruction.
+    let wrath: string;
+    [g, wrath] = inHand(g, "p2", fakeCard("Fléau", { typeLine: "Instant", oracleText: "Destroy target creature.", manaCost: "{B}" }));
+    g = act(mana(g, "p2", "B"), "p2", { type: "castSpell", cardId: wrath, targets: [{ kind: "card", id: titan }] });
+    g = resolveAll(g);
+    expect(g.cards[titan]!.zone).toBe("battlefield");
+    expect(g.cards[titan]!.counters.shield).toBeUndefined();
+    expect(cardSupport(real("Titan of Industry")).level).toBe("full");
   });
 });

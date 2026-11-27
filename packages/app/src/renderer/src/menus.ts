@@ -10,6 +10,8 @@ import {
   entersUntappedChoice,
   exilePermissionHolds,
   foretellCost,
+  flattenModes,
+  modesTargeted,
   mostCommonCreatureType,
   stateFromView,
   sagaChapters,
@@ -376,10 +378,18 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
           }
           // Les cibles des effets que le moteur applique (quand l'hôte fait respecter les règles).
           const faceData = faces ? faces[f.face ?? 0] : data;
-          const effects =
+          const parsed =
             view.settings.enforceRules && /\b(Instant|Sorcery)\b/.test(f.typeLine)
               ? parseSpellEffects(faceData?.oracleText ?? data.oracleText, f.name, { alternative })
               : null;
+          // Modes avec des cibles (Ashling's Command) : choisis d'abord, leurs cibles suivent.
+          let modes: number[] | undefined;
+          if (parsed?.modes && modesTargeted(parsed)) {
+            const picked = await ui.chooseModes(`Modes de ${f.name}`, parsed.modes.list.map((m) => m.label), parsed.modes.min, parsed.modes.max);
+            if (!picked) return;
+            modes = picked;
+          }
+          const effects = parsed && modes ? flattenModes(parsed, modes) : parsed;
           // Coût supplémentaire : la créature à sacrifier (Village Rites…).
           let sacrifice: string | undefined;
           if (effects?.sacrifice) {
@@ -429,6 +439,7 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
             ...(evoke ? { evoke } : {}),
             ...(evokeExile ? { evokeExile } : {}),
             ...(chosenType ? { chosenType } : {}),
+            ...(modes ? { modes } : {}),
           });
       };
       const items: MenuItem[] = [{ label: `Lancer ${f.name}${f.manaCost ? ` ${f.manaCost}` : ""}`, onClick: cast(false) }];

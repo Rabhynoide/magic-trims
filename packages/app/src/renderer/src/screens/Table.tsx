@@ -9,6 +9,7 @@ import {
   isLegalTarget,
   parseSpellEffects,
   stackTrigger,
+  flattenModes,
   creatureStats,
   hasKeyword,
   stateFromView,
@@ -483,7 +484,9 @@ function useTriggerTargets(view: GameView): { waitingName: string | null; reopen
   useEffect(() => {
     if (!waiting?.instanceId || asking.current === waiting.instanceId) return;
     const ability = waiting.ability!;
-    const specs = stackTrigger(view.cardData[waiting.cardId], ability)?.effects.targets ?? [];
+    const triggerEffects = stackTrigger(view.cardData[waiting.cardId], ability)?.effects;
+    // Modes ciblés (Titan of Industry) : les cibles des modes choisis s'ajoutent.
+    const specs = triggerEffects ? flattenModes(triggerEffects, waiting.modes?.chosen).targets : [];
     if (specs.length === 0) return;
     asking.current = waiting.instanceId;
     const id = waiting.instanceId;
@@ -693,6 +696,37 @@ function ModesPanel(props: { view: GameView }) {
   );
 }
 
+/** Les modes d'un sort qu'on lance, avant ses cibles (Ashling's Command). */
+function ModesPrompt() {
+  const { modes } = useUi();
+  const [picked, setPicked] = useState<number[]>([]);
+  useEffect(() => setPicked([]), [modes]);
+  if (!modes) return null;
+  const min = Math.max(1, modes.min);
+  const ok = picked.length >= min && picked.length <= modes.max;
+  const toggle = (i: number) =>
+    setPicked((p) => (p.includes(i) ? p.filter((x) => x !== i) : modes.max === 1 ? [i] : p.length < modes.max ? [...p, i] : p));
+  return (
+    <Modal title={modes.title} onClose={() => ui.closeModes(null)}>
+      <p className="hint">{min === modes.max ? `Choisis ${min} mode${min > 1 ? "s" : ""}.` : `Choisis de ${min} à ${modes.max} modes.`}</p>
+      <div className="modes-list">
+        {modes.labels.map((label, i) => (
+          <label key={i} className="mode-option">
+            <input type={modes.max === 1 ? "radio" : "checkbox"} checked={picked.includes(i)} onChange={() => toggle(i)} />
+            <span>{label}</span>
+          </label>
+        ))}
+      </div>
+      <div className="row">
+        <button onClick={() => ui.closeModes(null)}>Annuler</button>
+        <button className="primary" disabled={!ok} onClick={() => ui.closeModes([...picked].sort((a, b) => a - b))}>
+          Valider
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 /** Bandeau du choix des cibles, avec Annuler (ou Échap). */
 function TargetingBanner() {
   const { targeting } = useUi();
@@ -758,6 +792,7 @@ export function Table() {
         <CardChoicePanel view={view} />
         <GraveyardTargetPicker view={view} />
         <ModesPanel view={view} />
+        <ModesPrompt />
         {trigger.waitingName && !targeting && (
           <div className="targeting-banner" role="status">
             <span>

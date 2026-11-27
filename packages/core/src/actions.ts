@@ -87,6 +87,8 @@ export type GameAction =
       evokeExile?: CardInstanceId;
       /** « As ~ enters, choose a creature type » : le type choisi (Herald's Horn, Morophon). */
       chosenType?: string;
+      /** Sort modal dont des modes ont des cibles : les modes choisis (les cibles suivent dans `targets`). */
+      modes?: number[];
     }
   /** Présage : payer {2} pendant son tour pour exiler la carte de sa main face cachée. */
   | { type: "foretell"; cardId: CardInstanceId }
