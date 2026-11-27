@@ -4,7 +4,7 @@ import { chooseBotAction } from "../src/bot.js";
 import { createGame } from "../src/setup.js";
 import type { CardData, GameState } from "../src/types.js";
 import type { ResolvedDeck } from "../src/deck/resolve.js";
-import { fakeCard } from "./helpers.js";
+import { fakeCard, newTestGame } from "./helpers.js";
 
 /** Un deck jouable : 40 forêts et des créatures de 1 à 4 manas. */
 function greenDeck(prefix: string): ResolvedDeck {
@@ -115,5 +115,23 @@ describe("Bot", () => {
     step("b1", { type: "declareAttackers", attackers: [{ cardId: big, defender: "b2" }] });
     step("b1", { type: "nextStep" });
     expect(chooseBotAction(g, "b2")).toEqual({ type: "declareBlockers", blocks: [{ cardId: small, attackerId: big }] });
+  });
+});
+
+describe("Bot au nettoyage", () => {
+  it("défausse ses cartes les plus chères jusqu'à 7, puis le tour passe", () => {
+    let g = newTestGame(2);
+    const r0 = applyAction(g, { actorId: "p1", action: { type: "moveTopOfLibrary", count: 2, to: "hand" } });
+    if (!r0.ok) throw new Error(r0.error);
+    g = r0.state;
+    const r1 = applyAction(g, { actorId: "p1", action: { type: "nextStep", to: "cleanup" } });
+    if (!r1.ok) throw new Error(r1.error);
+    g = r1.state;
+    const action = chooseBotAction(g, "p1");
+    expect(action?.type).toBe("discardToHandSize");
+    const r2 = applyAction(g, { actorId: "p1", action: action! });
+    if (!r2.ok) throw new Error(r2.error);
+    expect(r2.state.players.p1!.zones.hand).toHaveLength(7);
+    expect(r2.state.turn.activePlayerId).toBe("p2");
   });
 });

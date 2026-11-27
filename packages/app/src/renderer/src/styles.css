@@ -1626,3 +1626,16 @@ textarea:focus {
   white-space: nowrap;
   text-align: right;
 }
+.modes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+
+.mode-option {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  cursor: pointer;
+}

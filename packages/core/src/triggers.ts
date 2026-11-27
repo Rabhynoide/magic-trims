@@ -11,15 +11,18 @@
  */
 import { parseActivatedLine, type ActivatedAbility } from "./activated.js";
 import { parseSpellEffects, selfToTilde, type SpellEffects } from "./effects.js";
+import { joinModes } from "./text.js";
 import { parseStaticLine, type StaticAbility } from "./statics.js";
 import { areTeammates } from "./modes.js";
 import type { TurnStep } from "./turn.js";
-import type { CardData, CardInstanceId, GameState, PlayerId } from "./types.js";
+import type { CardData, CardInstanceId, GameState, PlayerId, StackAbility, Zone } from "./types.js";
 
 export type TriggerEvent =
   | { type: "enters"; cardId: CardInstanceId; controllerId: PlayerId; creature: boolean }
-  | { type: "dies"; cardId: CardInstanceId; controllerId: PlayerId; dataId: string; faceIndex: number; isToken: boolean }
-  | { type: "draw"; playerId: PlayerId }
+  /** `granted` : capacités données à la créature jusqu'à la fin du tour (Malakir Rebirth). */
+  | { type: "dies"; cardId: CardInstanceId; controllerId: PlayerId; dataId: string; faceIndex: number; isToken: boolean; granted?: string[] }
+  /** `nth` : combientième carte piochée par ce joueur ce tour-ci. */
+  | { type: "draw"; playerId: PlayerId; nth?: number }
   | { type: "lifeGain"; playerId: PlayerId; amount: number }
   | { type: "lifeLoss"; playerId: PlayerId; amount: number }
   | { type: "step"; step: TurnStep; playerId: PlayerId }
@@ -28,7 +31,19 @@ export type TriggerEvent =
   | { type: "attacks"; cardId: CardInstanceId }
   | { type: "blocks"; cardId: CardInstanceId }
   | { type: "exploits"; cardId: CardInstanceId }
-  | { type: "leaves"; cardId: CardInstanceId; controllerId: PlayerId; dataId: string; faceIndex: number };
+  /** Des marqueurs de savoir arrivent sur une saga : de `from` à `to`. */
+  | { type: "lore"; cardId: CardInstanceId; from: number; to: number }
+  /** `auras` : les auras attachées au permanent quand il est parti (Kaya's Ghostform). */
+  | {
+      type: "leaves";
+      cardId: CardInstanceId;
+      controllerId: PlayerId;
+      dataId: string;
+      faceIndex: number;
+      to: Zone;
+      granted?: string[];
+      auras?: { cardId: CardInstanceId; controllerId: PlayerId; dataId: string; faceIndex: number }[];
+    };
 
 /** Qui, par rapport au contrôleur de la capacité. */
 type Whose = "you" | "opponent" | "any";
@@ -37,15 +52,18 @@ export type TriggerCondition =
   | { on: "enters"; self: boolean; another: boolean; creature: boolean; whose: Whose }
   /** `batched` : « one or more … die » se déclenche une fois par action, quel que soit le nombre de morts. */
   | { on: "dies"; self: boolean; others: boolean; whose: Whose; batched?: boolean }
-  | { on: "draw" | "lifeGain" | "lifeLoss" | "landPlayed"; whose: Whose }
-  | { on: "step"; step: "upkeep" | "draw" | "end"; whose: Whose }
+  /** `nth` : « draw your second card each turn ». */
+  | { on: "draw" | "lifeGain" | "lifeLoss" | "landPlayed"; whose: Whose; nth?: number }
+  | { on: "step"; step: "upkeep" | "draw" | "main1" | "end"; whose: Whose }
   | { on: "cast"; whose: Whose; types: string[]; notTypes: string[] }
   /** « Whenever ~ attacks », « … blocks », « … attacks or blocks ». */
   | { on: "combat"; attacks: boolean; blocks: boolean }
   /** « When ~ exploits a creature ». */
   | { on: "exploits" }
-  /** « When ~ leaves the battlefield ». */
-  | { on: "leaves" };
+  /** Chapitre d'une saga (« I, II — … »). */
+  | { on: "chapter"; chapters: number[] }
+  /** « When ~ leaves the battlefield » ; `enchanted` : « When enchanted permanent dies or is put into exile » (`to` : zones visées). */
+  | { on: "leaves"; enchanted?: boolean; to?: Zone[] };
 
 export interface TriggeredAbility {
   /** Texte de la capacité, tel qu'imprimé. */
@@ -107,6 +125,9 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
     return { on: "dies", self: m[1]!.startsWith("~"), others: true, whose: who };
   }
   if ((m = /^(you|an opponent|a player) draws? a card$/i.exec(t))) return { on: "draw", whose: whose(m[1]!)! };
+  if ((m = /^(you|an opponent|a player) draws? (?:your|their|his or her) (second|third) card each turn$/i.exec(t))) {
+    return { on: "draw", whose: whose(m[1]!)!, nth: m[2]!.toLowerCase() === "second" ? 2 : 3 };
+  }
   if ((m = /^(you|an opponent|a player) gains? life$/i.exec(t))) return { on: "lifeGain", whose: whose(m[1]!)! };
   if ((m = /^(you|an opponent|a player) loses? life$/i.exec(t))) return { on: "lifeLoss", whose: whose(m[1]!)! };
   if ((m = /^(you|an opponent|a player) plays? a land$/i.exec(t))) return { on: "landPlayed", whose: whose(m[1]!)! };
@@ -125,6 +146,14 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   }
   if (/^~ exploits a creature$/i.test(t)) return { on: "exploits" };
   if (/^~ leaves the battlefield$/i.test(t)) return { on: "leaves" };
+  if ((m = /^enchanted (?:permanent|creature) (dies|is put into exile|dies or is put into exile|leaves the battlefield)$/i.exec(t))) {
+    const what = m[1]!.toLowerCase();
+    const to: Zone[] = what.startsWith("leaves") ? [] : [...(what.includes("dies") ? (["graveyard"] as Zone[]) : []), ...(what.includes("exile") ? (["exile"] as Zone[]) : [])];
+    return { on: "leaves", enchanted: true, ...(to.length > 0 ? { to } : {}) };
+  }
+  if ((m = /^the beginning of (your|each|each player's|each opponent's) (?:first|precombat) main phase$/i.exec(t))) {
+    return { on: "step", step: "main1", whose: whose(m[1]!)! };
+  }
   if ((m = /^the beginning of (your|each|each player's|each opponent's) (upkeep|draw step|end step)$/i.exec(t))) {
     const step = m[2]!.toLowerCase().startsWith("upkeep") ? "upkeep" : m[2]!.toLowerCase().startsWith("draw") ? "draw" : "end";
     return { on: "step", step, whose: whose(m[1]!)! };
@@ -137,6 +166,9 @@ const cache = new Map<string, PermanentAbilities>();
 /** Lit le corps d'une capacité déclenchée : ses effets, et si elle est facultative. */
 function parseTriggerBody(text: string): { effects: SpellEffects; optional: boolean; payMana?: string } | null {
   const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+  // Well of Lost Dreams : X au plus égal à la quantité de l'événement.
+  const payX = /^you may pay \{X\}, where X is less than or equal to the amount of life you (?:gained|lost)\. If you do, (.+)$/i.exec(text);
+  if (payX) return { effects: parseSpellEffects(cap(payX[1]!), "~"), optional: true, payMana: "{X}" };
   const pay = /^you may pay ((?:\{[^}]+\})+)\. If you do, (.+)$/i.exec(text);
   if (pay) return { effects: parseSpellEffects(cap(pay[2]!), "~"), optional: true, payMana: pay[1]! };
   const may = /^you may (.+)$/i.exec(text);
@@ -161,12 +193,32 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
   if (cached) return cached;
   const result: PermanentAbilities = { triggers: [], activated: [], statics: [], unknown: [] };
   const planeswalker = /\bPlaneswalker\b/.test(typeLine);
-  for (const raw of oracleText.split("\n")) {
+  for (const raw of joinModes(oracleText).split("\n")) {
     const line = raw.replace(/\([^)]*\)/g, "").trim();
     if (!line) continue;
     const tilde = selfToTilde(line, cardName).trim();
     if (/^exploit$/i.test(line)) {
       result.triggers.push(EXPLOIT);
+      continue;
+    }
+    // Chapitres d'une saga : « I — … », « II, III — … ».
+    const chapter = /^((?:I{1,3}|IV|V|VI)(?:, (?:I{1,3}|IV|V|VI))*) — (.+)$/.exec(tilde);
+    if (chapter && /\bSaga\b/.test(typeLine)) {
+      const ROMAN: Record<string, number> = { I: 1, II: 2, III: 3, IV: 4, V: 5, VI: 6 };
+      const chapters = chapter[1]!.split(/,\s*/).map((r) => ROMAN[r]!);
+      const parsed = parseTriggerBody(chapter[2]!);
+      if (!parsed || parsed.effects.unknown.length > 0 || (parsed.effects.effects.length === 0 && !parsed.effects.modes)) {
+        result.unknown.push(line);
+        continue;
+      }
+      result.triggers.push({
+        text: line,
+        condition: { on: "chapter", chapters },
+        effects: parsed.effects,
+        ifUntapped: false,
+        optional: parsed.optional,
+        ...(parsed.payMana ? { payMana: parsed.payMana } : {}),
+      });
       continue;
     }
     const m = /^(When|Whenever|At) (.+?), (.+)$/.exec(tilde);
@@ -185,7 +237,7 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         body = untapped[1]!;
       }
       const parsed = parseTriggerBody(body);
-      if (!condition || !parsed || parsed.effects.unknown.length > 0 || parsed.effects.effects.length === 0) {
+      if (!condition || !parsed || parsed.effects.unknown.length > 0 || (parsed.effects.effects.length === 0 && !parsed.effects.modes)) {
         result.unknown.push(line);
         continue;
       }
@@ -216,11 +268,27 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
   return result;
 }
 
+/** Dernier chapitre d'une saga (0 si ce n'en est pas une). */
+export function sagaChapters(data: CardData | undefined, faceIndex = 0): number {
+  const face = data?.faces?.[faceIndex];
+  if (!/\bSaga\b/.test(face?.typeLine ?? data?.typeLine ?? "")) return 0;
+  const ROMAN: Record<string, number> = { I: 1, II: 2, III: 3, IV: 4, V: 5, VI: 6 };
+  const text = face?.oracleText ?? data?.oracleText ?? "";
+  return Math.max(0, ...[...text.matchAll(/^((?:I{1,3}|IV|V|VI)(?:, (?:I{1,3}|IV|V|VI))*) —/gm)].flatMap((m) => m[1]!.split(/,\s*/).map((r) => ROMAN[r]!)));
+}
+
 /** Capacités déclenchées de la face visible d'une carte. */
 export function abilitiesOf(data: CardData | undefined, faceIndex = 0): PermanentAbilities {
   if (!data) return { triggers: [], activated: [], statics: [], unknown: [] };
   const face = data.faces?.[faceIndex];
   return parsePermanentAbilities(face?.oracleText ?? data.oracleText, face?.name ?? data.name, face?.typeLine ?? data.typeLine);
+}
+
+/** La capacité déclenchée d'un objet de la pile : celle de la carte source, ou celle qui lui a été donnée. */
+export function stackTrigger(data: CardData | undefined, ability: StackAbility): TriggeredAbility | undefined {
+  if (ability.activated) return undefined;
+  if (ability.grantedText !== undefined) return parsePermanentAbilities(ability.grantedText, ability.sourceName).triggers[0];
+  return abilitiesOf(data, ability.faceIndex).triggers[ability.index];
 }
 
 function whoseMatches(g: GameState, w: Whose, controllerId: PlayerId, playerId: PlayerId): boolean {
@@ -262,8 +330,16 @@ export function conditionMatches(
       return c.on === "combat" && (event.type === "attacks" ? c.attacks : c.blocks) && event.cardId === source.instanceId;
     case "exploits":
       return c.on === "exploits" && event.cardId === source.instanceId;
+    case "lore":
+      return c.on === "chapter" && event.cardId === source.instanceId && c.chapters.some((n) => n > event.from && n <= event.to);
+    case "draw":
+      if (c.on !== "draw" || (c.nth !== undefined && event.nth !== c.nth)) return false;
+      return whoseMatches(g, c.whose, source.controllerId, event.playerId);
     case "leaves":
-      return c.on === "leaves" && event.cardId === source.instanceId;
+      if (c.on !== "leaves") return false;
+      if (c.to && !c.to.includes(event.to)) return false;
+      if (c.enchanted) return Boolean(event.auras?.some((a) => a.cardId === source.instanceId));
+      return event.cardId === source.instanceId;
     default:
       return c.on === event.type && whoseMatches(g, c.whose, source.controllerId, event.playerId);
   }

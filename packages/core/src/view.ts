@@ -1,5 +1,5 @@
 import { evaluateOutcome, type Outcome } from "./modes.js";
-import { canSee } from "./reducer.js";
+import { canSee, handSizeDiscards } from "./reducer.js";
 import {
   HIDDEN_ORDERED_ZONES,
   PLAYER_ZONES,
@@ -37,6 +37,8 @@ export type CardView = VisibleCardView | HiddenCardView;
 
 export interface PlayerView extends Omit<PlayerState, "zones"> {
   zones: Record<PlayerZone, CardView[]>;
+  /** Cartes à défausser au nettoyage pour revenir à la taille maximale de main. */
+  handSizeDiscards?: number;
 }
 
 /**
@@ -97,6 +99,8 @@ export function viewFor(g: GameState, viewerId: PlayerId): GameView {
     const viewZones = {} as Record<PlayerZone, CardView[]>;
     for (const zone of PLAYER_ZONES) viewZones[zone] = zones[zone].map(viewCard);
     players[id] = { ...structuredClone(rest), zones: viewZones };
+    const discards = handSizeDiscards(g, id);
+    if (discards > 0) players[id].handSizeDiscards = discards;
   }
 
   const view: GameView = {
