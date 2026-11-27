@@ -68,7 +68,7 @@ import {
   typeLineHasCreatureType,
   sharesCreatureType,
 } from "./statics.js";
-import { canAttack, canBlock, cantAttack, cantBlock, colorsOf, creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatState } from "./combat.js";
+import { canAttack, canBlock, cantAttack, cantBlock, colorsOf, creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatKeyword, type CombatState } from "./combat.js";
 import { MAX_HAND_SIZE, STEP_LABELS, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
 import {
   HIDDEN_ORDERED_ZONES,
@@ -1607,7 +1607,7 @@ function flushTriggers(g: GameState): boolean {
         if (spell && !(trigger.condition.on === "cast" && trigger.condition.self)) return;
         if (!conditionMatches(g, trigger.condition, event, card)) return;
         if (trigger.ifUntapped && card.tapped) return;
-        if (trigger.onlyIf && !triggerConditionHolds(g, trigger.onlyIf, card.controllerId)) return;
+        if (trigger.onlyIf && !triggerConditionHolds(g, trigger.onlyIf, card.controllerId, "cardId" in event ? event.cardId : undefined)) return;
         // « One or more … » et « only once each turn » : une seule fois pour cette action (et ce tour).
         // « One or more creatures you control deal combat damage » : une seule fois, avec toutes les créatures.
         if (trigger.condition.on === "combatDamage" && trigger.condition.batched && event.type === "combatDamage") {
@@ -1655,7 +1655,7 @@ function flushTriggers(g: GameState): boolean {
     if (ev.type === "dies" || ev.type === "leaves") {
       instance.ability.eventCardId = ev.cardId;
       instance.ability.eventZone = ev.type === "dies" ? "graveyard" : ev.to;
-    } else if (ev.type === "attacks" || ev.type === "enters" || ev.type === "cast") {
+    } else if (ev.type === "attacks" || ev.type === "enters" || ev.type === "combatDamage" || ev.type === "playerDamage" || ev.type === "cast") {
       instance.ability.eventCardId = ev.cardId;
     } else if (ev.type === "sacrificed") {
       instance.ability.eventCardId = ev.cardId;
@@ -1718,7 +1718,7 @@ function resolveAbility(g: GameState, card: CardInstance): void {
   }
   const trigger = stackTrigger(g.cardData[card.cardId], ability);
   // « if an opponent controls more lands than you » : revérifié à la résolution (règle 603.4).
-  if (trigger?.onlyIf && !triggerConditionHolds(g, trigger.onlyIf, card.controllerId)) {
+  if (trigger?.onlyIf && !triggerConditionHolds(g, trigger.onlyIf, card.controllerId, ability.eventCardId)) {
     log(g, null, `La capacité de ${ability.sourceName} ne fait rien : sa condition n'est plus remplie.`);
     moveCardTo(g, card.instanceId, "graveyard", "top");
     return;
@@ -1814,6 +1814,10 @@ function dealDamage(g: GameState, sourceName: string, t: Target, raw: number, fr
     const sharers = lifeSharers(g, t.id);
     for (const p of sharers) p.life -= amount;
     emit(g, { type: "lifeLoss", playerId: t.id, amount });
+    const dealer = from.sourceId ? g.cards[from.sourceId] : undefined;
+    if (dealer?.zone === "battlefield" && !dealer.faceDown && isCreature(g, dealer)) {
+      emit(g, { type: "playerDamage", cardId: dealer.instanceId, controllerId: dealer.controllerId, playerId: t.id, amount });
+    }
     log(g, null, `${sourceName} inflige ${amount} blessure${amount > 1 ? "s" : ""} à ${names(sharers)} (${sharers[0]!.life} PV).`);
     return amount;
   }
@@ -1899,6 +1903,8 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
     spell: !ability && /\b(Instant|Sorcery)\b/.test(currentTypeLine(g, source)),
     combat: false,
     colors: g.cardData[source.cardId]?.colors ?? [],
+    // Le permanent qui inflige les blessures (capacité d'une créature : Keen Sense).
+    sourceId: ability ? ability.sourceId : source.instanceId,
   };
   let dealt = 0;
   const given = () =>
@@ -2394,14 +2400,17 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         break;
       case "copyEventCard": {
         // Ashling : un jeton copie de l'Élémental sacrifié, avec la célérité, sacrifié à la fin du tour sauf paiement.
-        const dataId = ability?.eventDataId;
+        // Cadric : une copie du permanent arrivé (ses données actuelles).
+        const entered = ability?.eventCardId ? g.cards[ability.eventCardId] : undefined;
+        const dataId = ability?.eventDataId ?? (entered && !entered.faceDown ? entered.cardId : undefined);
         if (!dataId || !g.cardData[dataId]) break;
         const instance = newInstance(g, dataId, caster.id, "battlefield");
-        instance.faceIndex = ability?.eventFaceIndex ?? 0;
+        instance.faceIndex = ability?.eventFaceIndex ?? entered?.faceIndex ?? 0;
         instance.isToken = true;
         instance.summoningSick = true;
         if (effect.haste) instance.grants = ["haste"];
         if (effect.endStepUnless) instance.grantedTriggers = [`At the beginning of your end step, sacrifice this permanent unless you pay ${effect.endStepUnless}.`];
+        if (effect.sacrificeAtEnd) instance.grantedTriggers = ["At the beginning of each end step, sacrifice this permanent."];
         caster.zones.battlefield.push(instance.instanceId);
         emitEnters(g, instance);
         log(g, null, `${caster.name} crée un jeton copie de ${cardName(g, instance)}.`);
@@ -2743,6 +2752,22 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         log(g, null, `${name} retourne du cimetière dans la main de ${g.players[self.ownerId]!.name}.`);
         break;
       }
+      case "counterEvent": {
+        const c = ability?.eventCardId ? g.cards[ability.eventCardId] : undefined;
+        if (!c || c.zone !== "battlefield") break;
+        c.counters[effect.kind] = (c.counters[effect.kind] ?? 0) + effect.count;
+        log(g, null, `${cardName(g, c)} reçoit ${plural(effect.count, `marqueur ${effect.kind}`, `marqueurs ${effect.kind}`)}.`);
+        break;
+      }
+      case "shareKeywords": {
+        // Odric : les mots-clés sont vérifiés à la résolution, puis donnés à toutes les créatures du contrôleur.
+        const mine = caster.zones.battlefield.map((id) => g.cards[id]!).filter((c) => !c.faceDown && isCreature(g, c));
+        const shared = effect.keywords.filter((k) => mine.some((c) => hasKeyword(g, c, (k.charAt(0).toUpperCase() + k.slice(1)) as CombatKeyword)));
+        for (const c of mine) c.grants = [...new Set([...(c.grants ?? []), ...shared])];
+        const label = shared.map((k) => KEYWORD_HELP[k]?.name.toLowerCase() ?? k).join(", ");
+        log(g, null, shared.length > 0 ? `Les créatures de ${caster.name} gagnent ${label} jusqu'à la fin du tour.` : `Aucun mot-clé à partager.`);
+        break;
+      }
       case "pumpEvent":
       case "pumpSelf": {
         const pumped = effect.type === "pumpSelf" ? (ability ? g.cards[ability.sourceId] : undefined) : ability?.eventCardId ? g.cards[ability.eventCardId] : undefined;
@@ -2787,9 +2812,10 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         if (parts.length > 0) log(g, null, `${what} gagnent ${parts.join(", ")} ${effect.untilNextTurn ? `jusqu'au prochain tour de ${caster.name}` : "jusqu'à la fin du tour"}.`);
         break;
       }
+      case "attachEvent":
       case "attach": {
-        const c = card(effect.target);
-        if (!c || !self || self.zone !== "battlefield") break;
+        const c = effect.type === "attach" ? card(effect.target) : ability?.eventCardId ? g.cards[ability.eventCardId] : undefined;
+        if (!c || c.zone !== "battlefield" || !self || self.zone !== "battlefield") break;
         self.attachedTo = c.instanceId;
         log(g, null, `${cardName(g, self)} est attaché(e) à ${cardName(g, c)}.`);
         break;
