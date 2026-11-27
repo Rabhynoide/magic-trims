@@ -90,10 +90,10 @@ describe("Famille 10 : lecture", () => {
     expect(parseCopyExcept("it can fly")).toBeNull();
   });
 
-  it("Sakashima et Cadric : entièrement gérées ; Ratadrabik : seule la protection reste", () => {
+  it("Sakashima, Cadric et Ratadrabik : entièrement gérées (la protection, Ward, est gérée depuis la PR #126)", () => {
     expect(cardSupport(real("Sakashima of a Thousand Faces")).level).toBe("full");
     expect(cardSupport(real("Cadric, Soul Kindler")).level).toBe("full");
-    expect(cardSupport(real("Ratadrabik of Urborg")).unknown).toEqual(["Vigilance, ward {2}"]);
+    expect(cardSupport(real("Ratadrabik of Urborg")).unknown).toEqual([]);
   });
 });
 
