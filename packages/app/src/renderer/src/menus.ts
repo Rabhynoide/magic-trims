@@ -15,6 +15,7 @@ import {
   mostCommonCreatureType,
   stateFromView,
   sagaChapters,
+  graveyardLabel,
   permanentLabel,
   type ActivationCost,
   type CardData,
@@ -245,6 +246,7 @@ function costLabel(cost: ActivationCost): string {
     cost.exileSelf ? "l'exiler" : "",
     cost.discardSelf ? "la défausser" : "",
     cost.sacrifice ? `sacrifier un(e) ${permanentLabel(cost.sacrifice).replace(/ que tu contrôles$/, "")}` : "",
+    cost.exileFromGraveyard ? `exiler ${cost.exileFromGraveyard.count} × ${graveyardLabel(cost.exileFromGraveyard.filter)}` : "",
   ].filter(Boolean);
   return parts.join(", ") || "gratuit";
 }
@@ -289,6 +291,15 @@ export function abilityItems(view: GameView, card: CardView): MenuItem[] {
         if (!chosen) return;
         sacrifice = chosen;
       }
+      // Kethis : les cartes du cimetière à exiler, une par une.
+      let exile: string[] | undefined;
+      if (ability.cost.exileFromGraveyard) {
+        const { count, filter } = ability.cost.exileFromGraveyard;
+        const specs = Array.from({ length: count }, (_, i) => ({ label: `${graveyardLabel(filter)} à exiler (${i + 1}/${count})`, graveyard: filter, choice: true }));
+        const chosen = await ui.chooseTargets(name, id, specs);
+        if (!chosen) return;
+        exile = chosen.map((t) => t.id);
+      }
       let targets;
       if (ability.effects.targets.length > 0) {
         const chosen = await ui.chooseTargets(name, id, ability.effects.targets);
@@ -301,6 +312,7 @@ export function abilityItems(view: GameView, card: CardView): MenuItem[] {
         index,
         ...(targets ? { targets } : {}),
         ...(sacrifice ? { sacrifice } : {}),
+        ...(exile ? { exile } : {}),
         ...(color ? { color } : {}),
       });
     };

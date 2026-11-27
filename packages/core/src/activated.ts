@@ -7,7 +7,7 @@
  * reconnaît à la résolution ; le reste est rappelé dans le journal. Une
  * capacité de mana (« Add … ») se résout tout de suite, sans la pile.
  */
-import { parsePermanentFilterText, parseSpellEffects, permanentLabel, type PermanentFilter, type SpellEffects } from "./effects.js";
+import { parsePermanentFilterText, parseSpellEffects, permanentLabel, type GraveyardFilter, type PermanentFilter, type SpellEffects } from "./effects.js";
 
 export interface ActivationCost {
   /** Coût de mana (« {2}{B}{B} »), vide s'il n'y en a pas. */
@@ -20,6 +20,8 @@ export interface ActivationCost {
   discardSelf?: boolean;
   /** Exiler la carte, de son cimetière (encore) ou du champ de bataille (Plaza of Heroes). */
   exileSelf?: boolean;
+  /** Des cartes de son cimetière à exiler (Kethis : « Exile two legendary cards from your graveyard »), choisies à l'activation. */
+  exileFromGraveyard?: { count: number; filter: GraveyardFilter };
   /** Un autre permanent à sacrifier (« Sacrifice a creature »), choisi à l'activation. */
   sacrifice?: PermanentFilter;
   /** Loyauté ajoutée (+1) ou retirée (−2) d'un planeswalker. */
@@ -70,6 +72,12 @@ export function parseActivationCost(text: string): ActivationCost | null {
     // Plaza of Heroes : « {3}, {T}, Exile this land: … ».
     else if (/^exile ~$/i.test(part)) cost.exileSelf = true;
     else if (/^discard (?:this card|~)$/i.test(part)) cost.discardSelf = true;
+    else if ((m = /^exile (a|an|one|two|three|four|five|\d+) (legendary )?((?:creature|artifact|enchantment|land|planeswalker|instant|sorcery) )?cards? from your graveyard$/i.exec(part))) {
+      const words: Record<string, number> = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5 };
+      const count = words[m[1]!.toLowerCase()] ?? parseInt(m[1]!, 10);
+      const filter: GraveyardFilter = { types: m[3] ? [m[3].trim().toLowerCase()] : [], whose: "you", ...(m[2] ? { legendary: true } : {}) };
+      cost.exileFromGraveyard = { count, filter };
+    }
     else if ((m = /^sacrifice (?:a|an|another) (.+)$/i.exec(part))) {
       const filter = parsePermanentFilterText(m[1]!);
       if (!filter) return null;
