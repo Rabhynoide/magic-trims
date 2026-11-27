@@ -127,11 +127,11 @@ describe("Autres conditions de déclencheur : lecture", () => {
 
   it("les cartes du deck Jodah de cette famille", () => {
     for (const name of ["Keen Sense", "Guardian Project", "Odric, Lunarch Marshal"]) expect(cardSupport(real(name)), name).toMatchObject({ level: "full" });
-    // Il reste les lignes d'autres familles.
-    expect(cardSupport(real("Yoshimaru, Ever Faithful")).unknown).toEqual(["Partner"]);
-    expect(cardSupport(real("The Great Henge")).unknown).toEqual(["This spell costs {X} less to cast, where X is the greatest power among creatures you control."]);
-    expect(cardSupport(real("Robe of the Archmagi")).unknown).toEqual(["Equip Shaman, Warlock, or Wizard {1}"]);
-    expect(cardSupport(real("Cadric, Soul Kindler")).unknown).toEqual(['The "legend rule" doesn\'t apply to tokens you control.']);
+    // Les lignes de déclencheur sont reconnues ; il peut rester des lignes d'autres familles (Partner, coût, équiper, règle des légendes).
+    const others = ["Partner", "This spell costs {X} less to cast, where X is the greatest power among creatures you control.", "Equip Shaman, Warlock, or Wizard {1}", 'The "legend rule" doesn\'t apply to tokens you control.'];
+    for (const name of ["Yoshimaru, Ever Faithful", "The Great Henge", "Robe of the Archmagi", "Cadric, Soul Kindler"]) {
+      expect(cardSupport(real(name)).unknown.filter((l) => !others.includes(l)), name).toEqual([]);
+    }
     // Ratadrabik : la condition est lue, la copie « except… » reste pour la famille des copies.
     const rata = real("Ratadrabik of Urborg");
     const line = rata.oracleText.split("\n")[2]!;
