@@ -242,6 +242,7 @@ function costLabel(cost: ActivationCost): string {
     cost.tap ? "engager" : "",
     cost.life > 0 ? `${cost.life} PV` : "",
     cost.sacrificeSelf ? "la sacrifier" : "",
+    cost.exileSelf ? "l'exiler" : "",
     cost.sacrifice ? `sacrifier un(e) ${permanentLabel(cost.sacrifice).replace(/ que tu contrôles$/, "")}` : "",
   ].filter(Boolean);
   return parts.join(", ") || "gratuit";
