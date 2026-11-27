@@ -100,12 +100,15 @@ export interface SpellFilter {
  * Un nombre : fixe, X (choisi au lancement), ou « that much » d'une capacité
  * déclenchée (la quantité de l'événement : PV gagnés ou perdus).
  */
-export type Amount = number | "X" | "-X" | "event" | "-event" | "dealt" | "hand" | "given" | "devotion" | "-devotion" | "lost" | "-lostThisTurn";
+export type Amount = number | "X" | "-X" | "event" | "-event" | "dealt" | "hand" | "given" | "devotion" | "-devotion" | "lost" | "-lostThisTurn" | { perPermanent: PermanentFilter };
 
 /** Qui subit l'effet : « you », une cible, ou le joueur de l'événement déclencheur (« that player », « they »). */
 export type Who = "you" | "opponents" | "all" | "event" | { target: number } | { controllerOf: number };
 
-export type Effect =
+/** « If you control eight or more lands, draw a card » : l'effet n'a lieu que si la condition tient à la résolution. */
+export type Effect = EffectBase & { ifControls?: { filter: PermanentFilter; atLeast: number } };
+
+type EffectBase =
   | { type: "draw"; who: Who; count: Amount }
   | { type: "destroy"; target: number }
   | { type: "destroyAll"; filter: PermanentFilter }
@@ -129,6 +132,10 @@ export type Effect =
   | { type: "returnSelf" }
   /** « ~ gets +1/+1 until end of turn. » */
   | { type: "pumpSelf"; power: number; toughness: number }
+  /** « Put a +1/+1 counter on target Elemental you control. » */
+  | { type: "counterTarget"; target: number; kind: string; count: number }
+  /** « Put a +1/+1 counter on each Plant creature you control. » */
+  | { type: "counterAll"; filter: PermanentFilter; kind: string; count: number }
   /** « Target creature gets +2/+2 and gains haste until end of turn. » */
   | { type: "pumpTarget"; target: number; power: number; toughness: number; keywords: string[] }
   /** « Creatures you control gain lifelink until end of turn. » */
@@ -261,6 +268,12 @@ const HARMLESS = [/^(it|they) can't be regenerated\.?$/i, /^~ can't be countered
  * enchantment », « attacking creature »… ; `null` si le texte n'est pas compris.
  */
 function parsePermanentFilter(text: string): PermanentFilter | null {
+  // Un type de créature (« Elemental you control », « Plant creatures you control », « Elementals you control »).
+  const sub = /^([A-Z][a-z]+?)s?( creatures?)?( you control| an opponent controls| you don't control)?$/.exec(text.trim());
+  if (sub && !/^(Artifact|Battle|Creature|Enchantment|Land|Planeswalker|Permanent|Legendary|Basic|Plains|Island|Swamp|Mountain|Forest|Token|Nonland|Noncreature|Other|Attacking|Blocking|Tapped|Untapped)$/.test(sub[1]!)) {
+    const base = parsePermanentFilter(`creature${sub[3] ?? ""}`);
+    return base ? { ...base, subtype: sub[1]! } : null;
+  }
   let t = text.trim().toLowerCase();
   const filter: PermanentFilter = { types: [], notTypes: [] };
   const total = / with total power and toughness (\d+) or less$/.exec(t);
@@ -325,7 +338,7 @@ export function permanentLabel(f: PermanentFilter): string {
     planeswalker: "planeswalker",
     legendary: "légendaire",
   };
-  let label = f.subtype ? f.subtype : f.types.length > 0 ? f.types.map((t) => labels[t]).join(" ou ") : "permanent";
+  let label = f.subtype ? (f.types.includes("creature") ? `créature ${f.subtype}` : f.subtype) : f.types.length > 0 ? f.types.map((t) => labels[t]).join(" ou ") : "permanent";
   if (f.notTypes.length > 0) label += ` non-${f.notTypes.map((t) => labels[t]).join(", non-")}`;
   if (f.state) label += { attacking: " attaquant(e)", blocking: " bloqueur(se)", tapped: " engagé(e)", untapped: " dégagé(e)" }[f.state];
   if (f.controller === "you") label += " que tu contrôles";
@@ -597,10 +610,25 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
   let revealing: Extract<Effect, { type: "shuffleIntoLibrary" }> | null = null;
   let approach = false;
   let keepOne = false;
+  let pendingIf: { from: number; cond: NonNullable<Effect["ifControls"]> } | null = null;
+  const flushIf = () => {
+    if (pendingIf) for (const e of result.effects.slice(pendingIf.from)) e.ifControls = pendingIf.cond;
+    pendingIf = null;
+  };
   for (const sentence of sentences) {
+    flushIf();
     let s = sentence.replace(/\.$/, "");
     if (HARMLESS.some((re) => re.test(sentence))) continue;
     let m: RegExpExecArray | null;
+    // « If you control eight or more lands, draw a card. »
+    if ((m = /^if you control (\w+) or more (.+?), (.+)$/i.exec(s))) {
+      const filter = parsePermanentFilter(`${m[2]!} you control`);
+      const n = amount(m[1]!);
+      if (filter && typeof n === "number" && Number.isInteger(n)) {
+        pendingIf = { from: result.effects.length, cond: { filter, atLeast: n } };
+        s = m[3]!.charAt(0).toUpperCase() + m[3]!.slice(1);
+      }
+    }
 
     if ((m = /^you may pay ((?:\{[^}]+\})+) rather than pay ~'s mana cost$/i.exec(s))) {
       result.alternativeCost = m[1]!;
@@ -879,6 +907,15 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     } else if ((m = new RegExp(`^(?:you )?create ${NUM} (tapped )?(Treasure|Food|Clue|Blood) tokens?$`, "i").exec(s))) {
       const name = m[3]!.charAt(0).toUpperCase() + m[3]!.slice(1).toLowerCase();
       result.effects.push({ type: "namedToken", name, count: amount(m[1]!), tapped: !!m[2] });
+    } else if ((m = /^create (?:a|an|one) (tapped )?(.+? tokens?) for each (.+)$/i.exec(s)) && parseToken(m[2]!) && parsePermanentFilter(m[3]!)) {
+      result.effects.push({ type: "token", count: { perPermanent: parsePermanentFilter(m[3]!)! }, token: parseToken(m[2]!)!, tapped: !!m[1] });
+    } else if ((m = /^(?:~|it) deals damage to (.+?) equal to the number of (.+)$/i.exec(s)) && damageTarget(m[1]!) && parsePermanentFilter(m[2]!)) {
+      result.effects.push({ type: "damage", target: target(damageTarget(m[1]!)!), amount: { perPermanent: parsePermanentFilter(m[2]!)! } });
+    } else if ((m = new RegExp(`^put ${NUM} (\\+1/\\+1|-1/-1) counters? on (target|each) (.+)$`, "i").exec(s)) && parsePermanentFilter(m[4]!)) {
+      const filter = parsePermanentFilter(m[4]!)!;
+      const count = amount(m[1]!) as number;
+      if (m[3]!.toLowerCase() === "each") result.effects.push({ type: "counterAll", filter, kind: m[2]!, count });
+      else result.effects.push({ type: "counterTarget", target: target({ label: permanentLabel(filter), permanent: filter }), kind: m[2]!, count });
     } else if ((m = new RegExp(`^create ${NUM} (tapped )?(.+)$`, "i").exec(s))) {
       const token = parseToken(m[3]!);
       if (!token) {
@@ -897,6 +934,7 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       result.unknown.push(sentence);
     }
   }
+  flushIf();
   if (wheel) result.unknown.push("puts the cards in their hand on the bottom of their library");
   return result;
 }
@@ -1043,7 +1081,13 @@ export function spellEffectsOf(g: GameState, card: CardInstance, faceIndex = car
 }
 
 /** Valeur d'un nombre d'effet, avec la valeur de X choisie au lancement. */
-export function resolveAmount(a: Amount, x: number, eventAmount = 0, context: { dealt?: number; hand?: number; given?: number; devotion?: number; lost?: number; lostThisTurn?: number } = {}): number {
+export function resolveAmount(
+  a: Amount,
+  x: number,
+  eventAmount = 0,
+  context: { dealt?: number; hand?: number; given?: number; devotion?: number; lost?: number; lostThisTurn?: number; count?: (filter: PermanentFilter) => number } = {},
+): number {
+  if (typeof a === "object") return context.count?.(a.perPermanent) ?? 0;
   if (a === "dealt") return context.dealt ?? 0;
   if (a === "given") return context.given ?? 0;
   if (a === "devotion") return context.devotion ?? 0;

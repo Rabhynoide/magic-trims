@@ -12,14 +12,14 @@
 import { parseActivatedLine, type ActivatedAbility } from "./activated.js";
 import { parseSpellEffects, selfToTilde, type SpellEffects } from "./effects.js";
 import { joinModes } from "./text.js";
-import { parseStaticLine, type StaticAbility } from "./statics.js";
+import { parseStaticLine, typeLineHasCreatureType, type StaticAbility } from "./statics.js";
 import { areTeammates, isActivePlayer } from "./modes.js";
 import type { TurnStep } from "./turn.js";
 import type { CardData, CardInstanceId, GameState, PlayerId, StackAbility, Zone } from "./types.js";
 
 export type TriggerEvent =
   /** `cast` : le permanent arrive depuis la pile (il a été lancé). */
-  | { type: "enters"; cardId: CardInstanceId; controllerId: PlayerId; creature: boolean; cast?: boolean }
+  | { type: "enters"; cardId: CardInstanceId; controllerId: PlayerId; creature: boolean; cast?: boolean; land?: boolean }
   /** `granted` : capacités données à la créature jusqu'à la fin du tour (Malakir Rebirth). */
   | { type: "dies"; cardId: CardInstanceId; controllerId: PlayerId; dataId: string; faceIndex: number; isToken: boolean; granted?: string[] }
   /** `nth` : combientième carte piochée par ce joueur ce tour-ci. */
@@ -61,9 +61,9 @@ type Whose = "you" | "opponent" | "any";
 
 export type TriggerCondition =
   /** `ifCast` : « When ~ enters, if it was cast, … » (Wedding Ring). */
-  | { on: "enters"; self: boolean; another: boolean; creature: boolean; whose: Whose; ifCast?: boolean }
+  | { on: "enters"; self: boolean; another: boolean; creature: boolean; whose: Whose; ifCast?: boolean; land?: boolean }
   /** `batched` : « one or more … die » se déclenche une fois par action, quel que soit le nombre de morts. */
-  | { on: "dies"; self: boolean; others: boolean; whose: Whose; batched?: boolean }
+  | { on: "dies"; self: boolean; others: boolean; whose: Whose; batched?: boolean; subtype?: string }
   /** `nth` : « draw your second card each turn ». */
   /** `controlsSameName` : « an opponent who controls an artifact named ~ » ; `theirTurn` : « during their turn ». */
   | { on: "draw" | "lifeGain" | "lifeLoss" | "landPlayed"; whose: Whose; nth?: number; controlsSameName?: boolean; theirTurn?: boolean }
@@ -144,13 +144,14 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   if (/^~ enters(?: the battlefield)?$/i.test(t)) {
     return { on: "enters", self: true, another: false, creature: false, whose: "you" };
   }
-  if ((m = /^(a|another) (creature|permanent)( you control| an opponent controls)? enters(?: the battlefield)?(?: under your control)?$/i.exec(t))) {
+  if ((m = /^(a|another) (creature|permanent|land)( you control| an opponent controls)? enters(?: the battlefield)?(?: under your control)?$/i.exec(t))) {
     const controls = (m[3] ?? "").trim().toLowerCase();
     return {
       on: "enters",
       self: false,
       another: m[1]!.toLowerCase() === "another",
       creature: m[2]!.toLowerCase() === "creature",
+      ...(m[2]!.toLowerCase() === "land" ? { land: true } : {}),
       whose: controls === "you control" || /under your control/i.test(t) ? "you" : controls ? "opponent" : "any",
     };
   }
@@ -159,10 +160,10 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
     const controls = (m[1] ?? "").trim().toLowerCase();
     return { on: "dies", self: false, others: true, whose: controls === "you control" ? "you" : controls ? "opponent" : "any", batched: true };
   }
-  if ((m = /^(~ or another|another|a) creature( you control| an opponent controls)? dies$/i.exec(t))) {
-    const controls = (m[2] ?? "").trim().toLowerCase();
+  if ((m = /^(~ or another|another|a) (creature|[A-Z][a-z]+)( you control| an opponent controls)? dies$/.exec(t))) {
+    const controls = (m[3] ?? "").trim().toLowerCase();
     const who: Whose = controls === "you control" ? "you" : controls ? "opponent" : "any";
-    return { on: "dies", self: m[1]!.startsWith("~"), others: true, whose: who };
+    return { on: "dies", self: m[1]!.startsWith("~"), others: true, whose: who, ...(m[2] !== "creature" ? { subtype: m[2]! } : {}) };
   }
   if ((m = /^(you|an opponent|a player) draws? a card$/i.exec(t))) return { on: "draw", whose: whose(m[1]!)! };
   if ((m = /^(you|an opponent|a player) draws? (?:your|their|his or her) (second|third) card each turn$/i.exec(t))) {
@@ -446,9 +447,15 @@ export function conditionMatches(
       if (c.self) return event.cardId === source.instanceId;
       if (c.another && event.cardId === source.instanceId) return false;
       if (c.creature && !event.creature) return false;
+      if (c.land && !event.land) return false;
       return whoseMatches(g, c.whose, source.controllerId, event.controllerId);
     case "dies":
       if (c.on !== "dies") return false;
+      if (c.subtype && event.cardId !== source.instanceId) {
+        const data = g.cardData[event.dataId];
+        const face = data?.faces?.[event.faceIndex];
+        if (!typeLineHasCreatureType(face?.typeLine ?? data?.typeLine ?? "", face?.oracleText ?? data?.oracleText ?? "", c.subtype)) return false;
+      }
       if (event.cardId === source.instanceId) return c.self;
       return c.others && whoseMatches(g, c.whose, source.controllerId, event.controllerId);
     case "step":

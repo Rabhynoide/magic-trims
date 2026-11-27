@@ -28,6 +28,7 @@ import {
   type SpellEffects,
   type Target,
   type Who,
+  type PermanentFilter,
 } from "./effects.js";
 import { abilitiesOf, triggerConditionHolds, conditionMatches, parsePermanentAbilities, sagaChapters, stackTrigger, type TriggeredAbility, type TriggerEvent } from "./triggers.js";
 import {
@@ -1405,6 +1406,7 @@ function emitEnters(g: GameState, card: CardInstance, cast = false): void {
     controllerId: card.controllerId,
     creature: !card.faceDown && isCreature(g, card),
     ...(cast ? { cast } : {}),
+    ...(!card.faceDown && /\bLand\b/.test(currentTypeLine(g, card)) ? { land: true } : {}),
   });
 }
 
@@ -1711,7 +1713,9 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
       hand: caster.zones.hand.length,
       given: a === "given" ? given() : 0,
       devotion: a === "devotion" || a === "-devotion" ? devotion() : 0,
+      count: (filter) => controlledMatching(filter).length,
     });
+  const controlledMatching = (filter: PermanentFilter) => caster.zones.battlefield.map((id) => g.cards[id]!).filter((c) => matchesPermanent(g, c, { ...filter, controller: "you" }, caster.id));
   // Contrôleurs des cibles au début de la résolution (« its controller » après « destroy target creature »).
   const controllers = targets.map((t) => (t.kind === "card" ? g.cards[t.id]?.controllerId : undefined));
   const self = ability ? g.cards[ability.sourceId] : undefined;
@@ -1746,6 +1750,7 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
       .filter((c) => matchesPermanent(g, c, filter, caster.id));
 
   for (const effect of effects) {
+    if (effect.ifControls && controlledMatching(effect.ifControls.filter).length < effect.ifControls.atLeast) continue;
     switch (effect.type) {
       case "draw":
         for (const p of whoOf(effect.who)) drawCards(g, p, amountOf(effect.count));
@@ -2093,6 +2098,13 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
           const loss = Math.ceil(Math.max(0, p.life) / 2);
           if (loss > 0) changeLife(g, p.id, -loss);
         }
+        break;
+      }
+      case "counterTarget":
+      case "counterAll": {
+        const list = effect.type === "counterTarget" ? [card(effect.target)].filter((c): c is CardInstance => !!c && c.zone === "battlefield") : allMatching(effect.filter);
+        for (const c of list) c.counters[effect.kind] = (c.counters[effect.kind] ?? 0) + effect.count;
+        if (list.length > 0) log(g, null, `${list.map((c) => cardName(g, c)).join(", ")} ${list.length > 1 ? "reçoivent" : "reçoit"} ${plural(effect.count, `marqueur ${effect.kind}`, `marqueurs ${effect.kind}`)}.`);
         break;
       }
       case "counterSelf": {

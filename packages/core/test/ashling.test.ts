@@ -213,7 +213,7 @@ describe("Deck Ashling : recherches de terrains", () => {
 describe("Deck Ashling : bilan", () => {
   it("compte les cartes entièrement gérées", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "", manaCost: c.manaCost ?? "" })).level);
-    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(61);
+    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(64);
   });
 });
 
@@ -393,6 +393,76 @@ describe("Deck Ashling : mana en plus", () => {
     g = resolveAll(g);
     expect(g.players.p1!.manaPool.U).toBe(5);
     for (const name of ["Utopia Sprawl", "Fertile Ground", "Faeburrow Elder", "Bloom Tender"]) {
+      expect(cardSupport(real(name)).level, name).toBe("full");
+    }
+  });
+});
+
+describe("Deck Ashling : atterrissage", () => {
+  const waiting = (g: GameState) => g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.needsTargets || c.ability?.awaitingDecision)!;
+  const plants = (g: GameState) => g.players.p1!.zones.battlefield.filter((id) => g.cardData[g.cards[id]!.cardId]?.typeLine.includes("Plant"));
+
+  it("Avenger of Zendikar : une Plante par terrain, puis des marqueurs à chaque terrain", () => {
+    let g = toMain(newTestGame(2));
+    let avenger: string, forest: string;
+    [g] = put(g, "p1", basic("Forest"));
+    [g] = put(g, "p1", basic("Island"));
+    [g, avenger] = inHand(g, "p1", real("Avenger of Zendikar", { colors: ["G"] }));
+    [g, forest] = inHand(g, "p1", basic("Forest"), 1);
+    g = mana(g, "p1", "GGGGGGG");
+    g = act(g, "p1", { type: "castSpell", cardId: avenger });
+    g = resolveAll(g);
+    expect(plants(g)).toHaveLength(2);
+    g = act(g, "p1", { type: "playLand", cardId: forest });
+    g = resolveAll(g);
+    const trigger = waiting(g);
+    g = act(g, "p1", { type: "decideOptional", cardId: trigger.instanceId, accept: true });
+    g = resolveAll(g);
+    for (const id of plants(g)) expect(creatureStats(g, g.cards[id]!)).toEqual({ power: 1, toughness: 2 });
+  });
+
+  it("Omnath, Locus of Rage : un Élémental 5/5 par terrain, 3 blessures quand un Élémental meurt", () => {
+    let g = toMain(newTestGame(2));
+    let omnath: string, forest: string, elem: string;
+    [g, omnath] = put(g, "p1", real("Omnath, Locus of Rage"));
+    [g, elem] = put(g, "p1", fakeCard("Petit Élémental", { typeLine: "Creature — Elemental", power: "1", toughness: "1", manaCost: "{R}" }));
+    [g, forest] = inHand(g, "p1", basic("Forest"));
+    g = act(g, "p1", { type: "playLand", cardId: forest });
+    g = resolveAll(g);
+    const tokens = g.players.p1!.zones.battlefield.filter((id) => g.cards[id]!.isToken);
+    expect(tokens).toHaveLength(1);
+    expect(creatureStats(g, g.cards[tokens[0]!]!)).toEqual({ power: 5, toughness: 5 });
+    const life = g.players.p2!.life;
+    g = act(g, "p1", { type: "moveCard", cardId: elem, to: "graveyard", force: true });
+    g = act(g, "p1", { type: "chooseTargets", cardId: waiting(g).instanceId, targets: [{ kind: "player", id: "p2" }] });
+    g = resolveAll(g);
+    expect(g.players.p2!.life).toBe(life - 3);
+    expect(omnath).toBeDefined();
+  });
+
+  it("Omnath, Locus of the Roil : blessures selon les Élémentaux, marqueur et pioche avec huit terrains", () => {
+    let g = toMain(newTestGame(2));
+    let omnath: string, forest: string, elem: string;
+    [g, elem] = put(g, "p1", fakeCard("Petit Élémental", { typeLine: "Creature — Elemental", power: "1", toughness: "1", manaCost: "{R}" }));
+    for (let i = 0; i < 8; i++) g = act(g, "p1", { type: "moveCard", cardId: g.players.p1!.zones.library[0]!, to: "hand", force: true });
+    for (let i = 0; i < 7; i++) [g] = put(g, "p1", basic("Island"), 0);
+    [g, forest] = inHand(g, "p1", basic("Forest"), 0);
+    [g, omnath] = inHand(g, "p1", real("Omnath, Locus of the Roil", { colors: ["G", "U", "R"] }), 1);
+    g = mana(g, "p1", "GURU");
+    g = act(g, "p1", { type: "castSpell", cardId: omnath });
+    g = resolveAll(g);
+    const life = g.players.p2!.life;
+    g = act(g, "p1", { type: "chooseTargets", cardId: waiting(g).instanceId, targets: [{ kind: "player", id: "p2" }] });
+    g = resolveAll(g);
+    expect(g.players.p2!.life).toBe(life - 2);
+    const hand = g.players.p1!.zones.hand.length;
+    g = act(g, "p1", { type: "playLand", cardId: forest });
+    // Un Plant n'est pas un Élémental : la cible doit être un Élémental que je contrôle.
+    g = act(g, "p1", { type: "chooseTargets", cardId: waiting(g).instanceId, targets: [{ kind: "card", id: elem }] });
+    g = resolveAll(g);
+    expect(g.cards[elem]!.counters["+1/+1"]).toBe(1);
+    expect(g.players.p1!.zones.hand.length).toBe(hand); // −1 terrain joué, +1 carte piochée
+    for (const name of ["Avenger of Zendikar", "Omnath, Locus of Rage", "Omnath, Locus of the Roil"]) {
       expect(cardSupport(real(name)).level, name).toBe("full");
     }
   });
