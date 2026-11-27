@@ -31,6 +31,8 @@ export type TriggerEvent =
   | { type: "attacks"; cardId: CardInstanceId }
   | { type: "blocks"; cardId: CardInstanceId }
   | { type: "exploits"; cardId: CardInstanceId }
+  /** Un permanent subit des blessures (Body of Knowledge). */
+  | { type: "damaged"; cardId: CardInstanceId; amount: number }
   /** Une créature inflige des blessures de combat à un joueur. */
   | { type: "combatDamage"; cardId: CardInstanceId; controllerId: PlayerId; playerId: PlayerId; amount: number }
   /** Des marqueurs de savoir arrivent sur une saga : de `from` à `to`. */
@@ -64,6 +66,8 @@ export type TriggerCondition =
   | { on: "exploits" }
   /** « Whenever a creature deals combat damage to one of your opponents », « Whenever ~ deals combat damage to a player ». */
   | { on: "combatDamage"; self: boolean; creature: Whose; player: Whose }
+  /** « Whenever ~ is dealt damage ». */
+  | { on: "damaged" }
   /** Chapitre d'une saga (« I, II — … »). */
   | { on: "chapter"; chapters: number[] }
   /** « When ~ leaves the battlefield » ; `enchanted` : « When enchanted permanent dies or is put into exile » (`to` : zones visées). */
@@ -151,6 +155,7 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
     return { on: "combat", attacks: what.includes("attacks"), blocks: what.includes("blocks") };
   }
   if (/^~ exploits a creature$/i.test(t)) return { on: "exploits" };
+  if (/^~ is dealt damage$/i.test(t)) return { on: "damaged" };
   if ((m = /^(~|a creature|a creature you control|a creature an opponent controls) deals combat damage to (a player|an opponent|one of your opponents|you)$/i.exec(t))) {
     const who = m[1]!.toLowerCase();
     const to = m[2]!.toLowerCase();
@@ -239,6 +244,12 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         ...(parsed.payMana ? { payMana: parsed.payMana } : {}),
         ...(parsed.payLife ? { payLife: parsed.payLife } : {}),
       });
+      continue;
+    }
+    // « When there are nine or more … counters on ~, exile it » : une règle d'état, lue comme un effet statique.
+    const stateRule = /^When there are /i.test(tilde) ? parseStaticLine(tilde) : null;
+    if (stateRule) {
+      result.statics.push(stateRule);
       continue;
     }
     const m = /^(When|Whenever|At) (.+?), (.+)$/.exec(tilde);
@@ -351,6 +362,8 @@ export function conditionMatches(
       return c.on === "combat" && (event.type === "attacks" ? c.attacks : c.blocks) && event.cardId === source.instanceId;
     case "exploits":
       return c.on === "exploits" && event.cardId === source.instanceId;
+    case "damaged":
+      return c.on === "damaged" && event.cardId === source.instanceId;
     case "combatDamage":
       if (c.on !== "combatDamage") return false;
       if (c.self && event.cardId !== source.instanceId) return false;

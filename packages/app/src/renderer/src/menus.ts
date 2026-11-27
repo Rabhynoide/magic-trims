@@ -243,7 +243,7 @@ export function abilityItems(view: GameView, card: CardView): MenuItem[] {
     const mine =
       ability.zone === "battlefield"
         ? card.zone === "battlefield" && card.controllerId === view.viewerId
-        : card.zone === "graveyard" && card.ownerId === view.viewerId;
+        : card.zone === ability.zone && card.ownerId === view.viewerId;
     if (!mine) return;
     const effect = translateLine(data, faceIndex, ability.text);
     const short = effect.slice(effect.indexOf(":") + 1).trim();

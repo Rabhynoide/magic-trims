@@ -16,6 +16,8 @@ export interface ActivationCost {
   /** Points de vie à payer. */
   life: number;
   sacrificeSelf: boolean;
+  /** Défausser la carte (recyclage). */
+  discardSelf?: boolean;
   /** Un autre permanent à sacrifier (« Sacrifice a creature »), choisi à l'activation. */
   sacrifice?: PermanentFilter;
   /** Loyauté ajoutée (+1) ou retirée (−2) d'un planeswalker. */
@@ -29,8 +31,8 @@ export interface ActivatedAbility {
   costText: string;
   cost: ActivationCost;
   effects: SpellEffects;
-  /** D'où on l'active : le champ de bataille, ou le cimetière (« Return this card from your graveyard… »). */
-  zone: "battlefield" | "graveyard";
+  /** D'où on l'active : le champ de bataille, le cimetière (« Return this card from your graveyard… ») ou la main (recyclage). */
+  zone: "battlefield" | "graveyard" | "hand";
   /** Seulement à la vitesse d'un rituel (équipement, loyauté, « Activate only as a sorcery »). */
   sorcery: boolean;
   /** Une fois par tour (« Activate only once each turn », loyauté). */
@@ -73,6 +75,21 @@ export function parseActivationCost(text: string): ActivationCost | null {
  * « ~ »). `null` si la ligne n'en est pas une ou si son coût n'est pas compris.
  */
 export function parseActivatedLine(line: string, isPlaneswalker: boolean): ActivatedAbility | null {
+  // « Cycling {3} » : depuis la main, défausser la carte pour piocher.
+  const cycling = /^Cycling (\{[^}]+\}(?:\{[^}]+\})*)$/i.exec(line);
+  if (cycling) {
+    return {
+      text: line,
+      costText: cycling[1]!,
+      cost: { mana: cycling[1]!.replace(/\{0\}/g, ""), tap: false, life: 0, sacrificeSelf: false, discardSelf: true },
+      effects: { targets: [], effects: [{ type: "draw", who: "you", count: 1 }], unknown: [] },
+      zone: "hand",
+      sorcery: false,
+      oncePerTurn: false,
+      mana: false,
+      equip: false,
+    };
+  }
   const equip = /^Equip (\{[^}]+\}(?:\{[^}]+\})*)$/i.exec(line);
   if (equip) {
     return {

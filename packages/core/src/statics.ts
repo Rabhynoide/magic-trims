@@ -6,7 +6,7 @@
  * Ce module ne dépend que des types : le combat et les effets le consultent.
  */
 import { areTeammates } from "./modes.js";
-import { keywordList, oracleLines, selfToTilde } from "./text.js";
+import { keywordList, NUMBER_WORDS, oracleLines, selfToTilde } from "./text.js";
 import type { CardData, CardInstance, GameState, PlayerId } from "./types.js";
 
 export type StaticAbility =
@@ -34,7 +34,23 @@ export type StaticAbility =
   | { kind: "cantCast"; types: string[] }
   | { kind: "cantPlayLands" }
   /** « You can't cast more than one spell each turn. » */
-  | { kind: "oneSpellPerTurn" };
+  | { kind: "oneSpellPerTurn" }
+  /** « If a source would deal damage to you, it deals double that damage to you instead. » (`self` : à ce permanent) */
+  | { kind: "doubleDamage"; self: boolean }
+  /** « Prevent all damage that would be dealt to you. » ; `counter` : Nine Lives (un marqueur à la place). */
+  | { kind: "preventToYou"; counter?: string }
+  /** « Prevent all combat damage that would be dealt to and dealt by creatures you control. » */
+  | { kind: "preventCombatCreatures" }
+  /** « If an instant or sorcery source you control would deal damage…, it deals that much damage plus 2… » */
+  | { kind: "spellDamageBonus"; amount: number }
+  /** « When there are nine or more incarnation counters on ~, exile it. » */
+  | { kind: "exileAtCounters"; counter: string; count: number }
+  | { kind: "playerShroud" }
+  | { kind: "skipDraw" }
+  /** « Creatures you control can't attack. » */
+  | { kind: "creaturesCantAttack" }
+  /** « No more than one creature can attack (block) each combat. » */
+  | { kind: "maxOne"; attack: boolean };
 
 const COLOR_WORDS: Record<string, string> = { white: "W", blue: "U", black: "B", red: "R", green: "G" };
 const SPELL_TYPES = ["creature", "artifact", "enchantment", "instant", "sorcery", "planeswalker", "battle"];
@@ -80,6 +96,22 @@ export function parseStaticLine(line: string): StaticAbility | null {
     return { kind: "attackTax", amount: parseInt(m[1]!, 10) };
   }
   if (/^your opponents can't gain life$/i.test(l)) return { kind: "opponentsCantGainLife" };
+  if (/^if a source would deal damage to you, it deals double that damage to you instead$/i.test(l)) return { kind: "doubleDamage", self: false };
+  if (/^if a source would deal damage to ~, it deals double that damage to ~ instead$/i.test(l)) return { kind: "doubleDamage", self: true };
+  if (/^prevent all damage that would be dealt to you$/i.test(l)) return { kind: "preventToYou" };
+  if ((m = /^if a source would deal damage to you, prevent that damage and put an? (\w+) counter on ~$/i.exec(l))) return { kind: "preventToYou", counter: m[1]!.toLowerCase() };
+  if (/^prevent all combat damage that would be dealt to and dealt by creatures you control$/i.test(l)) return { kind: "preventCombatCreatures" };
+  if ((m = /^if an instant or sorcery source you control would deal damage to a permanent or player, it deals that much damage plus (\d+) to that permanent or player instead$/i.exec(l))) {
+    return { kind: "spellDamageBonus", amount: parseInt(m[1]!, 10) };
+  }
+  if ((m = /^when there are (\w+) or more (\w+) counters on ~, exile it$/i.exec(l))) {
+    const n = NUMBER_WORDS[m[1]!.toLowerCase()] ?? parseInt(m[1]!, 10);
+    if (Number.isFinite(n)) return { kind: "exileAtCounters", counter: m[2]!.toLowerCase(), count: n };
+  }
+  if (/^you have shroud$/i.test(l)) return { kind: "playerShroud" };
+  if (/^skip your draw step$/i.test(l)) return { kind: "skipDraw" };
+  if (/^creatures you control can't attack$/i.test(l)) return { kind: "creaturesCantAttack" };
+  if ((m = /^no more than one creature can (attack|block) each combat$/i.exec(l))) return { kind: "maxOne", attack: m[1]!.toLowerCase() === "attack" };
   if (/^~ can't (attack|block)( or (attack|block))?$/i.test(l)) return { kind: "restriction" };
   if (/^~'s power and toughness are each equal to the number of cards in your hand$/i.test(l)) return { kind: "ptEqualsHand" };
   if ((m = /^((?:white|blue|black|red|green) )?((?:non)?[a-z]+ )?spells you cast cost \{(\d+)\} less to cast$/i.exec(l))) {
@@ -229,4 +261,73 @@ export function costReduction(g: GameState, playerId: PlayerId, spell: { typeLin
     }
   }
   return total;
+}
+
+/** D'où viennent des blessures : pour les effets qui les modifient. */
+export interface DamageSource {
+  controllerId: PlayerId;
+  /** Un éphémère ou un rituel (Pyromancer's Swath). */
+  spell: boolean;
+  /** La créature qui inflige des blessures de combat. */
+  creature?: CardInstance;
+  combat: boolean;
+}
+
+/**
+ * Les blessures réellement infligées après les effets de remplacement et de
+ * prévention (Goldnight Castigator, Glacial Chasm, Statecraft, Nine Lives…).
+ * Peut poser des marqueurs (Nine Lives) : appelé seulement sur l'état modifiable.
+ */
+export function modifyDamage(g: GameState, source: DamageSource, target: { player?: PlayerId; card?: CardInstance }, amount: number): number {
+  if (amount <= 0) return 0;
+  let n = amount;
+  // + 2 pour un éphémère ou un rituel (avant le double : l'ordre est au choix du joueur, on prend le plus fort).
+  if (source.spell) {
+    for (const c of g.players[source.controllerId]!.zones.battlefield.map((id) => g.cards[id]!)) {
+      for (const s of staticsOf(g, c)) if (s.kind === "spellDamageBonus") n += s.amount;
+    }
+  }
+  // Statecraft : rien de ce qu'inflige une créature (ou qu'on lui inflige) en combat.
+  if (source.combat) {
+    const protects = (playerId: PlayerId) => controls(g, playerId, "preventCombatCreatures");
+    if (source.creature && protects(source.creature.controllerId)) return 0;
+    if (target.card && protects(target.card.controllerId) && /\bCreature\b/.test(typeLineOf(g, target.card))) return 0;
+  }
+  if (target.player) {
+    const owner = g.players[target.player]!;
+    for (const c of owner.zones.battlefield.map((id) => g.cards[id]!)) {
+      for (const s of staticsOf(g, c)) {
+        if (s.kind !== "preventToYou") continue;
+        if (s.counter) c.counters[s.counter] = (c.counters[s.counter] ?? 0) + 1;
+        return 0;
+      }
+    }
+    for (const c of owner.zones.battlefield.map((id) => g.cards[id]!)) {
+      for (const s of staticsOf(g, c)) if (s.kind === "doubleDamage" && !s.self) n *= 2;
+    }
+  }
+  if (target.card) {
+    for (const s of staticsOf(g, target.card)) if (s.kind === "doubleDamage" && s.self) n *= 2;
+  }
+  return n;
+}
+
+/** Le joueur a-t-il le linceul (Solitary Confinement) ? */
+export function playerHasShroud(g: GameState, playerId: PlayerId): boolean {
+  return controls(g, playerId, "playerShroud");
+}
+
+/** Le joueur passe-t-il son étape de pioche ? */
+export function skipsDrawStep(g: GameState, playerId: PlayerId): boolean {
+  return controls(g, playerId, "skipDraw");
+}
+
+/** Les créatures de ce joueur ne peuvent pas attaquer (Glacial Chasm). */
+export function creaturesCantAttack(g: GameState, playerId: PlayerId): boolean {
+  return controls(g, playerId, "creaturesCantAttack");
+}
+
+/** Au plus une créature attaque (bloque) à chaque combat (Silent Arbiter). */
+export function maxOneCreature(g: GameState, attack: boolean): boolean {
+  return battlefield(g).some((c) => staticsOf(g, c).some((s) => s.kind === "maxOne" && s.attack === attack));
 }

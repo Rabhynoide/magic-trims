@@ -2,7 +2,7 @@
  * Combat : caractéristiques des créatures et mots-clés reconnus par le moteur.
  * Fonctions pures, sans modification de la partie.
  */
-import { grantedTo, staticsOf } from "./statics.js";
+import { creaturesCantAttack, grantedTo, staticsOf } from "./statics.js";
 import type { CardInstance, CardInstanceId, GameState, PlayerId } from "./types.js";
 
 export interface CombatState {
@@ -139,7 +139,7 @@ export function cantBlock(g: GameState, card: CardInstance): boolean {
 
 /** « This creature can't attack. » */
 export function cantAttack(g: GameState, card: CardInstance): boolean {
-  return hasRestriction(g, card, "attack");
+  return hasRestriction(g, card, "attack") || creaturesCantAttack(g, card.controllerId);
 }
 
 /** La créature peut-elle attaquer maintenant (dégagée, sans mal d'invocation, sans défenseur) ? */

@@ -12,6 +12,7 @@ import { manaOptions } from "./mana.js";
 import { parsePermanentAbilities } from "./triggers.js";
 import { areTeammates } from "./modes.js";
 import { joinModes, keywordList, selfToTilde } from "./text.js";
+import { playerHasShroud } from "./statics.js";
 
 export { selfToTilde };
 import type { CardData, CardInstance, GameState, PlayerId } from "./types.js";
@@ -101,7 +102,7 @@ export type Effect =
   | { type: "exileAll"; filter: PermanentFilter }
   | { type: "bounce"; target: number }
   | { type: "damage"; target: number | "event" | "you"; amount: Amount }
-  | { type: "damageEach"; who: "opponents" | "players" | "creatures"; amount: Amount }
+  | { type: "damageEach"; who: "opponents" | "players" | "creatures" | "yourOtherCreatures"; amount: Amount }
   | { type: "life"; who: Who; amount: Amount }
   | { type: "token"; count: Amount; token: TokenSpec; tapped: boolean; forOpponents?: boolean }
   | { type: "counter"; target: number }
@@ -140,7 +141,7 @@ export type Effect =
   /** « Until end of turn, whenever a player taps a Swamp for mana, that player adds an additional {B}. » */
   | { type: "manaBonus"; subtype: string; mana: string }
   /** Une carte d'un cimetière va sur le champ de bataille (sous le contrôle du lanceur) ou dans la main de son propriétaire. */
-  | { type: "fromGraveyard"; target: number; to: "battlefield" | "hand" }
+  | { type: "fromGraveyard"; target: number; to: "battlefield" | "hand" | "libraryTop" }
   /** « Search your library for a land card, put it into your hand » : le lanceur choisit dans la fenêtre de choix. */
   | { type: "search"; types: string[]; to: "hand" | "battlefield"; reveal: boolean }
   | { type: "shuffle" }
@@ -148,6 +149,16 @@ export type Effect =
   | { type: "revealHand"; who: Who }
   /** « You choose a creature or planeswalker card from it. That player discards that card. » */
   | { type: "chooseDiscard"; who: Who; types: string[] }
+  | { type: "discardHand"; who: Who }
+  /** « Flip a coin. If you lose the flip, ~ deals 3 damage to you. » */
+  | { type: "coinFlipDamage"; amount: number }
+  /** « Shuffle ~ and your graveyard into their owner's library. » */
+  | { type: "shuffleSelfAndGraveyard" }
+  | { type: "exileGraveyards" }
+  /** « Each opponent mills cards equal to the number of cards in their hand. » */
+  | { type: "mill"; who: Who; count: Amount | "theirHand" }
+  /** « Untap up to three lands. » (les terrains engagés du lanceur, choisis d'office) */
+  | { type: "untapLands"; count: number }
   /** Jeton prédéfini : Treasure, Food, Clue, Blood. */
   | { type: "namedToken"; name: string; count: Amount; tapped: boolean }
   /** « Scry 2 » : le contrôleur range les cartes du dessus avant le reste de la résolution (seulement en premier effet). */
@@ -308,11 +319,30 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
   if ((m = new RegExp(`^that player draws ${NUM} (?:additional )?cards?$`, "i").exec(s))) {
     return [{ type: "draw", who: "event", count: amount(m[1]!) }];
   }
-  if ((m = /^(?:return|put) (.+? from (?:your|a) graveyard) (?:to|onto) (the battlefield|your hand)(?: under your control)?$/i.exec(s))) {
+  if ((m = /^(?:return|put) (.+? from (?:your|a) graveyard) (?:to|onto|on top of) (the battlefield|your hand|your library)(?: under your control)?$/i.exec(s))) {
     const filter = parseGraveyardTarget(m[1]!);
     if (filter) {
-      return [{ type: "fromGraveyard", target: target({ label: graveyardLabel(filter), graveyard: filter }), to: /hand/i.test(m[2]!) ? "hand" : "battlefield" }];
+      const to = /hand/i.test(m[2]!) ? "hand" : /library/i.test(m[2]!) ? "libraryTop" : "battlefield";
+      return [{ type: "fromGraveyard", target: target({ label: graveyardLabel(filter), graveyard: filter }), to }];
     }
+  }
+  if ((m = /^(?:you )?draw that many cards$/i.exec(s))) return [{ type: "draw", who: "you", count: "event" }];
+  if (/^(?:you )?draw an additional card$/i.test(s)) return [{ type: "draw", who: "you", count: 1 }];
+  if (/^discard your hand$/i.test(s)) return [{ type: "discardHand", who: "you" }];
+  if (/^shuffle ~ and your graveyard into (?:their|its) owner's library$/i.test(s)) return [{ type: "shuffleSelfAndGraveyard" }];
+  if (/^exile all graveyards$/i.test(s)) return [{ type: "exileGraveyards" }];
+  if (/^each opponent mills cards equal to the number of cards in their hand$/i.test(s)) return [{ type: "mill", who: "opponents", count: "theirHand" }];
+  if ((m = new RegExp(`^(target player|each opponent|you) mills? ${NUM} cards?$`, "i").exec(s))) {
+    const w = m[1]!.toLowerCase();
+    const who: Who = w === "you" ? "you" : w === "each opponent" ? "opponents" : { target: target({ label: "joueur", player: true }) };
+    return [{ type: "mill", who, count: amount(m[2]!) }];
+  }
+  if ((m = new RegExp(`^untap up to ${NUM} lands$`, "i").exec(s))) {
+    const n = amount(m[1]!);
+    if (typeof n === "number") return [{ type: "untapLands", count: n }];
+  }
+  if ((m = new RegExp(`^~ deals ${NUM} damage to each other creature you control$`, "i").exec(s))) {
+    return [{ type: "damageEach", who: "yourOtherCreatures", amount: amount(m[1]!) }];
   }
   if ((m = /^return (?:it|that card) to the battlefield( tapped)? under (your|its owner's) control$/i.exec(s))) {
     return [{ type: "returnEventCard", tapped: !!m[1], owner: /owner/i.test(m[2]!) }];
@@ -491,6 +521,11 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     if ((m = /^search your library for an? ((?:basic )?(?:land|creature|artifact|enchantment|instant|sorcery|planeswalker) )?card(?:,| and) (reveal it, )?(?:then )?put (?:it|that card) (into your hand|onto the battlefield)$/i.exec(s))) {
       const types = (m[1] ?? "").trim().toLowerCase().replace(/^basic /, "").split(" ").filter(Boolean);
       result.effects.push({ type: "search", types, to: /hand/i.test(m[3]!) ? "hand" : "battlefield", reveal: !!m[2] });
+      continue;
+    }
+    if (/^flip a coin$/i.test(s)) continue;
+    if ((m = /^if you lose the flip, ~ deals (\d+) damage to you$/i.exec(s))) {
+      result.effects.push({ type: "coinFlipDamage", amount: parseInt(m[1]!, 10) });
       continue;
     }
     if (/^shuffle$/i.test(s)) {
@@ -743,6 +778,7 @@ export function isLegalTarget(g: GameState, spec: TargetSpec, target: Target, ca
   if (target.kind === "player") {
     const p = g.players[target.id];
     if (!spec.player || !p || p.hasConceded) return false;
+    if (!spec.choice && playerHasShroud(g, p.id)) return false;
     return !spec.opponent || (p.id !== casterId && !areTeammates(g, p.id, casterId));
   }
   const card = g.cards[target.id];
