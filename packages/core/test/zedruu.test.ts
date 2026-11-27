@@ -251,7 +251,7 @@ describe("Deck Zedruu : blessures modifiées et effets simples", () => {
     g = mana(g, "p1", "R");
     expect(refuse(g, "p1", { type: "castSpell", cardId: bolt, targets: [{ kind: "player", id: "p2" }] })).toMatch(/Cible invalide/);
     const hand = g.players.p2!.zones.hand.length;
-    g = act(g, "p1", { type: "passTurn" });
+    g = endTurn(g, "p1");
     g = resolveAll(g);
     // Entretien : p2 défausse une carte pour la garder.
     const upkeep = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.awaitingDecision)!;
@@ -270,8 +270,8 @@ describe("Deck Zedruu : blessures modifiées et effets simples", () => {
     g = structuredClone(g);
     // Endurance : la taille de la main ; on vérifie seulement la pioche.
     const hand = g.players.p1!.zones.hand.length;
-    g = act(g, "p1", { type: "passTurn" });
-    g = act(g, "p2", { type: "passTurn" });
+    g = endTurn(g, "p1");
+    g = endTurn(g, "p2");
     g = resolveAll(g);
     // Pioche du tour + 2 cartes pour les 2 blessures de Cinder Giant.
     expect(g.players.p1!.zones.hand.length).toBeGreaterThanOrEqual(hand + 2);
@@ -357,8 +357,8 @@ describe("Deck Zedruu : « à moins qu'il paie », entretien cumulatif, Path to 
     let g = newTestGame(2);
     let conf: string;
     [g, conf] = put(g, "p1", real("Solitary Confinement"));
-    g = act(g, "p1", { type: "passTurn" });
-    g = act(g, "p2", { type: "passTurn" });
+    g = endTurn(g, "p1");
+    g = endTurn(g, "p2");
     g = resolveAll(g);
     const p = pending(g)!;
     expect(p).toBeDefined();
@@ -373,16 +373,16 @@ describe("Deck Zedruu : « à moins qu'il paie », entretien cumulatif, Path to 
     let g = newTestGame(2);
     let chasm: string;
     [g, chasm] = put(g, "p1", real("Glacial Chasm", { oracleText: "Cumulative upkeep—Pay 2 life." }));
-    g = act(g, "p1", { type: "passTurn" });
-    g = act(g, "p2", { type: "passTurn" });
+    g = endTurn(g, "p1");
+    g = endTurn(g, "p2");
     g = resolveAll(g);
     let p = pending(g)!;
     g = act(g, "p1", { type: "decideOptional", cardId: p.instanceId, accept: true });
     g = resolveAll(g);
     expect(g.players.p1!.life).toBe(38);
     expect(g.cards[chasm]!.counters["âge"]).toBe(1);
-    g = act(g, "p1", { type: "passTurn" });
-    g = act(g, "p2", { type: "passTurn" });
+    g = endTurn(g, "p1");
+    g = endTurn(g, "p2");
     g = resolveAll(g);
     p = pending(g)!;
     g = act(g, "p1", { type: "decideOptional", cardId: p.instanceId, accept: false });
@@ -496,8 +496,8 @@ describe("Deck Zedruu : échanges de contrôle sous condition", () => {
     [g, , ] = put(g, "p1", real("Puca's Mischief"));
     [g, ring] = put(g, "p1", real("Sol Ring"));
     [g, big] = put(g, "p2", fakeCard("Gros", { typeLine: "Artifact", manaCost: "{5}", manaValue: 5 }));
-    g = act(g, "p1", { type: "passTurn" });
-    g = act(g, "p2", { type: "passTurn" });
+    g = endTurn(g, "p1");
+    g = endTurn(g, "p2");
     g = resolveAll(g);
     let trigger = g.stack.at(-1)!;
     if (g.cards[trigger]!.ability?.needsTargets) {
