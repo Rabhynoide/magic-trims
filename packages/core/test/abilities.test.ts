@@ -58,7 +58,7 @@ function inHand(g: GameState, playerId: string, card: CardData, n = 0): [GameSta
 
 function resolveAll(g: GameState, max = 100): GameState {
   for (let i = 0; i < max && g.priority && g.stack.length > 0; i++) {
-    if (g.stack.some((id) => g.cards[id]!.ability?.awaitingDecision)) break;
+    if (g.stack.some((id) => g.cards[id]!.ability?.awaitingDecision || (g.cards[id]!.scry && !g.cards[id]!.scry!.done))) break;
     g = act(g, g.priority.playerId, { type: "passPriority" });
   }
   return g;
@@ -362,10 +362,81 @@ describe("Cartes Sheoldred restantes", () => {
   });
 });
 
+describe("Regard, Wound Reflection, Teferi's Puzzle Box", () => {
+  it("Read the Bones : le regard attend le choix du joueur, puis il pioche les cartes gardées", () => {
+    let g = toMain(newTestGame(2));
+    let bones: string;
+    [g, bones] = inHand(g, "p1", real("Read the Bones"));
+    g = mana(g, "p1", "BBB");
+    const [a, b, c] = g.players.p1!.zones.library;
+    g = act(g, "p1", { type: "castSpell", cardId: bones });
+    g = resolveAll(g);
+    expect(g.cards[bones]!.zone).toBe("stack");
+    expect(g.cards[bones]!.scry).toEqual({ count: 2 });
+    expect(g.cards[a!]!.revealedTo).toContain("p1");
+    expect(refuse(g, g.priority!.playerId, { type: "passPriority" })).toMatch(/regard/);
+    expect(refuse(g, "p1", { type: "scry", cardId: bones, top: [a!, c!], bottom: [] })).toMatch(/Range exactement/);
+    expect(refuse(g, "p2", { type: "scry", cardId: bones, top: [a!], bottom: [b!] })).toMatch(/contrôleur/);
+    g = act(g, "p1", { type: "scry", cardId: bones, top: [b!], bottom: [a!] });
+    expect(g.cards[bones]!.zone).toBe("graveyard");
+    expect(g.cards[bones]!.scry).toBeUndefined();
+    const hand = g.players.p1!.zones.hand;
+    expect(hand).toContain(b!);
+    expect(hand).toContain(c!);
+    expect(g.players.p1!.zones.library.at(-1)).toBe(a!);
+    expect(g.players.p1!.life).toBe(38);
+  });
+
+  it("le bot garde les cartes de son regard au-dessus", () => {
+    let g = toMain(newTestGame(2));
+    let bones: string;
+    [g, bones] = inHand(g, "p1", real("Read the Bones"));
+    g = mana(g, "p1", "BBB");
+    g = act(g, "p1", { type: "castSpell", cardId: bones });
+    g = resolveAll(g);
+    const action = chooseBotAction(g, "p1");
+    expect(action?.type).toBe("scry");
+    g = act(g, "p1", action!);
+    expect(g.cards[bones]!.zone).toBe("graveyard");
+  });
+
+  it("Wound Reflection : à l'étape de fin, chaque adversaire reperd les PV perdus ce tour", () => {
+    let g = toMain(newTestGame(3));
+    [g] = put(g, "p1", real("Wound Reflection"));
+    g = act(g, "p1", { type: "adjustLife", playerId: "p2", delta: -3 });
+    g = act(g, "p1", { type: "adjustLife", playerId: "p2", delta: 1 });
+    g = act(g, "p1", { type: "nextStep", to: "end" });
+    g = resolveAll(g);
+    expect(g.players.p2!.life).toBe(35);
+    expect(g.players.p3!.life).toBe(40);
+    expect(g.players.p1!.life).toBe(40);
+  });
+
+  it("Teferi's Puzzle Box : à sa pioche, le joueur remplace sa main", () => {
+    let g = toMain(newTestGame(2));
+    [g] = put(g, "p1", real("Teferi's Puzzle Box"));
+    g = act(g, "p1", { type: "passTurn" });
+    g = resolveAll(g);
+    const before = [...g.players.p2!.zones.hand];
+    if (g.turn.step !== "draw") g = act(g, "p2", { type: "nextStep", to: "draw" });
+    g = resolveAll(g);
+    const after = g.players.p2!.zones.hand;
+    expect(after.length).toBe(before.length + 1);
+    expect(after.filter((id) => before.includes(id)).length).toBeLessThanOrEqual(1);
+  });
+
+  it("les cartes sont reconnues en entier", () => {
+    for (const name of ["Read the Bones", "Wound Reflection", "Teferi's Puzzle Box"]) {
+      const c = real(name);
+      expect(cardSupport(c).level, name).toBe("full");
+    }
+  });
+});
+
 describe("Deck Sheoldred", () => {
   it("la plupart des cartes sont gérées en entier", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "" })).level);
     const full = levels.filter((l) => l === "full").length;
-    expect(full).toBeGreaterThanOrEqual(52);
+    expect(full).toBeGreaterThanOrEqual(55);
   });
 });

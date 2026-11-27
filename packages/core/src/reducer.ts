@@ -552,6 +552,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     getPlayer(g, playerId);
     const sharers = lifeSharers(g, playerId);
     for (const p of sharers) p.life += delta;
+    if (delta < 0) noteLifeLost(g, playerId, -delta);
     const who = names(sharers);
     const verb = sharers.length > 1 ? (delta >= 0 ? "gagnent" : "perdent") : delta >= 0 ? "gagne" : "perd";
     log(g, actor.id, `${who} ${verb} ${Math.abs(delta)} PV (${sharers[0]!.life}).`);
@@ -667,9 +668,30 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     resolveAbility(g, card);
   },
 
+  scry(g, actor, { cardId, top, bottom }) {
+    const card = getCard(g, cardId);
+    if (!card.scry || card.scry.done || card.zone !== "stack") throw new ActionError("Aucun regard n'est en attente pour ce sort.");
+    if (card.controllerId !== actor.id) throw new ActionError("Seul son contrôleur range les cartes du regard.");
+    const library = actor.zones.library;
+    const looked = library.slice(0, card.scry.count);
+    const chosen = [...top, ...bottom];
+    if (chosen.length !== looked.length || new Set(chosen).size !== chosen.length || chosen.some((id) => !looked.includes(id))) {
+      throw new ActionError(`Range exactement les ${plural(looked.length, "carte")} du dessus de ta bibliothèque.`);
+    }
+    library.splice(0, looked.length);
+    library.unshift(...top);
+    library.push(...bottom);
+    card.scry.done = true;
+    log(g, actor.id, `${actor.name} garde ${plural(top.length, "carte")} au-dessus et en met ${bottom.length} au-dessous.`);
+    if (card.ability) resolveAbility(g, card);
+    else resolveTop(g, card.instanceId);
+  },
+
   passPriority(g, actor) {
     const priority = g.priority;
     if (!priority) throw new ActionError("La pile est vide : personne n'a la priorité.");
+    const scrying = g.stack.map((id) => g.cards[id]!).find((c) => c.scry && !c.scry.done);
+    if (scrying) throw new ActionError(`${g.players[scrying.controllerId]!.name} doit d'abord ranger les cartes de son regard.`);
     const deciding = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.awaitingDecision);
     if (deciding) {
       throw new ActionError(`${g.players[deciding.controllerId]!.name} doit d'abord décider pour la capacité de ${deciding.ability!.sourceName}.`);
@@ -915,6 +937,7 @@ export function moveCardTo(
     owner.commanderCasts[card.instanceId] = (owner.commanderCasts[card.instanceId] ?? 0) + 1;
   }
 
+  if (from === "stack") delete card.scry;
   card.controllerId = to === "battlefield" || to === "stack" ? (options.controllerId ?? card.controllerId) : card.ownerId;
   if (from === "battlefield" && to !== "battlefield") card.controllerId = card.ownerId;
   card.zone = to;
@@ -1122,7 +1145,16 @@ function updatePriority(before: GameState, g: GameState, actor: PlayerState): vo
  * cimetière pour un éphémère ou un rituel) et les joueurs appliquent l'effet.
  */
 /** Note un événement qui peut déclencher des capacités (seulement quand l'hôte fait respecter les règles). */
+/** Note les points de vie perdus ce tour (Wound Reflection). */
+function noteLifeLost(g: GameState, playerId: PlayerId, amount: number): void {
+  for (const p of lifeSharers(g, playerId)) {
+    const before = p.lifeLost?.turn === g.turn.number ? p.lifeLost.amount : 0;
+    p.lifeLost = { turn: g.turn.number, amount: before + amount };
+  }
+}
+
 function emit(g: GameState, event: TriggerEvent): void {
+  if (event.type === "lifeLoss") noteLifeLost(g, event.playerId, event.amount);
   if (!g.settings.enforceRules) return;
   (g.events ??= []).push(event);
 }
@@ -1264,6 +1296,7 @@ function resolveAbility(g: GameState, card: CardInstance): void {
   if (targets.length > 0 && legal.every((ok) => !ok)) {
     log(g, null, `La capacité de ${ability.sourceName} n'a plus de cible valide : elle ne fait rien.`);
   } else {
+    if (startScry(g, card, effects)) return;
     log(g, null, `La capacité de ${ability.sourceName} se résout.`);
     applySpellEffects(g, card, effects.effects, targets, legal);
     if (effects.unknown.length > 0) log(g, null, `À appliquer à la main pour ${ability.sourceName} : « ${effects.unknown.join(" ")} »`);
@@ -1424,13 +1457,29 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         break;
       }
       case "life": {
-        const n = amountOf(effect.amount);
-        for (const p of whoOf(effect.who)) {
+        // « the life they lost this turn » : relevé pour chacun avant d'appliquer les pertes.
+        const amounts = whoOf(effect.who).map((p) => ({
+          p,
+          n: effect.amount === "-lostThisTurn" ? -(p.lifeLost?.turn === g.turn.number ? p.lifeLost.amount : 0) : amountOf(effect.amount),
+        }));
+        for (const { p, n } of amounts) {
           changeLife(g, p.id, n);
           if (n < 0) lost += -n;
         }
         break;
       }
+      case "wheelHand": {
+        for (const p of whoOf(effect.who)) {
+          const n = p.zones.hand.length;
+          for (const id of [...p.zones.hand]) moveCardTo(g, id, "library", "bottom");
+          log(g, null, `${p.name} met ${plural(n, "carte")} de sa main au-dessous de sa bibliothèque.`);
+          drawCards(g, p, n);
+        }
+        break;
+      }
+      case "scry":
+        // Déjà fait avant la résolution (voir startScry).
+        break;
       case "loseLifeManaValue": {
         const t = targets[effect.target];
         const target = t?.kind === "card" ? g.cards[t.id] : undefined;
@@ -1590,8 +1639,25 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
   }
 }
 
-function resolveTop(g: GameState): void {
-  const id = g.stack.at(-1)!;
+/**
+ * Un sort ou une capacité qui commence par « Scry N » : on montre les cartes
+ * du dessus à son contrôleur et la résolution attend qu'il les range.
+ * Retourne vrai si la résolution doit attendre.
+ */
+function startScry(g: GameState, card: CardInstance, effects: SpellEffects): boolean {
+  const first = effects.effects[0];
+  if (first?.type !== "scry" || card.scry?.done) return false;
+  const player = g.players[card.controllerId]!;
+  const count = Math.min(first.count, player.zones.library.length);
+  if (count === 0) return false;
+  card.scry = { count };
+  for (const id of player.zones.library.slice(0, count)) addRevealed(g.cards[id]!, [player.id]);
+  log(g, null, `${player.name} regarde les ${plural(count, "carte")} du dessus de sa bibliothèque (regard ${first.count}).`);
+  return true;
+}
+
+function resolveTop(g: GameState, stackId?: CardInstanceId): void {
+  const id = stackId ?? g.stack.at(-1)!;
   const card = g.cards[id]!;
   if (card.ability) return resolveAbility(g, card);
   const name = cardName(g, card);
@@ -1611,6 +1677,7 @@ function resolveTop(g: GameState): void {
       log(g, null, `${name} n'a plus de cible valide : il ne fait rien.`);
       return;
     }
+    if (startScry(g, card, effects)) return;
     log(g, null, `${name} se résout.`);
     applySpellEffects(g, card, effects.effects, targets, legal);
     if (g.cards[id]?.zone === "stack") moveCardTo(g, id, "graveyard", "top");

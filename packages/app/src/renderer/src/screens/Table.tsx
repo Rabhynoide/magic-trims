@@ -439,6 +439,80 @@ function DecisionBanner(props: { view: GameView }) {
   );
 }
 
+/**
+ * Regard (« Scry 2 ») : je range les cartes du dessus de ma bibliothèque,
+ * au-dessus (dans l'ordre choisi) ou au-dessous ; les autres voient que j'y réfléchis.
+ */
+function ScryPanel(props: { view: GameView }) {
+  const { view } = props;
+  const scrying = view.stack.find((c): c is VisibleCardView => !c.hidden && Boolean(c.scry && !c.scry.done));
+  const mine = scrying?.controllerId === view.viewerId;
+  const looked = mine ? view.players[view.viewerId]!.zones.library.slice(0, scrying!.scry!.count) : [];
+  const ids = looked.map((c) => c.instanceId ?? "").join(",");
+  const [top, setTop] = useState<string[]>([]);
+  const [bottom, setBottom] = useState<string[]>([]);
+  useEffect(() => {
+    setTop(ids ? ids.split(",") : []);
+    setBottom([]);
+  }, [ids]);
+  if (!scrying) return null;
+  const name = cardName(view, scrying);
+  if (!mine) {
+    return (
+      <div className="targeting-banner" role="status">
+        <span>
+          {view.players[scrying.controllerId]?.name} range les cartes de son regard (<strong>{name}</strong>).
+        </span>
+      </div>
+    );
+  }
+  const byId = new Map(looked.map((c) => [c.instanceId ?? "", c]));
+  const move = (id: string, to: "top" | "bottom") => {
+    setTop((t) => (to === "top" ? [...t.filter((x) => x !== id), id] : t.filter((x) => x !== id)));
+    setBottom((b) => (to === "bottom" ? [...b.filter((x) => x !== id), id] : b.filter((x) => x !== id)));
+  };
+  const shift = (list: string[], set: (l: string[]) => void, i: number, d: number) => {
+    const j = i + d;
+    if (j < 0 || j >= list.length) return;
+    const next = [...list];
+    [next[i], next[j]] = [next[j]!, next[i]!];
+    set(next);
+  };
+  const row = (list: string[], set: (l: string[]) => void, where: "top" | "bottom") =>
+    list.map((id, i) => {
+      const card = byId.get(id);
+      if (!card) return null;
+      return (
+        <div key={id} className="scry-card">
+          <Card view={view} card={card} size="medium" />
+          <div className="scry-buttons">
+            <button onClick={() => shift(list, set, i, -1)} disabled={i === 0} aria-label="Plus haut">
+              ◀
+            </button>
+            <button onClick={() => move(id, where === "top" ? "bottom" : "top")}>{where === "top" ? "Dessous" : "Dessus"}</button>
+            <button onClick={() => shift(list, set, i, 1)} disabled={i === list.length - 1} aria-label="Plus bas">
+              ▶
+            </button>
+          </div>
+        </div>
+      );
+    });
+  return (
+    <Modal title={`Regard ${scrying.scry!.count} (${name})`} onClose={() => {}} wide>
+      <p className="hint">Range chaque carte au-dessus ou au-dessous de ta bibliothèque. À gauche, la carte la plus haute.</p>
+      <h3>Au-dessus</h3>
+      <div className="zone-grid">{top.length > 0 ? row(top, setTop, "top") : <p className="hint">Aucune carte.</p>}</div>
+      <h3>Au-dessous</h3>
+      <div className="zone-grid">{bottom.length > 0 ? row(bottom, setBottom, "bottom") : <p className="hint">Aucune carte.</p>}</div>
+      <div className="row">
+        <button className="primary" onClick={() => void act({ type: "scry", cardId: scrying.instanceId!, top, bottom })}>
+          Valider
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 /** Bandeau du choix des cibles, avec Annuler (ou Échap). */
 function TargetingBanner() {
   const { targeting } = useUi();
@@ -499,6 +573,7 @@ export function Table() {
       <div className="table-main">
         <TargetingBanner />
         {!targeting && <DecisionBanner view={view} />}
+        <ScryPanel view={view} />
         {trigger.waitingName && !targeting && (
           <div className="targeting-banner" role="status">
             <span>
