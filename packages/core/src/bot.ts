@@ -9,8 +9,8 @@
  */
 import type { GameAction } from "./actions.js";
 import { canAttack, cantBlock, creatureStats, hasKeyword, isCreature } from "./combat.js";
-import { isLegalTarget, type Target } from "./effects.js";
-import { abilitiesOf } from "./triggers.js";
+import { isLegalTarget, spellEffectsOf, type Target } from "./effects.js";
+import { abilitiesOf, stackTrigger } from "./triggers.js";
 import { areTeammates, isActivePlayer, teamOf } from "./modes.js";
 import { applyAction } from "./reducer.js";
 import { MAX_HAND_SIZE } from "./turn.js";
@@ -31,7 +31,7 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
   // Ses capacités déclenchées qui attendent des cibles : un adversaire de préférence.
   const waiting = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.needsTargets && c.controllerId === botId);
   if (waiting) {
-    const specs = abilitiesOf(g.cardData[waiting.cardId], waiting.ability!.faceIndex).triggers[waiting.ability!.index]?.effects.targets ?? [];
+    const specs = stackTrigger(g.cardData[waiting.cardId], waiting.ability!)?.effects.targets ?? [];
     const players = [...g.turnOrder].sort((a, b) => Number(areTeammates(g, a, botId) || a === botId) - Number(areTeammates(g, b, botId) || b === botId));
     const candidates = [
       ...players.map((id) => ({ kind: "player", id }) as Target),
@@ -44,11 +44,24 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
   // Ses capacités facultatives : oui, sauf s'il faut sacrifier (ou payer sans le pouvoir).
   const deciding = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.awaitingDecision && c.controllerId === botId);
   if (deciding) {
-    const trigger = abilitiesOf(g.cardData[deciding.cardId], deciding.ability!.faceIndex).triggers[deciding.ability!.index];
+    const trigger = stackTrigger(g.cardData[deciding.cardId], deciding.ability!);
     const sacrifice = trigger?.effects.effects.some((e) => e.type === "sacrifice");
-    const yes: GameAction = { type: "decideOptional", cardId: deciding.instanceId, accept: true };
+    const x = trigger?.payMana && /\{X\}/i.test(trigger.payMana) ? (deciding.ability!.eventAmount ?? 0) : undefined;
+    const yes: GameAction = { type: "decideOptional", cardId: deciding.instanceId, accept: true, ...(x !== undefined ? { x } : {}) };
     if (!sacrifice && applyAction(g, { actorId: botId, action: yes }).ok) return yes;
     return { type: "decideOptional", cardId: deciding.instanceId, accept: false };
+  }
+
+  // La fenêtre de choix : la première carte proposée.
+  const picking = g.stack.map((id) => g.cards[id]!).find((c) => c.cardChoice && c.controllerId === botId);
+  if (picking) return { type: "chooseCards", cardId: picking.instanceId, cardIds: picking.cardChoice!.options.slice(0, 1) };
+
+  // Ses modes : le premier (ou le nombre minimum).
+  const choosing = g.stack.map((id) => g.cards[id]!).find((c) => c.modes && !c.modes.chosen && c.controllerId === botId);
+  if (choosing) {
+    const effects = choosing.ability ? stackTrigger(g.cardData[choosing.cardId], choosing.ability)?.effects : spellEffectsOf(g, choosing);
+    const n = Math.max(1, effects?.modes?.min ?? 1);
+    return { type: "chooseModes", cardId: choosing.instanceId, modes: Array.from({ length: n }, (_, i) => i) };
   }
 
   // Son regard : il garde tout au-dessus.
