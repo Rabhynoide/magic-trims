@@ -187,6 +187,8 @@ export interface CardInstance {
   hasLoyalty?: boolean;
   /** Bonus de force et d'endurance jusqu'à la fin du tour (+3/+3 d'une Croissance gigantesque…). */
   ptBoost?: { power: number; toughness: number };
+  /** Contrôle pris « until end of turn » (Dihada −11, Threaten) : le joueur qui le récupère au nettoyage. */
+  controlReturnsTo?: PlayerId;
   /** Mots-clés gagnés jusqu'à la fin du tour (en minuscules : « lifelink »…). */
   grants?: string[];
   /** Mots-clés gagnés « until your next turn » : ils durent jusqu'au début du prochain tour de `playerId`. */
