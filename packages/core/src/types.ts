@@ -196,6 +196,8 @@ export interface CardInstance {
    * pendant ce tour (et cette étape si `step`), ou tant que le sort `whileOnStack` est sur la pile.
    */
   castPermission?: { free: boolean; turn: number; step?: TurnStep; ignoreTiming?: boolean; whileOnStack?: CardInstanceId; reason: string };
+  /** Provoquée par ces joueurs (jusqu'à leur prochain tour) : doit attaquer, et un autre joueur si possible. */
+  goadedBy?: PlayerId[];
   /** Rebond : exilée en se résolvant, lançable gratuitement à l'entretien suivant de ce joueur. */
   rebound?: PlayerId;
   /** Lancé pour son coût d'évocation : sacrifié en arrivant. */
@@ -379,6 +381,8 @@ export interface GameState {
   manaBonuses?: { turn: number; subtype: string; mana: ManaType }[];
   /** Cartes exilées à rendre au début de la prochaine étape de fin d'un joueur (The Eternal Wanderer). */
   delayedReturns?: { cardId: CardInstanceId; playerId: PlayerId }[];
+  /** Myriade : les jetons exilés à la fin du combat. */
+  endOfCombatExile?: CardInstanceId[];
   /**
    * Équipes. En chacun pour soi, chaque joueur est seul dans son équipe.
    * L'ordre des joueurs à l'intérieur d'une équipe suit l'ordre du tour.

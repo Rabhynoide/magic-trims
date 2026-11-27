@@ -69,7 +69,7 @@ export type TriggerCondition =
   /** `controlsSameName` : « an opponent who controls an artifact named ~ » ; `theirTurn` : « during their turn ». */
   | { on: "draw" | "lifeGain" | "lifeLoss" | "landPlayed"; whose: Whose; nth?: number; controlsSameName?: boolean; theirTurn?: boolean }
   /** `enchanted` : « enchanted player's upkeep » (aura sur un joueur) ; `first` : « first upkeep each turn ». */
-  | { on: "step"; step: "upkeep" | "draw" | "main1" | "end"; whose: Whose; enchanted?: boolean; first?: boolean }
+  | { on: "step"; step: "upkeep" | "draw" | "main1" | "beginCombat" | "end"; whose: Whose; enchanted?: boolean; first?: boolean }
   | { on: "cast"; whose: Whose; types: string[]; notTypes: string[]; self?: boolean }
   /** « Whenever ~ attacks », « … blocks », « … attacks or blocks ». */
   | { on: "combat"; attacks: boolean; blocks: boolean; anyCreature?: boolean; defender?: "you" }
@@ -220,6 +220,7 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   if ((m = /^the beginning of (your|each|each player's|each opponent's) (?:first|precombat) main phase$/i.exec(t))) {
     return { on: "step", step: "main1", whose: whose(m[1]!)! };
   }
+  if (/^the beginning of combat on your turn$/i.test(t)) return { on: "step", step: "beginCombat", whose: "you" };
   if (/^the beginning of enchanted player's first upkeep each turn$/i.test(t)) return { on: "step", step: "upkeep", whose: "any", enchanted: true, first: true };
   if (/^the beginning of enchanted player's upkeep$/i.test(t)) return { on: "step", step: "upkeep", whose: "any", enchanted: true };
   if ((m = /^the beginning of (your|each|each player's|each opponent's) (upkeep|draw step|end step)$/i.exec(t))) {
@@ -273,6 +274,11 @@ function parseTriggerBody(text: string): { effects: SpellEffects; optional: bool
   if (/^you may look at the top X cards of your library, where X is that creature's power\. If you do, put one of those cards on top of your library and the rest on the bottom of your library in any order\.?$/i.test(text)) {
     return fixed({ type: "lookTopKeepOne" }, true);
   }
+  // Havoc Eater : une cible facultative par adversaire (quatre au plus).
+  if (/^for each opponent, goad up to one target creature that opponent controls\. Put X \+1\/\+1 counters on ~, where X is the total power of creatures goaded this way\.?$/i.test(text)) {
+    const spec = { label: "créature d'un adversaire (une par adversaire)", permanent: { types: ["creature"], notTypes: [], controller: "notYou" as const }, upTo: true };
+    return { effects: { targets: [spec, spec, spec, spec], effects: [{ type: "goad", targets: [0, 1, 2, 3], countersFromPower: true }], unknown: [] }, optional: false };
+  }
   if (/^its controller may draw a card if its power is greater than each other creature's power\.?$/i.test(text)) return fixed({ type: "drawIfGreatestPower" });
   const may = /^you may (.+)$/i.exec(text);
   if (may) return { effects: parseSpellEffects(cap(may[1]!), "~"), optional: true };
@@ -318,6 +324,17 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
           optional: false,
         });
       }
+      continue;
+    }
+    // Myriade : une copie qui attaque chacun des autres adversaires.
+    if (/^Myriad$/i.test(line)) {
+      result.triggers.push({
+        text: "Myriad",
+        condition: { on: "combat", attacks: true, blocks: false },
+        effects: { targets: [], effects: [{ type: "myriad" }], unknown: [] },
+        ifUntapped: false,
+        optional: false,
+      });
       continue;
     }
     // Annihilateur N : le joueur défenseur sacrifie N permanents.

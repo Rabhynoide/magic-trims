@@ -42,6 +42,8 @@ export interface TargetSpec {
   notOwner?: boolean;
   /** « up to one target » : la cible peut être omise. */
   upTo?: boolean;
+  /** « another target » : pas le permanent source de la capacité. */
+  another?: boolean;
 }
 
 export interface GraveyardFilter {
@@ -134,6 +136,10 @@ type EffectBase =
   | { type: "returnSelf" }
   /** « ~ gets +1/+1 until end of turn. » */
   | { type: "pumpSelf"; power: number; toughness: number }
+  /** Havoc Eater : provoque une créature par adversaire, puis des marqueurs selon leur force totale. */
+  | { type: "goad"; targets: number[]; countersFromPower?: boolean }
+  /** Myriade : une copie engagée et attaquante pour chaque autre adversaire, exilée à la fin du combat. */
+  | { type: "myriad" }
   /** Encore : un jeton copie par adversaire, avec la célérité, sacrifié à la fin du tour. */
   | { type: "encore" }
   /** Cascade : exiler jusqu'à une carte non-terrain de plus petite valeur de mana, lançable gratuitement. */
@@ -889,9 +895,13 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       }
       const t = target({ label: permanentLabel(filter), permanent: filter, ...(m[2] ? { upTo: true } : {}) });
       result.effects.push({ type: m[1]!.toLowerCase() === "destroy" ? "destroy" : "exile", target: t });
-    } else if ((m = /^(up to one )?target (creature(?: you control)?) (?:gets ([+-]\d+)\/([+-]\d+)(?: and gains (.+?))?|gains (.+?)) until end of turn$/i.exec(s)) && keywordList(m[5] ?? m[6] ?? "").every((k) => KEYWORD_HELP[k])) {
+    } else if (
+      (m = /^(up to one |another )?target (.+?) (?:gets ([+-]\d+)\/([+-]\d+)(?: and gains (.+?))?|gains (.+?)) until end of turn$/i.exec(s)) &&
+      keywordList(m[5] ?? m[6] ?? "").every((k) => KEYWORD_HELP[k]) &&
+      parsePermanentFilter(m[2]!)?.types.includes("creature")
+    ) {
       const filter = parsePermanentFilter(m[2]!)!;
-      const t = target({ label: permanentLabel(filter), permanent: filter, ...(m[1] ? { upTo: true } : {}) });
+      const t = target({ label: permanentLabel(filter), permanent: filter, ...(/up to/i.test(m[1] ?? "") ? { upTo: true } : {}), ...(/another/i.test(m[1] ?? "") ? { another: true } : {}) });
       result.effects.push({ type: "pumpTarget", target: t, power: m[3] ? parseInt(m[3], 10) : 0, toughness: m[4] ? parseInt(m[4], 10) : 0, keywords: m[5] ?? m[6] ? keywordList(m[5] ?? m[6]!) : [] });
     } else if ((m = /^(destroy|exile) all (.+)$/i.exec(s))) {
       const filter = parsePermanentFilter(m[2]!);
@@ -1074,6 +1084,10 @@ export function isLegalTarget(g: GameState, spec: TargetSpec, target: Target, ca
   }
   const card = g.cards[target.id];
   if (!card || card.instanceId === sourceId) return false;
+  if (spec.another && sourceId) {
+    const src = g.cards[sourceId];
+    if ((src?.ability ? src.ability.sourceId : sourceId) === card.instanceId) return false;
+  }
   if (card.zone === "battlefield") {
     if (!spec.permanent || !matchesPermanent(g, card, spec.permanent, casterId)) return false;
     if (hasKeyword(g, card, "Shroud")) return false;
@@ -1144,7 +1158,7 @@ export interface CardSupport {
   unknown: string[];
 }
 
-const HANDLED_KEYWORDS = new Set([...COMBAT_KEYWORDS, "Flash", "Exploit", "Read ahead", "Evoke", "Changeling", "Rebound", "Cascade"].map((k) => k.toLowerCase()));
+const HANDLED_KEYWORDS = new Set([...COMBAT_KEYWORDS, "Flash", "Exploit", "Read ahead", "Evoke", "Changeling", "Rebound", "Cascade", "Myriad"].map((k) => k.toLowerCase()));
 
 /** Ce que le moteur fait d'une ligne de texte d'un permanent. */
 interface LineStatus {
@@ -1264,6 +1278,8 @@ export const KEYWORD_HELP: Record<string, { name: string; help: string }> = {
   exploit: { name: "Exploitation", help: "En arrivant, tu peux sacrifier une créature (le moteur te le demande)." },
   flash: { name: "Flash", help: "Peut se lancer à tout moment où l'on a la priorité." },
   fear: { name: "Peur", help: "Ne peut être bloquée que par des créatures-artefacts et/ou noires." },
+  goad: { name: "Provocation", help: "Jusqu'au prochain tour du joueur qui provoque, la créature doit attaquer à chaque combat, et un autre joueur que lui si possible." },
+  myriad: { name: "Myriade", help: "Quand elle attaque, une copie attaque chacun des autres adversaires ; les copies sont exilées à la fin du combat." },
   cascade: { name: "Cascade", help: "Quand tu la lances, exile des cartes jusqu'à une carte non-terrain de plus petite valeur de mana : tu peux la lancer gratuitement." },
   encore: { name: "Encore", help: "Depuis le cimetière, en l'exilant : un jeton copie par adversaire, qui l'attaque, avec la célérité, sacrifié à la fin du tour." },
   rebound: { name: "Rebond", help: "Lancé depuis la main, il est exilé en se résolvant ; tu peux le relancer gratuitement à ton prochain entretien." },

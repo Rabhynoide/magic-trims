@@ -213,7 +213,7 @@ describe("Deck Ashling : recherches de terrains", () => {
 describe("Deck Ashling : bilan", () => {
   it("compte les cartes entièrement gérées", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "", manaCost: c.manaCost ?? "" })).level);
-    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(76);
+    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(78);
   });
 });
 
@@ -713,5 +713,52 @@ describe("Deck Ashling : rebond, cascade, encore", () => {
     expect(tokens).toHaveLength(2);
     for (const id of tokens) expect(hasKeyword(g, g.cards[id]!, "Haste")).toBe(true);
     for (const name of ["Ephemerate", "Maelstrom Wanderer", "Lamentation"]) expect(cardSupport(real(name)).level, name).toBe("full");
+  });
+});
+
+describe("Deck Ashling : myriade et provocation", () => {
+  const elemental = (name: string) => fakeCard(name, { typeLine: "Creature — Elemental", power: "3", toughness: "3", manaCost: "{R}", colors: ["R"] });
+
+  it("Mass of Mysteries : un autre Élémental gagne la myriade et se copie contre chaque autre adversaire", () => {
+    let g = toMain(newTestGame(3));
+    let elem: string;
+    [g] = put(g, "p1", real("Mass of Mysteries", { colors: ["W", "U", "B", "R", "G"] }));
+    [g, elem] = put(g, "p1", elemental("Élémental"), 0);
+    g = act(g, "p1", { type: "nextStep", to: "beginCombat" });
+    g = resolveAll(g);
+    expect(g.cards[elem]!.grants).toContain("myriad");
+    g = act(g, "p1", { type: "nextStep", to: "declareAttackers" });
+    g = act(g, "p1", { type: "declareAttackers", attackers: [{ cardId: elem, defender: "p2" }] });
+    g = resolveAll(g);
+    const tokens = g.players.p1!.zones.battlefield.filter((id) => g.cards[id]!.isToken);
+    expect(tokens).toHaveLength(1);
+    expect(g.combat!.attackers[tokens[0]!]).toBe("p3");
+    expect(g.cards[tokens[0]!]!.tapped).toBe(true);
+    g = act(g, "p1", { type: "nextStep", to: "main2" });
+    expect(g.cards[tokens[0]!]?.zone ?? "exile").not.toBe("battlefield");
+  });
+
+  it("Havoc Eater : provoque une créature par adversaire et grandit de leur force", () => {
+    let g = toMain(newTestGame(3));
+    let eater: string, a: string, b: string;
+    [g, a] = put(g, "p2", elemental("A"));
+    [g, b] = put(g, "p3", elemental("B"));
+    [g, eater] = inHand(g, "p1", real("Havoc Eater", { colors: ["R"] }));
+    g = mana(g, "p1", "RRRRRRRR");
+    g = act(g, "p1", { type: "castSpell", cardId: eater });
+    g = resolveAll(g);
+    const trigger = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.needsTargets)!;
+    g = act(g, "p1", { type: "chooseTargets", cardId: trigger.instanceId, targets: [{ kind: "card", id: a }, { kind: "card", id: b }] });
+    g = resolveAll(g);
+    expect(g.cards[a]!.goadedBy).toEqual(["p1"]);
+    expect(g.cards[eater]!.counters["+1/+1"]).toBe(6);
+    // Au tour de p2, A doit attaquer, et pas p1 (p3 est possible).
+    g = endTurn(g, "p1");
+    g = act(g, "p2", { type: "nextStep", to: "declareAttackers" });
+    expect(() => act(g, "p2", { type: "declareAttackers", attackers: [] })).toThrow(/provoqué/);
+    expect(() => act(g, "p2", { type: "declareAttackers", attackers: [{ cardId: a, defender: "p1" }] })).toThrow(/autre joueur/);
+    g = act(g, "p2", { type: "declareAttackers", attackers: [{ cardId: a, defender: "p3" }] });
+    expect(g.combat!.attackers[a]).toBe("p3");
+    for (const name of ["Mass of Mysteries", "Havoc Eater"]) expect(cardSupport(real(name)).level, name).toBe("full");
   });
 });

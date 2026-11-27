@@ -161,6 +161,20 @@ function isPermanentSpell(type: string): boolean {
 function chooseAttacks(g: GameState, botId: PlayerId): { cardId: CardInstanceId; defender: PlayerId }[] {
   const foes = g.turnOrder.filter((id) => !g.players[id]!.hasConceded && !isActivePlayer(g, id));
   if (foes.length === 0) return [];
+  const chosen = chooseFreeAttacks(g, botId, foes);
+  // Les créatures provoquées attaquent forcément, un autre joueur que celui qui les a provoquées si possible.
+  for (const card of attackersOf(g, botId)) {
+    if (!card.goadedBy?.length) continue;
+    const defender = foes.find((f) => !card.goadedBy!.includes(f)) ?? foes[0]!;
+    const existing = chosen.find((a) => a.cardId === card.instanceId);
+    if (existing) {
+      if (card.goadedBy.includes(existing.defender) && !card.goadedBy.includes(defender)) existing.defender = defender;
+    } else chosen.push({ cardId: card.instanceId, defender });
+  }
+  return chosen;
+}
+
+function chooseFreeAttacks(g: GameState, botId: PlayerId, foes: PlayerId[]): { cardId: CardInstanceId; defender: PlayerId }[] {
   const defender = [...foes].sort((a, b) => g.players[a]!.life - g.players[b]!.life)[0]!;
   const blockers = untappedCreatures(g, defender);
   const ready = attackersOf(g, botId);

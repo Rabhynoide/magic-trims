@@ -283,6 +283,21 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       if (isActivePlayer(g, defender)) throw new ActionError("On n'attaque pas son propre camp.");
     }
     if (g.settings.enforceRules && attackers.length > 1 && maxOneCreature(g, true)) throw new ActionError("Une seule créature peut attaquer à chaque combat.");
+    // Provocation : la créature doit attaquer, et un autre joueur que celui qui l'a provoquée si elle le peut.
+    if (g.settings.enforceRules) {
+      const foes = g.turnOrder.filter((id) => !g.players[id]!.hasConceded && !isActivePlayer(g, id));
+      for (const id of actor.zones.battlefield) {
+        const c = g.cards[id]!;
+        if (!c.goadedBy?.length || !canAttack(g, c)) continue;
+        const declared = attackers.find((a) => a.cardId === id);
+        const name = cardName(g, c);
+        if (!declared) throw new ActionError(`${name} est provoqué(e) : elle doit attaquer.`);
+        const others = foes.filter((f) => !c.goadedBy!.includes(f));
+        if (others.length > 0 && c.goadedBy.includes(declared.defender)) {
+          throw new ActionError(`${name} est provoqué(e) : elle doit attaquer un autre joueur que ${names(c.goadedBy.map((p) => g.players[p]!))}.`);
+        }
+      }
+    }
     // Taxes d'attaque (Ghostly Prison, Propaganda…) : payées d'office, en engageant des terrains au besoin.
     if (g.settings.enforceRules) {
       let tax = 0;
@@ -734,13 +749,14 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     if (!ability || card.zone !== "stack" || !ability.needsTargets) throw new ActionError("Cette capacité n'attend pas de cibles.");
     if (card.controllerId !== actor.id) throw new ActionError("Seul le contrôleur de la capacité choisit ses cibles.");
     const effects = abilityEffects(g, card);
-    if (!effects || targets.length !== effects.targets.length) throw new ActionError("Nombre de cibles invalide.");
-    effects.targets.forEach((spec, i) => {
-      if (!isLegalTarget(g, spec, targets[i]!, actor.id, card.instanceId)) throw new ActionError(`Cible invalide : il faut un(e) ${spec.label}.`);
+    if (!effects || targets.length > effects.targets.length || targets.length < requiredTargets(effects.targets)) throw new ActionError("Nombre de cibles invalide.");
+    targets.forEach((t, i) => {
+      const spec = effects.targets[i]!;
+      if (!isLegalTarget(g, spec, t, actor.id, card.instanceId)) throw new ActionError(`Cible invalide : il faut un(e) ${spec.label}.`);
     });
     card.targets = targets.map((t) => ({ ...t }));
     delete ability.needsTargets;
-    log(g, actor.id, `${actor.name} vise ${targets.map((t) => targetName(g, t)).join(", ")} avec la capacité de ${ability.sourceName}.`);
+    log(g, actor.id, targets.length > 0 ? `${actor.name} vise ${targets.map((t) => targetName(g, t)).join(", ")} avec la capacité de ${ability.sourceName}.` : `${actor.name} ne choisit aucune cible pour la capacité de ${ability.sourceName}.`);
   },
 
   activateAbility(g, actor, { cardId, index, targets, sacrifice, color }) {
@@ -1166,6 +1182,7 @@ export function moveCardTo(
     delete card.castFromHand;
     if (to !== "battlefield") delete card.evoked;
   }
+  if (from === "battlefield" && to !== "battlefield") delete card.goadedBy;
   if (from === "exile" && to !== "exile") {
     delete card.castPermission;
     delete card.rebound;
@@ -1491,7 +1508,7 @@ function flushTriggers(g: GameState): boolean {
       card: c,
       dataId: c.cardId,
       faceIndex: c.faceIndex,
-      ...(c.grantedTriggers ? { granted: c.grantedTriggers } : {}),
+      ...(c.grantedTriggers || c.grants?.includes("myriad") ? { granted: [...(c.grantedTriggers ?? []), ...(c.grants?.includes("myriad") ? ["Myriad"] : [])] } : {}),
     }));
     // « Quand ~ meurt » : la carte regarde en arrière, depuis le cimetière (ou disparue si c'est un jeton).
     if (event.type === "dies" || event.type === "leaves") {
@@ -1577,12 +1594,17 @@ function flushTriggers(g: GameState): boolean {
     const specs = trigger.effects.targets;
     if (specs.length > 0) {
       const choices = specs.map((spec) => legalTargets(g, spec, p.controllerId, instance.instanceId));
-      if (choices.some((c) => c.length === 0)) {
+      const required = requiredTargets(specs);
+      if (choices.slice(0, required).some((c) => c.length === 0)) {
         delete g.cards[instance.instanceId];
         log(g, null, `La capacité de ${sourceName} n'a pas de cible valide.`);
         continue;
       }
-      if (choices.every((c) => c.length === 1)) instance.targets = choices.map((c) => c[0]!);
+      // « up to one target » sans aucune cible possible : on s'arrête aux cibles obligatoires.
+      if (required < specs.length && choices.slice(required).every((c) => c.length === 0)) {
+        instance.targets = choices.slice(0, required).length === required && choices.slice(0, required).every((c) => c.length === 1) ? choices.slice(0, required).map((c) => c[0]!) : [];
+        if (instance.targets.length < required) instance.ability.needsTargets = true;
+      } else if (required === specs.length && choices.every((c) => c.length === 1)) instance.targets = choices.map((c) => c[0]!);
       else {
         instance.targets = [];
         instance.ability.needsTargets = true;
@@ -2146,6 +2168,41 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
           drawCards(g, p, Math.ceil(p.zones.library.length / 2));
           const loss = Math.ceil(Math.max(0, p.life) / 2);
           if (loss > 0) changeLife(g, p.id, -loss);
+        }
+        break;
+      }
+      case "goad": {
+        let power = 0;
+        const seen = new Set<PlayerId>();
+        for (const i of effect.targets) {
+          const c = card(i);
+          if (!c || c.zone !== "battlefield" || c.controllerId === caster.id || seen.has(c.controllerId)) continue;
+          seen.add(c.controllerId);
+          c.goadedBy = [...new Set([...(c.goadedBy ?? []), caster.id])];
+          power += Math.max(0, creatureStats(g, c).power);
+          log(g, null, `${cardName(g, c)} est provoqué(e) par ${caster.name}.`);
+        }
+        if (effect.countersFromPower && self?.zone === "battlefield" && power > 0) {
+          self.counters["+1/+1"] = (self.counters["+1/+1"] ?? 0) + power;
+          log(g, null, `${cardName(g, self)} reçoit ${plural(power, "marqueur +1/+1", "marqueurs +1/+1")}.`);
+        }
+        break;
+      }
+      case "myriad": {
+        const attacker = ability ? g.cards[ability.sourceId] : undefined;
+        const defending = attacker ? g.combat?.attackers[attacker.instanceId] : undefined;
+        if (!attacker || attacker.zone !== "battlefield" || !defending || !g.combat) break;
+        for (const opponent of opponentsOf(g, caster.id)) {
+          if (opponent.id === defending) continue;
+          const token = newInstance(g, attacker.cardId, caster.id, "battlefield");
+          token.faceIndex = attacker.faceIndex;
+          token.isToken = true;
+          token.tapped = true;
+          caster.zones.battlefield.push(token.instanceId);
+          g.combat.attackers[token.instanceId] = opponent.id;
+          (g.endOfCombatExile ??= []).push(token.instanceId);
+          emitEnters(g, token);
+          log(g, null, `Myriade : un jeton copie de ${cardName(g, attacker)} attaque ${opponent.name}.`);
         }
         break;
       }
@@ -3630,6 +3687,26 @@ function enterStep(g: GameState, step: TurnStep): void {
     g.turn.upkeeps = (g.turn.upkeeps ?? 0) + 1;
   }
   g.turn.step = step;
+  // Provocation : elle dure jusqu'au prochain tour du joueur qui a provoqué.
+  if (step === "untap") {
+    const active = activePlayers(g).map((p) => p.id);
+    for (const pid of g.turnOrder) {
+      for (const id of g.players[pid]!.zones.battlefield) {
+        const c = g.cards[id]!;
+        if (!c.goadedBy) continue;
+        c.goadedBy = c.goadedBy.filter((by) => !active.includes(by));
+        if (c.goadedBy.length === 0) delete c.goadedBy;
+      }
+    }
+  }
+  // Myriade : les jetons sont exilés à la fin du combat.
+  if ((step === "endCombat" || step === "main2" || step === "end") && g.endOfCombatExile?.length) {
+    for (const id of g.endOfCombatExile) {
+      const c = g.cards[id];
+      if (c?.zone === "battlefield") moveCardTo(g, id, "exile", "top");
+    }
+    delete g.endOfCombatExile;
+  }
   // The Eternal Wanderer : les cartes exilées reviennent au début de l'étape de fin de leur propriétaire.
   if (step === "end" && g.delayedReturns?.length) {
     const due = g.delayedReturns.filter((r) => isActivePlayer(g, r.playerId));
@@ -3641,7 +3718,7 @@ function enterStep(g: GameState, step: TurnStep): void {
       log(g, null, `${cardName(g, c)} revient sur le champ de bataille.`);
     }
   }
-  if (step === "upkeep" || step === "draw" || step === "main1" || step === "end") {
+  if (step === "upkeep" || step === "draw" || step === "main1" || step === "beginCombat" || step === "end") {
     for (const p of activePlayers(g)) emit(g, { type: "step", step, playerId: p.id });
   }
   // Rebond : les sorts exilés se relancent gratuitement pendant cet entretien.
