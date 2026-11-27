@@ -508,16 +508,37 @@ textarea:focus {
   object-fit: cover;
 }
 .card-tiny {
-  width: 52px;
-  height: 72px;
+  --card-w: 52px;
+  --card-h: 72px;
 }
 .card-small {
-  width: 74px;
-  height: 103px;
+  --card-w: 74px;
+  --card-h: 103px;
 }
 .card-medium {
-  width: 118px;
-  height: 165px;
+  --card-w: 118px;
+  --card-h: 165px;
+}
+.card-tiny,
+.card-small,
+.card-medium {
+  width: var(--card-w);
+  height: var(--card-h);
+}
+/* Calque des marqueurs et de la force/endurance. Sur une carte engagée, il est
+   tourné en sens inverse pour rester lisible. */
+.card-stats {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.card.tapped .card-stats {
+  inset: auto;
+  top: 50%;
+  left: 50%;
+  width: var(--card-h);
+  height: var(--card-w);
+  transform: translate(-50%, -50%) rotate(-90deg);
 }
 .card.tapped {
   transform: rotate(90deg);
@@ -536,22 +557,54 @@ textarea:focus {
   text-align: center;
   padding: 4px;
 }
+/* Marqueurs : colonne de pastilles sur le bord gauche, au niveau de l'illustration,
+   pour ne jamais recouvrir la force/endurance (en bas à droite). */
 .card-counters {
   position: absolute;
-  bottom: 4px;
+  top: 26%;
   left: 2px;
-  right: 2px;
+  max-width: calc(100% - 4px);
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: flex-start;
   gap: 2px;
-  justify-content: center;
+  pointer-events: none;
 }
 .counter {
-  background: rgb(0 0 0 / 0.8);
+  background: rgb(10 12 16 / 0.88);
   border: 1px solid var(--accent);
   border-radius: 8px;
   font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  min-width: 18px;
+  text-align: center;
   padding: 0 4px;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: auto;
+  cursor: help;
+}
+.counter.plus {
+  background: #2f7a47;
+  border-color: #8fe0a8;
+  color: #fff;
+}
+.counter.minus {
+  background: #8a2f2a;
+  border-color: #f0a29b;
+  color: #fff;
+}
+.counter.loyalty {
+  border-color: var(--active);
+}
+.card-tiny .counter {
+  font-size: 9px;
+  line-height: 12px;
+  min-width: 14px;
+  padding: 0 2px;
 }
 .card-flag {
   position: absolute;
@@ -1150,21 +1203,37 @@ textarea:focus {
 
 .card-pt {
   position: absolute;
+  pointer-events: auto;
   right: 3px;
   bottom: 3px;
-  padding: 0 4px;
+  padding: 0 5px;
   border-radius: 4px;
-  background: rgba(10, 12, 16, 0.85);
+  border: 1px solid rgb(255 255 255 / 0.25);
+  background: rgba(10, 12, 16, 0.92);
   color: var(--text);
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 16px;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 17px;
+  cursor: help;
+}
+.card-medium .card-pt {
+  font-size: 14px;
+  line-height: 19px;
+}
+.card-tiny .card-pt {
+  font-size: 10px;
+  line-height: 14px;
+  padding: 0 3px;
 }
 .card-pt.modified {
-  color: var(--accent-strong);
+  border-color: var(--accent-strong);
 }
-.card-pt.damaged {
-  color: var(--danger);
+.card-pt .up {
+  color: #7be39a;
+}
+.card-pt .down,
+.card-pt .hurt {
+  color: #ff8a80;
 }
 .card.attacking {
   outline: 3px solid var(--danger);

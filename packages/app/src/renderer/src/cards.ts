@@ -96,7 +96,10 @@ export function manaSymbolUrl(mana: string): string {
 }
 
 /** Force et endurance actuelles d'une créature sur le champ de bataille (null sinon). */
-export function creaturePT(view: GameView, card: CardView): { power: number; toughness: number; base: boolean } | null {
+export function creaturePT(
+  view: GameView,
+  card: CardView,
+): { power: number; toughness: number; base: boolean; printed?: { power: string; toughness: string } } | null {
   if (card.hidden || card.zone !== "battlefield") return null;
   const g = stateFromView(view);
   const c = card as VisibleCardView;
@@ -104,7 +107,9 @@ export function creaturePT(view: GameView, card: CardView): { power: number; tou
   const stats = creatureStats(g, c);
   const data = cardData(view, card);
   const face = data?.faces?.[c.faceIndex];
-  const base =
-    String(stats.power) === (face?.power ?? data?.power) && String(stats.toughness) === (face?.toughness ?? data?.toughness);
-  return { ...stats, base };
+  const power = face?.power ?? data?.power;
+  const toughness = face?.toughness ?? data?.toughness;
+  const base = String(stats.power) === power && String(stats.toughness) === toughness;
+  const printed = power !== undefined && toughness !== undefined ? { power, toughness } : undefined;
+  return { ...stats, base, printed };
 }
