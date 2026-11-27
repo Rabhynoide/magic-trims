@@ -1,5 +1,6 @@
 import type { ActionEnvelope, GameAction } from "./actions.js";
 import { nextRandom, shuffleInPlace } from "./rng.js";
+import { reduceGenericCost } from "./activated.js";
 import { eliminationReason, isActivePlayer, lifeSharers, areTeammates, teamOf } from "./modes.js";
 import {
   MANA_LABELS,
@@ -3361,7 +3362,11 @@ function activateAbility(
   // Paiement : mana d'abord (sans engager la source si elle s'engage pour le coût), puis le reste.
   const sourceData = g.cardData[card.cardId];
   const asSpell = { typeLine: currentTypeLine(g, card), oracleText: sourceData?.faces?.[card.faceIndex]?.oracleText ?? sourceData?.oracleText ?? "", ability: true };
-  const paid = cost.mana ? payMana(g, actor, cost.mana, 0, 0, cost.tap ? card.instanceId : undefined, `activer ${name}`, asSpell) : null;
+  // Otawara : moins cher pour chaque permanent du filtre qu'on contrôle.
+  const manaCost = cost.reduction
+    ? reduceGenericCost(cost.mana, cost.reduction.amount * actor.zones.battlefield.filter((id) => matchesPermanent(g, g.cards[id]!, cost.reduction!.per, actor.id)).length)
+    : cost.mana;
+  const paid = manaCost ? payMana(g, actor, manaCost, 0, 0, cost.tap ? card.instanceId : undefined, `activer ${name}`, asSpell) : null;
   if (cost.tap) card.tapped = true;
   if (cost.life > 0) payLife(g, actor, cost.life);
   if (cost.loyalty !== undefined) setCounter(card, "loyauté", (card.counters["loyauté"] ?? 0) + cost.loyalty);
