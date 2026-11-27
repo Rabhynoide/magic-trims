@@ -5,6 +5,8 @@ import {
   hasX,
   parseSpellEffects,
   auraTarget,
+  evokeOptions,
+  stateFromView,
   sagaChapters,
   permanentLabel,
   type ActivationCost,
@@ -316,7 +318,7 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
       if (/\bLand\b/.test(f.typeLine)) {
         return [{ label: `Jouer ${f.name}`, onClick: () => void act({ type: "playLand", cardId: id, ...face }) }];
       }
-      const cast = (alternative: boolean) => async () => {
+      const cast = (alternative: boolean, evoke?: true | "granted", exileColor?: string) => async () => {
           let x: number | undefined;
           if (hasX(f.manaCost)) {
             const value = await ui.ask("Valeur de X", "1", "number");
@@ -342,6 +344,13 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
             if (!chosen) return;
             targets = chosen;
           }
+          // Évocation « Exile a green card from your hand » : la carte à exiler.
+          let evokeExile: string | undefined;
+          if (exileColor) {
+            const chosen = await ui.chooseTargets(cardName(view, card), id, [{ label: "carte de ta main à exiler (de la bonne couleur)", hand: true, choice: true }]);
+            if (!chosen) return;
+            evokeExile = chosen[0]!.id;
+          }
           // Saga avec lecture anticipée : le chapitre de départ.
           let chapter: number | undefined;
           const chapters = view.settings.enforceRules ? sagaChapters(data, f.face ?? 0) : 0;
@@ -366,6 +375,8 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
             ...(sacrifice ? { sacrifice } : {}),
             ...(alternative ? { alternative } : {}),
             ...(chapter !== undefined ? { chapter } : {}),
+            ...(evoke ? { evoke } : {}),
+            ...(evokeExile ? { evokeExile } : {}),
           });
       };
       const items: MenuItem[] = [{ label: `Lancer ${f.name}${f.manaCost ? ` ${f.manaCost}` : ""}`, onClick: cast(false) }];
@@ -373,6 +384,15 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
       const faceText = (faces ? faces[f.face ?? 0]?.oracleText : data.oracleText) ?? "";
       const alt = view.settings.enforceRules && /\b(Instant|Sorcery)\b/.test(f.typeLine) ? parseSpellEffects(faceText, f.name).alternativeCost : undefined;
       if (alt) items.push({ label: `Lancer ${f.name} pour ${alt} (coût alternatif)`, onClick: cast(true) });
+      // Évocation : la sienne, et celle que donne Ashling (sacrifiée en arrivant).
+      if (view.settings.enforceRules && card.zone === "hand") {
+        const evoke = evokeOptions(stateFromView(view), view.viewerId, data, f.face ?? 0, true);
+        const label = (c: { mana: string; exileColor?: string }) => (c.exileColor ? "en exilant une carte de ta main" : `pour ${c.mana}`);
+        if (evoke.printed) items.push({ label: `Évoquer ${f.name} ${label(evoke.printed)}`, onClick: cast(false, true, evoke.printed.exileColor) });
+        if (evoke.granted && evoke.granted.mana !== evoke.printed?.mana) {
+          items.push({ label: `Évoquer ${f.name} pour ${evoke.granted.mana} (donné par un autre permanent)`, onClick: cast(false, "granted") });
+        }
+      }
       return items;
     });
 }

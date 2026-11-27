@@ -12,7 +12,7 @@ import { manaOptions } from "./mana.js";
 import { parsePermanentAbilities } from "./triggers.js";
 import { areTeammates } from "./modes.js";
 import { joinModes, keywordList, selfToTilde } from "./text.js";
-import { playerHasShroud } from "./statics.js";
+import { playerHasShroud, printedEvoke } from "./statics.js";
 
 export { selfToTilde };
 import type { CardData, CardInstance, GameState, PlayerId } from "./types.js";
@@ -145,6 +145,8 @@ export type Effect =
   | { type: "exchangeControl"; a: number; b: number; relation?: ExchangeRelation }
   /** Chaos Warp : le propriétaire mélange le permanent dans sa bibliothèque ; `revealPermanent` : puis révèle et met en jeu un permanent. */
   | { type: "shuffleIntoLibrary"; target: number; revealPermanent?: boolean }
+  /** Ashling : « create a token that's a copy of it » (la carte sacrifiée), avec la célérité et un sacrifice à la fin du tour. */
+  | { type: "copyEventCard"; haste?: boolean; endStepUnless?: string }
   /** Paradox Haze : « that player gets an additional upkeep step after this step ». */
   | { type: "extraUpkeep" }
   /** Wedding Ring : « target opponent creates a token that's a copy of it ». */
@@ -171,7 +173,11 @@ export type Effect =
   /** Une carte d'un cimetière va sur le champ de bataille (sous le contrôle du lanceur) ou dans la main de son propriétaire. */
   | { type: "fromGraveyard"; target: number; to: "battlefield" | "hand" | "libraryTop" }
   /** « Search your library for a land card, put it into your hand » : le lanceur choisit dans la fenêtre de choix. */
-  | { type: "search"; types: string[]; to: "hand" | "battlefield"; reveal: boolean; who?: Who; tapped?: boolean }
+  /**
+   * `types` : au moins un de ces types ou sous-types (« Forest or Island ») ; `basic` : terrain de base ;
+   * `count` : « up to two » ; `split` : Cultivate (la première carte sur le champ de bataille engagée, les autres en main).
+   */
+  | { type: "search"; types: string[]; to: "hand" | "battlefield"; reveal: boolean; who?: Who; tapped?: boolean; basic?: boolean; count?: number; split?: boolean }
   | { type: "shuffle"; who?: Who }
   /** « Target opponent reveals their hand. » */
   | { type: "revealHand"; who: Who }
@@ -601,7 +607,34 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     }
     if ((m = /^search your library for an? ((?:basic )?(?:land|creature|artifact|enchantment|instant|sorcery|planeswalker) )?card(?:,| and) (reveal it, )?(?:then )?put (?:it|that card) (into your hand|onto the battlefield)$/i.exec(s))) {
       const types = (m[1] ?? "").trim().toLowerCase().replace(/^basic /, "").split(" ").filter(Boolean);
-      result.effects.push({ type: "search", types, to: /hand/i.test(m[3]!) ? "hand" : "battlefield", reveal: !!m[2] });
+      result.effects.push({ type: "search", types, to: /hand/i.test(m[3]!) ? "hand" : "battlefield", reveal: !!m[2], ...(/^basic /i.test(m[1] ?? "") ? { basic: true } : {}) });
+      continue;
+    }
+    // Fetchlands, Farseek, Rampant Growth, Cultivate, Land Tax : terrains par type ou sous-type.
+    const LAND_WORDS = "(?:basic land|land|plains|island|swamp|mountain|forest)";
+    if (
+      (m = new RegExp(
+        `^search your library for (an?|up to (?:one|two|three)) ((?:${LAND_WORDS})(?:(?:,| or|, or) ${LAND_WORDS})*) cards?,? (?:and )?(reveal (?:it|them|those cards), )?(?:then )?put (?:it|that card|them|those cards) (into your hand|onto the battlefield( tapped)?)$`,
+        "i",
+      ).exec(s))
+    ) {
+      const words = m[2]!.toLowerCase().split(/,? or |, /).map((w) => w.trim()).filter(Boolean);
+      const basic = words.every((w) => w === "basic land");
+      const types = basic ? ["land"] : words.map((w) => w.replace(/^basic /, ""));
+      const n = /^up to/i.test(m[1]!) ? (amount(m[1]!.split(" ").at(-1)!) as number) : 1;
+      result.effects.push({
+        type: "search",
+        types,
+        to: /hand/i.test(m[4]!) ? "hand" : "battlefield",
+        reveal: !!m[3],
+        ...(m[5] ? { tapped: true } : {}),
+        ...(basic ? { basic: true } : {}),
+        ...(n > 1 ? { count: n } : {}),
+      });
+      continue;
+    }
+    if ((m = /^search your library for up to (two|three) basic land cards, reveal those cards, put one onto the battlefield tapped and the others? into your hand$/i.exec(s))) {
+      result.effects.push({ type: "search", types: ["land"], basic: true, to: "battlefield", tapped: true, reveal: true, count: amount(m[1]!) as number, split: true });
       continue;
     }
     if (/^flip a coin$/i.test(s)) continue;
@@ -686,6 +719,20 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
         prev.orElse = parts.flatMap((p) => p.effects);
         continue;
       }
+    }
+    // Ashling : « create a token that's a copy of it. The token gains haste until end of turn.
+    // At the beginning of your next end step, sacrifice it unless you pay {W}{U}{B}{R}{G}. »
+    if (/^create a token that's a copy of it$/i.test(s)) {
+      result.effects.push({ type: "copyEventCard" });
+      continue;
+    }
+    if (/^the token gains haste until end of turn$/i.test(s) && prev?.type === "copyEventCard") {
+      prev.haste = true;
+      continue;
+    }
+    if ((m = /^at the beginning of your next end step, sacrifice it unless you pay ((?:\{[^}]+\})+)$/i.exec(s)) && prev?.type === "copyEventCard") {
+      prev.endStepUnless = m[1]!;
+      continue;
     }
     // Chaos Warp.
     if ((m = /^the owner of target (.+?) shuffles it into their library$/i.exec(s))) {
@@ -1004,7 +1051,7 @@ export interface CardSupport {
   unknown: string[];
 }
 
-const HANDLED_KEYWORDS = new Set([...COMBAT_KEYWORDS, "Flash", "Exploit", "Read ahead"].map((k) => k.toLowerCase()));
+const HANDLED_KEYWORDS = new Set([...COMBAT_KEYWORDS, "Flash", "Exploit", "Read ahead", "Evoke"].map((k) => k.toLowerCase()));
 
 /** Ce que le moteur fait d'une ligne de texte d'un permanent. */
 interface LineStatus {
@@ -1029,6 +1076,7 @@ export function auraTarget(typeLine: string, oracleText: string): TargetSpec | n
 
 function permanentLineStatus(line: string, typeLine: string, name: string): LineStatus {
   if (/^enchant /i.test(line) && auraTarget(typeLine, line)) return { title: "Aura", status: "auto" };
+  if (printedEvoke(line)) return { title: "Évocation", status: "auto" };
   const abilities = parsePermanentAbilities(line, name, typeLine);
   if (/^\{T\}: Add /.test(line) && manaOptions(typeLine, line).length > 0) return { title: "Capacité de mana", status: "auto" };
   if (abilities.triggers.length > 0) return { title: "Capacité déclenchée", status: "auto" };
@@ -1120,6 +1168,7 @@ export const KEYWORD_HELP: Record<string, { name: string; help: string }> = {
   "read ahead": { name: "Lecture anticipée", help: "En lançant la saga, tu choisis le chapitre de départ ; les chapitres sautés ne se déclenchent pas." },
   exploit: { name: "Exploitation", help: "En arrivant, tu peux sacrifier une créature (le moteur te le demande)." },
   flash: { name: "Flash", help: "Peut se lancer à tout moment où l'on a la priorité." },
+  evoke: { name: "Évocation", help: "Peut se lancer pour son coût d'évocation ; elle est alors sacrifiée en arrivant." },
 };
 
 /**

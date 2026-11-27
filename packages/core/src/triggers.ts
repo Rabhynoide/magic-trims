@@ -32,6 +32,8 @@ export type TriggerEvent =
   | { type: "attacks"; cardId: CardInstanceId }
   | { type: "blocks"; cardId: CardInstanceId }
   | { type: "exploits"; cardId: CardInstanceId }
+  /** Un permanent est sacrifié (Ashling). */
+  | { type: "sacrificed"; cardId: CardInstanceId; controllerId: PlayerId; dataId: string; faceIndex: number; isToken: boolean; typeLine: string }
   /** Un permanent change de contrôleur. */
   | { type: "controlChanged"; cardId: CardInstanceId; controllerId: PlayerId }
   /** Un permanent engagé se dégage. */
@@ -70,6 +72,8 @@ export type TriggerCondition =
   | { on: "cast"; whose: Whose; types: string[]; notTypes: string[] }
   /** « Whenever ~ attacks », « … blocks », « … attacks or blocks ». */
   | { on: "combat"; attacks: boolean; blocks: boolean; anyCreature?: boolean; defender?: "you" }
+  /** « Whenever you sacrifice a nontoken Elemental » : `subtype` (ou type), `nontoken`. */
+  | { on: "sacrificed"; whose: Whose; subtype?: string; nontoken: boolean }
   /** Bronze Bombshell : « When a player other than ~'s owner controls it ». */
   | { on: "controlledByNonOwner" }
   /** « When ~ exploits a creature ». */
@@ -105,6 +109,8 @@ export interface TriggeredAbility {
   unless?: Unless;
   /** « This ability triggers only once each turn. » */
   oncePerTurn?: boolean;
+  /** Condition vérifiée au déclenchement et à la résolution (« if an opponent controls more lands than you », Land Tax). */
+  onlyIf?: "opponentMoreLands";
 }
 
 export interface PermanentAbilities {
@@ -182,6 +188,10 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   if (/^~ becomes untapped$/i.test(t)) return { on: "untapped" };
   if (/^a creature attacks you(?: or a planeswalker you control)?$/i.test(t)) return { on: "combat", attacks: true, blocks: false, anyCreature: true, defender: "you" };
   if (/^a player other than ~'s owner controls it$/i.test(t)) return { on: "controlledByNonOwner" };
+  if ((m = /^you sacrifice an? (nontoken )?(\w+)$/i.exec(t))) {
+    const what = m[2]!.toLowerCase();
+    return { on: "sacrificed", whose: "you", nontoken: !!m[1], ...(what === "permanent" ? {} : { subtype: m[2]! }) };
+  }
   if (/^~ is dealt damage$/i.test(t)) return { on: "damaged" };
   if ((m = /^(~|a creature|a creature you control|a creature an opponent controls) deals combat damage to (a player|an opponent|one of your opponents|you)$/i.exec(t))) {
     const who = m[1]!.toLowerCase();
@@ -234,7 +244,8 @@ function parseTriggerBody(text: string): { effects: SpellEffects; optional: bool
   // Solitary Confinement : « sacrifice ~ unless you discard a card ».
   const discard = /^(.+) unless you discard a card$/i.exec(bare);
   if (discard) return { effects: parseSpellEffects(cap(discard[1]!), "~"), optional: false, unless: { payer: "you", discard: 1 } };
-  const unlessPay = /^(.+) unless (?:you pay|that player pays) ((?:\{[^}]+\})+)$/i.exec(bare);
+  // Une seule phrase : « … unless you pay {1} » (pas la dernière phrase d'un texte plus long, comme Ashling).
+  const unlessPay = /\.\s/.test(bare) ? null : /^(.+) unless (?:you pay|that player pays) ((?:\{[^}]+\})+)$/i.exec(bare);
   if (unlessPay) {
     return { effects: parseSpellEffects(cap(unlessPay[1]!), "~"), optional: false, unless: { payer: /that player/i.test(text) ? "event" : "you", mana: unlessPay[2]! } };
   }
@@ -330,6 +341,12 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         body = body.replace(/\s*This ability triggers only once each turn\.?$/i, "");
       }
       let ifUntapped = false;
+      let onlyIf: TriggeredAbility["onlyIf"];
+      const moreLands = /^if an opponent controls more lands than you, (.+)$/i.exec(body);
+      if (moreLands) {
+        onlyIf = "opponentMoreLands";
+        body = moreLands[1]!;
+      }
       const wasCast = /^if it was cast, (.+)$/i.exec(body);
       if (wasCast && condition?.on === "enters") {
         condition.ifCast = true;
@@ -355,6 +372,7 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         ...(parsed.payLife ? { payLife: parsed.payLife } : {}),
         ...(parsed.unless ? { unless: parsed.unless } : {}),
         ...(oncePerTurn ? { oncePerTurn } : {}),
+        ...(onlyIf ? { onlyIf } : {}),
       });
       continue;
     }
@@ -449,6 +467,10 @@ export function conditionMatches(
       if (c.on !== "combat" || !(event.type === "attacks" ? c.attacks : c.blocks)) return false;
       if (c.defender === "you" && g.combat?.attackers[event.cardId] !== source.controllerId) return false;
       return c.anyCreature ? true : event.cardId === source.instanceId;
+    case "sacrificed":
+      if (c.on !== "sacrificed" || (c.nontoken && event.isToken)) return false;
+      if (c.subtype && !new RegExp(`\\b${c.subtype}\\b`, "i").test(event.typeLine)) return false;
+      return whoseMatches(g, c.whose, source.controllerId, event.controllerId);
     case "controlChanged":
       return c.on === "controlledByNonOwner" && event.cardId === source.instanceId && g.cards[source.instanceId]?.ownerId !== event.controllerId;
     case "exploits":
@@ -474,4 +496,15 @@ export function conditionMatches(
     default:
       return c.on === event.type && whoseMatches(g, c.whose, source.controllerId, event.playerId);
   }
+}
+
+/** La condition « if … » d'une capacité déclenchée est-elle remplie pour ce joueur ? */
+export function triggerConditionHolds(g: GameState, onlyIf: TriggeredAbility["onlyIf"], controllerId: PlayerId): boolean {
+  if (onlyIf === "opponentMoreLands") {
+    const lands = (id: PlayerId) =>
+      g.players[id]!.zones.battlefield.filter((c) => /\bLand\b/.test(g.cardData[g.cards[c]!.cardId]?.typeLine ?? "")).length;
+    const mine = lands(controllerId);
+    return g.turnOrder.some((id) => id !== controllerId && !g.players[id]!.hasConceded && !areTeammates(g, id, controllerId) && lands(id) > mine);
+  }
+  return true;
 }

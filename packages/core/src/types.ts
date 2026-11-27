@@ -191,6 +191,8 @@ export interface CardInstance {
   alternative?: boolean;
   /** Lancé depuis la main (Approach of the Second Sun). */
   castFromHand?: boolean;
+  /** Lancé pour son coût d'évocation : sacrifié en arrivant. */
+  evoked?: boolean;
   /** Sort ou capacité sur la pile qui commence par un regard : `done` une fois les cartes rangées. */
   scry?: { count: number; done?: boolean };
   /**
@@ -220,6 +222,9 @@ export interface StackAbility {
   eventPlayerId?: PlayerId;
   /** Carte de l'événement (« return that card »), et la zone où elle est allée. */
   eventCardId?: CardInstanceId;
+  /** Données de la carte de l'événement (Ashling copie l'Élémental sacrifié). */
+  eventDataId?: string;
+  eventFaceIndex?: number;
   eventZone?: Zone;
   /** Capacité donnée à la source (« that creature gains "When this creature dies, …" ») : son texte. */
   grantedText?: string;
