@@ -6,14 +6,17 @@ import {
   isDeckLegal,
   type DeckIssue,
   type GameModeType,
+  type ResolvedDeck,
+  type SharedDeck,
 } from "@magic-trims/core";
 import type { SavedDeck } from "../storage";
 import { ManaText } from "./ManaText";
 
 /**
  * Liste des decks en tableau : nom, couleurs, format et légalité pour chaque
- * mode de jeu. Les decks sont rangés en trois catégories ; seuls les decks
- * importés existent pour l'instant.
+ * mode de jeu. Les decks sont rangés en trois catégories : préconstruits
+ * officiels (plus tard), decks importés, et decks partagés par le groupe
+ * d'amis sur le serveur central facultatif.
  */
 
 export type DeckCategory = "official" | "imported" | "community";
@@ -34,8 +37,8 @@ const CATEGORIES: { id: DeckCategory; label: string; empty: string; available: b
   {
     id: "community",
     label: "Communauté",
-    empty: "Le partage de decks entre joueurs demandera un serveur commun, prévu plus tard.",
-    available: false,
+    empty: "Aucun deck partagé dans ton groupe pour l'instant.",
+    available: true,
   },
 ];
 
@@ -51,8 +54,26 @@ const MODE_SHORT: Record<GameModeType, string> = {
 
 const MODES = Object.keys(GAME_MODES) as GameModeType[];
 
+/** Decks partagés par le groupe sur le serveur central (absent : pas de serveur central sur cet écran). */
+export interface CommunityDecks {
+  /** `off` : pas connecté à un groupe. */
+  status: "off" | "loading" | "ok" | "error";
+  error?: string;
+  decks: SharedDeck[];
+  onRefresh?: () => void;
+  /** Boutons propres à chaque deck partagé (copier, retirer…). */
+  actions?: (deck: SharedDeck) => ReactNode;
+}
+
+interface DeckLike {
+  id: string;
+  name: string;
+  deck: ResolvedDeck;
+}
+
 interface Props {
   decks: SavedDeck[];
+  community?: CommunityDecks;
   /** Deck choisi, mis en évidence. */
   selectedId?: string | null;
   /** Mode de la partie en cours, dont la colonne est mise en évidence. */
@@ -65,9 +86,40 @@ interface Props {
 
 export function DeckBrowser(props: Props) {
   const [category, setCategory] = useState<DeckCategory>("imported");
-  const counts: Record<DeckCategory, number> = { official: 0, imported: props.decks.length, community: 0 };
+  const community = props.community;
+  const counts: Record<DeckCategory, number> = {
+    official: 0,
+    imported: props.decks.length,
+    community: community?.decks.length ?? 0,
+  };
   const current = CATEGORIES.find((c) => c.id === category)!;
-  const decks = category === "imported" ? props.decks : [];
+  const rows: { deck: DeckLike; subtitle?: string; actions?: ReactNode; onSelect?: () => void }[] =
+    category === "imported"
+      ? props.decks.map((d) => ({
+          deck: d,
+          ...(props.actions ? { actions: props.actions(d) } : {}),
+          ...(props.onSelect ? { onSelect: () => props.onSelect!(d) } : {}),
+        }))
+      : category === "community" && community
+        ? community.decks.map((d) => ({
+            deck: d,
+            subtitle: `partagé par ${d.owner.name}`,
+            ...(community.actions ? { actions: community.actions(d) } : {}),
+          }))
+        : [];
+  const hasActions = category === "imported" ? Boolean(props.actions) : Boolean(community?.actions);
+  const communityMessage =
+    category !== "community"
+      ? null
+      : !community
+        ? "Les decks partagés par ton groupe se copient dans tes decks depuis l'accueil."
+        : community.status === "off"
+          ? "Connecte-toi à un serveur central (facultatif) pour voir les decks partagés par tes amis."
+          : community.status === "loading"
+            ? "Chargement des decks partagés…"
+            : community.status === "error"
+              ? `Decks partagés indisponibles : ${community.error ?? "erreur inconnue"}`
+              : null;
 
   return (
     <div className="deck-browser">
@@ -85,9 +137,16 @@ export function DeckBrowser(props: Props) {
             {c.available ? <span className="deck-tab-count">{counts[c.id]}</span> : <span className="deck-tab-soon">bientôt</span>}
           </button>
         ))}
+        {category === "community" && community?.onRefresh && community.status !== "off" && (
+          <button className="link deck-refresh" onClick={community.onRefresh} disabled={community.status === "loading"}>
+            Actualiser
+          </button>
+        )}
       </div>
 
-      {decks.length === 0 ? (
+      {communityMessage ? (
+        <p className="hint deck-empty">{communityMessage}</p>
+      ) : rows.length === 0 ? (
         <p className="hint deck-empty">{current.empty}</p>
       ) : (
         <div className="deck-table-wrap">
@@ -106,12 +165,21 @@ export function DeckBrowser(props: Props) {
                     {MODE_SHORT[m]}
                   </th>
                 ))}
-                {props.actions && <th aria-label="Actions" />}
+                {hasActions && <th aria-label="Actions" />}
               </tr>
             </thead>
             <tbody>
-              {decks.map((d) => (
-                <DeckRow key={d.id} {...props} deck={d} selected={d.id === props.selectedId} />
+              {rows.map((r) => (
+                <DeckRow
+                  key={r.deck.id}
+                  deck={r.deck}
+                  subtitle={r.subtitle}
+                  actions={r.actions}
+                  hasActions={hasActions}
+                  onSelect={r.onSelect}
+                  currentMode={props.currentMode}
+                  selected={category === "imported" && r.deck.id === props.selectedId}
+                />
               ))}
             </tbody>
           </table>
@@ -121,7 +189,15 @@ export function DeckBrowser(props: Props) {
   );
 }
 
-function DeckRow(props: Props & { deck: SavedDeck; selected: boolean }) {
+function DeckRow(props: {
+  deck: DeckLike;
+  subtitle?: string | undefined;
+  actions?: ReactNode;
+  hasActions: boolean;
+  onSelect?: (() => void) | undefined;
+  currentMode?: GameModeType | undefined;
+  selected: boolean;
+}) {
   const { deck, onSelect } = props;
   const legality = useMemo(() => deckLegalityByMode(deck.deck, MODES), [deck.deck]);
   const colors = deckColorIdentity(deck.deck);
@@ -131,11 +207,12 @@ function DeckRow(props: Props & { deck: SavedDeck; selected: boolean }) {
   return (
     <tr
       className={`${props.selected ? "selected" : ""} ${onSelect ? "selectable" : ""}`}
-      onClick={onSelect ? () => onSelect(deck) : undefined}
+      onClick={onSelect}
     >
       <td className="deck-name">
         <strong>{deck.name}</strong>
         {commanders && commanders !== deck.name && <span>{commanders}</span>}
+        {props.subtitle && <span className="deck-owner">{props.subtitle}</span>}
       </td>
       <td className="deck-colors">
         <ManaText text={colors.length > 0 ? colors.map((c) => `{${c}}`).join("") : "{C}"} />
@@ -149,9 +226,9 @@ function DeckRow(props: Props & { deck: SavedDeck; selected: boolean }) {
           <LegalityMark issues={legality[m] ?? []} mode={m} />
         </td>
       ))}
-      {props.actions && (
+      {props.hasActions && (
         <td className="deck-actions" onClick={(e) => e.stopPropagation()}>
-          {props.actions(deck)}
+          {props.actions}
         </td>
       )}
     </tr>
