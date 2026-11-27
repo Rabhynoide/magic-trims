@@ -82,7 +82,7 @@ export type TriggerCondition =
   /** « Whenever ~ becomes untapped ». */
   | { on: "untapped" }
   /** « Whenever a creature deals combat damage to one of your opponents », « Whenever ~ deals combat damage to a player ». */
-  | { on: "combatDamage"; self: boolean; creature: Whose; player: Whose }
+  | { on: "combatDamage"; self: boolean; creature: Whose; player: Whose; batched?: boolean }
   /** « Whenever ~ is dealt damage ». */
   | { on: "damaged" }
   /** Chapitre d'une saga (« I, II — … »). */
@@ -201,6 +201,9 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
     return { on: "sacrificed", whose: "you", nontoken: !!m[1], ...(what === "permanent" ? {} : { subtype: m[2]! }) };
   }
   if (/^~ is dealt damage$/i.test(t)) return { on: "damaged" };
+  if (/^one or more creatures you control deal combat damage to a player$/i.test(t)) {
+    return { on: "combatDamage", self: false, creature: "you", player: "any", batched: true };
+  }
   if ((m = /^(~|a creature|a creature you control|a creature an opponent controls) deals combat damage to (a player|an opponent|one of your opponents|you)$/i.exec(t))) {
     const who = m[1]!.toLowerCase();
     const to = m[2]!.toLowerCase();
@@ -273,6 +276,10 @@ function parseTriggerBody(text: string): { effects: SpellEffects; optional: bool
   }
   if (/^you may look at the top X cards of your library, where X is that creature's power\. If you do, put one of those cards on top of your library and the rest on the bottom of your library in any order\.?$/i.test(text)) {
     return fixed({ type: "lookTopKeepOne" }, true);
+  }
+  // Descendants' Fury : sacrifier une des créatures qui ont infligé les blessures, puis révéler jusqu'à une créature de même type.
+  if (/^you may sacrifice one of them\. If you do, reveal cards from the top of your library until you reveal a creature card that shares a creature type with the sacrificed creature\. Put that card onto the battlefield and the rest on the bottom of your library in a random order\.?$/i.test(text)) {
+    return fixed({ type: "sacrificeOneReveal" }, true);
   }
   // Greenwarden of Murasa, Cavalier of Thorns : « you may exile it. If you do, … ».
   const exileIt = /^you may exile it\. If you do, (.+)$/i.exec(text);

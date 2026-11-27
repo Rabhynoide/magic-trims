@@ -51,11 +51,13 @@ import {
   evokeOptions,
   type EvokeCost,
   chooseTypeOf,
+  foretellCost,
   colorsAmongPermanents,
   costReductions,
   mostCommonCreatureType,
   hasCreatureType,
   typeLineHasCreatureType,
+  sharesCreatureType,
 } from "./statics.js";
 import { canAttack, canBlock, cantAttack, cantBlock, colorsOf, creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatState } from "./combat.js";
 import { MAX_HAND_SIZE, STEP_LABELS, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
@@ -424,6 +426,21 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     emit(g, { type: "landPlayed", playerId: actor.id });
   },
 
+  foretell(g, actor, { cardId }) {
+    const card = getCard(g, cardId);
+    if (card.zone !== "hand" || card.ownerId !== actor.id) throw new ActionError("Présage : la carte doit être dans ta main.");
+    const cost = foretellCost(g.cardData[card.cardId]);
+    if (!cost) throw new ActionError("Cette carte n'a pas le présage.");
+    if (!isActivePlayer(g, actor.id)) throw new ActionError("Tu ne peux présager que pendant ton tour.");
+    if (g.priority && !samePriorityUnit(g, g.priority.playerId, actor.id)) {
+      throw new ActionError(`Attends d'avoir la priorité (c'est à ${g.players[g.priority.playerId]!.name}).`);
+    }
+    payMana(g, actor, "{2}", 0, 0, card.instanceId, "présager");
+    const exiled = moveCardTo(g, cardId, "exile", "top", { faceDown: true });
+    exiled.castPermission = { free: false, turn: g.turn.number, foretell: cost, reason: "présage" };
+    log(g, actor.id, `${actor.name} présage une carte (exilée face cachée).`);
+  },
+
   castSpell(g, actor, { cardId, face, x, targets, sacrifice, alternative, chapter, evoke, evokeExile, chosenType }) {
     const card = getCard(g, cardId);
     const fromCommand = card.zone === "command" && card.isCommander;
@@ -457,6 +474,9 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     // Cibles des effets que le moteur sait appliquer.
     const effects = g.settings.enforceRules ? spellEffectsOf(g, card, faceIndex, alternative ?? false) : null;
     if (alternative && !effects?.alternativeCost) throw new ActionError("Ce sort n'a pas de coût alternatif.");
+    if (effects?.castOnly === "opponentCombat" && (isActivePlayer(g, actor.id) || !["beginCombat", "declareAttackers", "declareBlockers", "combatDamage", "endCombat"].includes(g.turn.step))) {
+      throw new ActionError("Ce sort ne se lance que pendant le combat, au tour d'un adversaire.");
+    }
     const chosen = targets ?? [];
     if (effects && effects.targets.length > 0) {
       if (chosen.length !== effects.targets.length) {
@@ -489,7 +509,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
         throw new ActionError(`Choisis une carte ${colorName} de ta main à exiler.`);
       }
     }
-    const costText = permission?.free ? "" : evokeCost ? evokeCost.mana : alternative ? effects!.alternativeCost! : faceData?.manaCost || data.manaCost;
+    const costText = permission?.free ? "" : permission?.foretell ? permission.foretell : evokeCost ? evokeCost.mana : alternative ? effects!.alternativeCost! : faceData?.manaCost || data.manaCost;
     const tax = fromCommand ? 2 * (actor.commanderCasts[card.instanceId] ?? 0) : 0;
     const name = cardName(g, card);
     // Coût supplémentaire : sacrifier un permanent (Village Rites…).
@@ -530,6 +550,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     cast.faceIndex = faceIndex;
     if (alternative) cast.alternative = true;
     if (evokeCost) cast.evoked = true;
+    if (permission?.foretell) cast.foretold = true;
     const what = chooseTypeOf(data, faceIndex);
     const chosenOne = what ? checkChosenType(what, chosenType) : undefined;
     if (chosenOne) cast.chosenType = chosenOne;
@@ -551,7 +572,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       x !== undefined ? `X = ${xValue}` : "",
       alternative ? "coût alternatif" : "",
       evokeCost ? "évocation" : "",
-      permission ? `${permission.reason}${permission.free ? ", sans payer son coût" : ""}` : "",
+      permission ? `${permission.reason}${permission.free ? ", sans payer son coût" : permission.foretell ? ` pour ${permission.foretell}` : ""}` : "",
       tax > 0 ? `taxe de commandant {${tax}}` : "",
       reduction > 0 ? `réduction de {${reduction}}` : "",
     ]
@@ -1181,6 +1202,7 @@ export function moveCardTo(
     delete card.modes;
     delete card.alternative;
     delete card.castFromHand;
+    delete card.foretold;
     if (to !== "battlefield") delete card.evoked;
   }
   if (from === "battlefield" && to !== "battlefield") delete card.goadedBy;
@@ -1497,6 +1519,7 @@ function flushTriggers(g: GameState): boolean {
     event: TriggerEvent;
     trigger: TriggeredAbility;
     grantedText?: string;
+    batch?: CardInstanceId[];
   };
   const pending: Pending[] = [];
   const permanents = g.turnOrder
@@ -1547,6 +1570,17 @@ function flushTriggers(g: GameState): boolean {
         if (trigger.ifUntapped && card.tapped) return;
         if (trigger.onlyIf && !triggerConditionHolds(g, trigger.onlyIf, card.controllerId)) return;
         // « One or more … » et « only once each turn » : une seule fois pour cette action (et ce tour).
+        // « One or more creatures you control deal combat damage » : une seule fois, avec toutes les créatures.
+        if (trigger.condition.on === "combatDamage" && trigger.condition.batched && event.type === "combatDamage") {
+          const already = pending.filter((p) => p.source.instanceId === card.instanceId && p.index === index);
+          if (already.length > 0) {
+            for (const p of already) if (!p.batch!.includes(event.cardId)) p.batch!.push(event.cardId);
+            return;
+          }
+          const copies = 1 + extraTriggers(g, permanents, card, dataId, faceIndex, event);
+          for (let i = 0; i < copies; i++) pending.push({ source: card, dataId, faceIndex, index, controllerId: card.controllerId, event, trigger, batch: [event.cardId] });
+          return;
+        }
         const once = trigger.oncePerTurn || (trigger.condition.on === "dies" && trigger.condition.batched);
         if (once && pending.some((p) => p.source.instanceId === card.instanceId && p.index === index)) return;
         if (trigger.oncePerTurn) {
@@ -1589,6 +1623,7 @@ function flushTriggers(g: GameState): boolean {
       instance.ability.eventDataId = ev.dataId;
       instance.ability.eventFaceIndex = ev.faceIndex;
     }
+    if (p.batch) instance.ability.batch = [...p.batch];
     if ("playerId" in ev) instance.ability.eventPlayerId = ev.playerId;
     if ("amount" in ev) instance.ability.eventAmount = ev.amount;
     // Cibles : choisies d'office quand il n'y a qu'un choix possible.
@@ -1948,6 +1983,57 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         // Le premier choisi finit sur le dessus.
         for (const id of [...chosen].reverse()) moveCardTo(g, id, "library", "top");
         log(g, null, `${caster.name} met ${plural(chosen.length, "carte")} de sa main sur le dessus de sa bibliothèque.`);
+        break;
+      }
+      case "searchSharingType": {
+        const [id] = source.choices?.[effects.indexOf(effect)] ?? [];
+        const c = id ? g.cards[id] : undefined;
+        if (c && c.zone === "library") {
+          const entered = moveCardTo(g, c.instanceId, "battlefield", "top", { controllerId: caster.id });
+          log(g, null, `${caster.name} cherche ${cardName(g, entered)} et le met sur le champ de bataille.`);
+        } else log(g, null, `${caster.name} ne trouve aucune créature.`);
+        shuffleLibrary(g, caster);
+        break;
+      }
+      case "sacrificeOneReveal": {
+        const [id] = source.choices?.[effects.indexOf(effect)] ?? [];
+        const victim = id ? g.cards[id] : undefined;
+        if (!victim || victim.zone !== "battlefield" || victim.controllerId !== caster.id) break;
+        const vData = g.cardData[victim.cardId];
+        const vFace = vData?.faces?.[victim.faceIndex] ?? vData;
+        const victimName = cardName(g, victim);
+        sacrificePermanent(g, victim);
+        log(g, null, `${caster.name} sacrifie ${victimName}.`);
+        const revealed: CardInstanceId[] = [];
+        let hit: CardInstanceId | undefined;
+        for (const libId of [...caster.zones.library]) {
+          revealed.push(libId);
+          addRevealed(g.cards[libId]!, g.turnOrder);
+          const d = g.cardData[g.cards[libId]!.cardId];
+          const f = d?.faces?.[0] ?? d;
+          if (f && vFace && /\bCreature\b/.test(f.typeLine) && sharesCreatureType({ typeLine: f.typeLine, oracleText: f.oracleText ?? "" }, { typeLine: vFace.typeLine, oracleText: vFace.oracleText ?? "" })) {
+            hit = libId;
+            break;
+          }
+        }
+        if (hit) {
+          const entered = moveCardTo(g, hit, "battlefield", "top", { controllerId: caster.id });
+          log(g, null, `${caster.name} révèle ${plural(revealed.length, "carte")} et met ${cardName(g, entered)} sur le champ de bataille.`);
+        } else log(g, null, `${caster.name} révèle toute sa bibliothèque sans trouver de créature du même type.`);
+        const rest = revealed.filter((x) => x !== hit && g.cards[x]?.zone === "library");
+        g.rngState = shuffleInPlace(rest, g.rngState);
+        for (const x of rest) moveCardTo(g, x, "library", "bottom");
+        break;
+      }
+      case "returnCards": {
+        const chosen = (source.choices?.[effects.indexOf(effect)] ?? []).filter((id) => g.cards[id]?.zone === "graveyard" && g.cards[id]!.ownerId === caster.id);
+        const names: string[] = [];
+        for (const id of chosen) {
+          const entered = moveCardTo(g, id, "battlefield", "top", { controllerId: caster.id });
+          if (effect.sacrificeAtEnd) entered.grantedTriggers = [...(entered.grantedTriggers ?? []), "At the beginning of each end step, sacrifice this permanent."];
+          names.push(cardName(g, entered));
+        }
+        log(g, null, names.length > 0 ? `${caster.name} remet ${names.join(", ")} de son cimetière sur le champ de bataille.` : `${caster.name} ne remet aucune créature sur le champ de bataille.`);
         break;
       }
       case "putFromHand": {
@@ -2669,6 +2755,54 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
       card.cardChoice = { index, options, min: effect.count, max: effect.count, label: `Choisis ${plural(effect.count, "carte")} de ta main à mettre sur le dessus de ta bibliothèque (la première choisie sera dessus)` };
       return true;
     }
+    // Pyre of Heroes : une créature qui partage un type avec la sacrifiée, de valeur de mana +1.
+    if (effect.type === "searchSharingType") {
+      const sacrificed = card.ability?.eventDataId ? g.cardData[card.ability.eventDataId] : undefined;
+      const face = sacrificed?.faces?.[card.ability?.eventFaceIndex ?? 0] ?? sacrificed;
+      const options = sacrificed
+        ? controller.zones.library.filter((id) => {
+            const d = g.cardData[g.cards[id]!.cardId];
+            const f = d?.faces?.[0] ?? d;
+            return !!d && !!f && /\bCreature\b/.test(f.typeLine) && d.manaValue === sacrificed.manaValue + effect.mvPlus &&
+              sharesCreatureType({ typeLine: f.typeLine, oracleText: f.oracleText ?? "" }, { typeLine: face!.typeLine, oracleText: face!.oracleText ?? "" });
+          })
+        : [];
+      if (options.length === 0) {
+        card.choices = { ...(card.choices ?? {}), [index]: [] };
+        continue;
+      }
+      for (const id of options) addRevealed(g.cards[id]!, [controller.id]);
+      card.cardChoice = { index, options, min: 0, max: 1, label: `Choisis une créature de valeur de mana ${sacrificed!.manaValue + effect.mvPlus} à mettre sur le champ de bataille` };
+      return true;
+    }
+    // Descendants' Fury : une des créatures qui ont infligé des blessures de combat.
+    if (effect.type === "sacrificeOneReveal") {
+      const options = (card.ability?.batch ?? []).filter((id) => g.cards[id]?.zone === "battlefield" && g.cards[id]!.controllerId === controller.id);
+      if (options.length <= 1) {
+        card.choices = { ...(card.choices ?? {}), [index]: options };
+        continue;
+      }
+      card.cardChoice = { index, options, min: 1, max: 1, label: "Choisis la créature à sacrifier" };
+      return true;
+    }
+    // Haunting Voyage, Wake the Dead : des cartes de créature de son cimetière.
+    if (effect.type === "returnCards") {
+      const type = effect.chosenType ? card.chosenType : undefined;
+      const options = controller.zones.graveyard.filter((id) => {
+        const d = g.cardData[g.cards[id]!.cardId];
+        const t = d?.faces?.[0]?.typeLine ?? d?.typeLine ?? "";
+        return /\bCreature\b/.test(t) && (!effect.chosenType || (!!type && typeLineHasCreatureType(t, d?.faces?.[0]?.oracleText ?? d?.oracleText ?? "", type)));
+      });
+      const count = effect.allIfForetold && card.foretold ? options.length : effect.count === "X" ? (card.xValue ?? 0) : effect.count;
+      if (options.length <= count) {
+        card.choices = { ...(card.choices ?? {}), [index]: options };
+        continue;
+      }
+      const what = type ? `carte${count > 1 ? "s" : ""} de créature ${type}` : `carte${count > 1 ? "s" : ""} de créature`;
+      card.cardChoice = { index, options, min: effect.count === "X" ? count : 0, max: count, label: `Choisis jusqu'à ${count} ${what} de ton cimetière à mettre sur le champ de bataille` };
+      if (effect.count === "X") card.cardChoice.label = `Choisis ${count} ${what} de ton cimetière à mettre sur le champ de bataille`;
+      return true;
+    }
     // Incandescent Soulstoke : une créature du type de sa main (facultatif).
     if (effect.type === "putFromHand") {
       const options = controller.zones.hand.filter((id) => {
@@ -2802,6 +2936,7 @@ function withModes(effects: SpellEffects, card: CardInstance): Effect[] {
 export function exilePermissionHolds(g: GameState, card: CardInstance): boolean {
   const p = card.castPermission;
   if (!p || (card.zone !== "exile" && card.zone !== "graveyard")) return false;
+  if (p.foretell) return g.turn.number > p.turn;
   if (p.turn !== g.turn.number) return false;
   if (p.step && g.turn.step !== p.step) return false;
   if (p.whileOnStack && !g.stack.includes(p.whileOnStack)) return false;
@@ -3145,6 +3280,8 @@ function activateAbility(
     faceIndex: card.faceIndex,
     activated: true,
     ...(anyColor ? { color: color! } : {}),
+    // Pyre of Heroes : la créature sacrifiée, telle qu'elle était.
+    ...(sacrificed ? { eventDataId: sacrificed.cardId, eventFaceIndex: sacrificed.faceIndex } : {}),
   };
   if (sacrificed) {
     const sacName = cardName(g, sacrificed);

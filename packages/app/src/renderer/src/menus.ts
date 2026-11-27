@@ -9,6 +9,7 @@ import {
   chooseTypeOf,
   entersUntappedChoice,
   exilePermissionHolds,
+  foretellCost,
   mostCommonCreatureType,
   stateFromView,
   sagaChapters,
@@ -153,10 +154,19 @@ export function cardMenu(view: GameView, card: CardView): MenuItem[] {
     const state = stateFromView(view);
     const instance = id ? state.cards[id] : undefined;
     if (instance && exilePermissionHolds(state, instance)) {
-      const reason = instance.castPermission!.reason;
-      const play = playItems(view, card).map((item) => (item.separator ? item : { ...item, label: `${item.label} (${reason}, gratuit)` }));
+      const permission = instance.castPermission!;
+      const how = permission.free ? "gratuit" : permission.foretell ? `pour ${permission.foretell}` : "";
+      const play = playItems(view, card).map((item) =>
+        item.separator ? item : { ...item, label: permission.foretell ? `Lancer ${cardName(view, card)} présagé ${permission.foretell}` : `${item.label} (${permission.reason}${how ? `, ${how}` : ""})` },
+      );
       if (play.length > 0) items.push(play[0]!, { separator: true, label: "" });
     }
+  }
+
+  // Présage : {2} pendant son tour, la carte part en exil face cachée.
+  const foretell = zone === "hand" && card.ownerId === me && view.settings.enforceRules ? foretellCost(cardData(view, card)) : null;
+  if (foretell) {
+    items.push({ label: `Présager pour {2} (à lancer plus tard pour ${foretell})`, onClick: () => void act({ type: "foretell", cardId: id }) }, { separator: true, label: "" });
   }
 
   if (zone === "hand" && card.ownerId === me) {

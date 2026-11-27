@@ -427,6 +427,17 @@ export function typeLineHasCreatureType(typeLine: string, oracleText: string, su
   return /\b(Creature|Kindred|Tribal)\b/.test(typeLine) && /^Changeling\b/m.test(oracleText);
 }
 
+/** Deux cartes partagent-elles un type de créature (Changelin compris) ? */
+export function sharesCreatureType(a: { typeLine: string; oracleText: string }, b: { typeLine: string; oracleText: string }): boolean {
+  const types = (t: string) => (/\b(Creature|Kindred|Tribal)\b/.test(t) ? (t.split("—")[1] ?? "").split("//")[0]!.trim().split(/\s+/).filter(Boolean) : []);
+  const changeling = (c: { typeLine: string; oracleText: string }) => /\b(Creature|Kindred|Tribal)\b/.test(c.typeLine) && /^Changeling\b/m.test(c.oracleText);
+  const ta = types(a.typeLine);
+  const tb = types(b.typeLine);
+  if (changeling(a) && (changeling(b) || tb.length > 0)) return true;
+  if (changeling(b) && ta.length > 0) return true;
+  return ta.some((t) => tb.includes(t));
+}
+
 /** Le permanent a-t-il ce type de créature (Changelin compris) ? */
 export function hasCreatureType(g: GameState, card: CardInstance, subtype: string): boolean {
   const data = g.cardData[card.cardId];
@@ -446,8 +457,17 @@ export function mostCommonCreatureType(g: GameState, playerId: PlayerId): string
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "Elemental";
 }
 
+/** Le coût de présage (« Foretell {5}{B}{B} »), ou `null`. */
+export function foretellCost(data: CardData | undefined): string | null {
+  const m = /^Foretell ((?:\{[^}]+\})+)/m.exec(data?.oracleText ?? "");
+  return m ? m[1]! : null;
+}
+
 /** Ce que la carte fait choisir en arrivant (« As ~ enters, choose a creature type »). */
 export function chooseTypeOf(data: CardData | undefined, faceIndex = 0): "creature" | "card" | "color" | null {
+  // Un rituel ou un éphémère qui commence par « Choose a creature type. » (Haunting Voyage) : choisi en le lançant.
+  const face = data?.faces?.[faceIndex];
+  if (data && /\b(Instant|Sorcery)\b/.test(face?.typeLine ?? data.typeLine) && /^Choose a creature type\./.test(face?.oracleText ?? data.oracleText)) return "creature";
   const s = staticsOfData(data, faceIndex).find((x) => x.kind === "chooseType");
   return s && s.kind === "chooseType" ? s.what : null;
 }

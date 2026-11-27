@@ -88,6 +88,8 @@ export type GameAction =
       /** « As ~ enters, choose a creature type » : le type choisi (Herald's Horn, Morophon). */
       chosenType?: string;
     }
+  /** Présage : payer {2} pendant son tour pour exiler la carte de sa main face cachée. */
+  | { type: "foretell"; cardId: CardInstanceId }
   /**
    * Active la capacité n° `index` (parmi les capacités activées reconnues de
    * la face visible) d'un permanent, ou d'une carte de son cimetière.

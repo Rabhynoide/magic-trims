@@ -195,7 +195,18 @@ export interface CardInstance {
    * Peut être lancée depuis l'exil (rebond, cascade) : sans payer son coût si `free`,
    * pendant ce tour (et cette étape si `step`), ou tant que le sort `whileOnStack` est sur la pile.
    */
-  castPermission?: { free: boolean; turn: number; step?: TurnStep; ignoreTiming?: boolean; whileOnStack?: CardInstanceId; reason: string };
+  castPermission?: {
+    free: boolean;
+    turn: number;
+    step?: TurnStep;
+    ignoreTiming?: boolean;
+    whileOnStack?: CardInstanceId;
+    reason: string;
+    /** Présage : à lancer pour ce coût à un tour ultérieur à `turn` (sans limite de durée). */
+    foretell?: string;
+  };
+  /** Lancé depuis l'exil après avoir été présagé (« If this spell was foretold »). */
+  foretold?: boolean;
   /** Provoquée par ces joueurs (jusqu'à leur prochain tour) : doit attaquer, et un autre joueur si possible. */
   goadedBy?: PlayerId[];
   /** Cavalier of Gales : la pioche qui précède le choix des cartes à remettre est faite. */
@@ -258,6 +269,8 @@ export interface StackAbility {
   accepted?: boolean;
   /** Permanent choisi à la résolution (le sacrifice d'Exploit…). */
   choice?: CardInstanceId;
+  /** « One or more creatures … deal combat damage » : les créatures de l'événement groupé. */
+  batch?: CardInstanceId[];
   /** Couleur choisie pour « Add one mana of any color ». */
   color?: ManaType;
 }

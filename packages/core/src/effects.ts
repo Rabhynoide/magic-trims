@@ -131,6 +131,15 @@ type EffectBase =
   | { type: "handToTop"; count: number; drawFirst?: number }
   /** Incandescent Soulstoke : une carte de sa main sur le champ de bataille (au choix), célérité, sacrifiée à la fin du tour. */
   | { type: "putFromHand"; subtype: string; haste: boolean; sacrificeAtEnd: boolean }
+  /**
+   * Haunting Voyage, Wake the Dead : des cartes de créature de son cimetière, choisies à la résolution,
+   * du type choisi en lançant (`chosenType`), toutes si le sort a été présagé (`allIfForetold`).
+   */
+  /** Pyre of Heroes : une créature de la bibliothèque qui partage un type avec la créature sacrifiée, de valeur de mana +1. */
+  | { type: "searchSharingType"; mvPlus: number }
+  /** Descendants' Fury : sacrifier une des créatures qui ont infligé des blessures, révéler jusqu'à une créature de même type. */
+  | { type: "sacrificeOneReveal" }
+  | { type: "returnCards"; count: number | "X"; chosenType?: boolean; allIfForetold?: boolean; sacrificeAtEnd?: boolean }
   /** Horde of Notions : la carte ciblée du cimetière se joue gratuitement ce tour-ci. */
   | { type: "playFromGraveyard"; target: number }
   /** Living Death. */
@@ -275,6 +284,8 @@ export interface SpellEffects {
   sacrifice?: PermanentFilter;
   /** Coût alternatif (« You may pay {1}{B} rather than pay this spell's mana cost »). */
   alternativeCost?: string;
+  /** « Cast this spell only during combat on an opponent's turn » (Wake the Dead). */
+  castOnly?: "opponentCombat";
   /** « Choose one or more — • … » : les modes, choisis à la résolution (sans cible pour l'instant). */
   modes?: { min: number; max: number; list: { label: string; effects: Effect[] }[] };
   effects: Effect[];
@@ -308,7 +319,7 @@ const COLORS: Record<string, string> = { white: "W", blue: "U", black: "B", red:
 const CARD_TYPES = ["artifact", "battle", "creature", "enchantment", "land", "planeswalker"];
 
 /** Phrases sans effet de jeu à appliquer (rappels, précisions). */
-const HARMLESS = [/^rebound\.?$/i, /^cascade(?:, cascade)*\.?$/i, /^(it|they) can't be regenerated\.?$/i, /^~ can't be countered\.?$/i, /^round up each time\.?$/i];
+const HARMLESS = [/^rebound\.?$/i, /^foretell (?:\{[^}]+\})+\.?$/i, /^cascade(?:, cascade)*\.?$/i, /^(it|they) can't be regenerated\.?$/i, /^~ can't be countered\.?$/i, /^round up each time\.?$/i];
 
 
 /**
@@ -779,6 +790,12 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
         continue;
       }
     }
+    // Subterfuge : « target creature gains flying and "Whenever this creature deals combat damage…" until end of turn ».
+    if ((m = /^target creature gains ([a-z ]+?) and "((?:When|Whenever) .+?)\.?" until end of turn\.?$/i.exec(sentence.trim()))) {
+      const t = target({ label: "créature", permanent: { types: ["creature"], notTypes: [] } });
+      result.effects.push({ type: "pumpTarget", target: t, power: 0, toughness: 0, keywords: keywordList(m[1]!) }, { type: "grantTrigger", target: t, text: `${m[2]!}.` });
+      continue;
+    }
     if ((m = /^until end of turn, (that creature|target creature) gains "(When .+?)\.?"\.?$/i.exec(sentence.trim()))) {
       const t = /^target/i.test(m[1]!) ? target({ label: "créature", permanent: { types: ["creature"], notTypes: [] } }) : result.targets.length - 1;
       if (t >= 0) {
@@ -961,6 +978,24 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       result.effects.push({ type: "playFromGraveyard", target: target({ label: graveyardLabel(filter), graveyard: filter }) });
     } else if (/^put a \+1\/\+1 counter on ~ for each permanent destroyed this way$/i.test(s) && result.effects.at(-1)?.type === "destroyAll") {
       (result.effects.at(-1) as Extract<Effect, { type: "destroyAll" }>).countersOnSelf = true;
+    } else if (/^search your library for a creature card that shares a creature type with the sacrificed creature and has mana value equal to 1 plus that creature's mana value$/i.test(s)) {
+      result.effects.push({ type: "searchSharingType", mvPlus: 1 });
+      followUps.push(/^put that card onto the battlefield$/i, /^shuffle$/i);
+    } else if (/^choose a creature type$/i.test(s) && sentences.indexOf(sentence) === 0) {
+      // Haunting Voyage : le type est choisi en lançant le sort (`chosenType`).
+    } else if ((m = new RegExp(`^return (up to )?${NUM} creature cards of that type from your graveyard to the battlefield$`, "i").exec(s))) {
+      result.effects.push({ type: "returnCards", count: amount(m[2]!) as number, chosenType: true });
+      if (/^if (?:this spell|~) was foretold, return all creature cards of that type from your graveyard to the battlefield instead\.?$/i.test(sentences[sentences.indexOf(sentence) + 1] ?? "")) {
+        (result.effects.at(-1) as Extract<Effect, { type: "returnCards" }>).allIfForetold = true;
+        followUps.push(/^if (?:this spell|~) was foretold, return all creature cards of that type from your graveyard to the battlefield instead$/i);
+      }
+    } else if (/^cast (?:this spell|~) only during combat on an opponent's turn$/i.test(s)) {
+      result.castOnly = "opponentCombat";
+    } else if (/^return X target creature cards from your graveyard to the battlefield$/i.test(s)) {
+      // Wake the Dead : les X cartes sont choisies à la résolution.
+      result.effects.push({ type: "returnCards", count: "X" });
+    } else if (/^sacrifice those creatures at the beginning of the next end step$/i.test(s) && result.effects.at(-1)?.type === "returnCards") {
+      (result.effects.at(-1) as Extract<Effect, { type: "returnCards" }>).sacrificeAtEnd = true;
     } else if (/^each player exiles all creature cards from their graveyard$/i.test(s)) {
       result.effects.push({ type: "livingDeath" });
       followUps.push(/^sacrifices all creatures they control$/i, /^puts all cards they exiled this way onto the battlefield$/i);
@@ -1230,7 +1265,7 @@ export interface CardSupport {
   unknown: string[];
 }
 
-const HANDLED_KEYWORDS = new Set([...COMBAT_KEYWORDS, "Flash", "Exploit", "Read ahead", "Evoke", "Changeling", "Rebound", "Cascade", "Myriad"].map((k) => k.toLowerCase()));
+const HANDLED_KEYWORDS = new Set([...COMBAT_KEYWORDS, "Flash", "Exploit", "Read ahead", "Evoke", "Changeling", "Rebound", "Cascade", "Myriad", "Foretell"].map((k) => k.toLowerCase()));
 
 /** Ce que le moteur fait d'une ligne de texte d'un permanent. */
 interface LineStatus {

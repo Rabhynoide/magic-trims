@@ -216,7 +216,7 @@ describe("Deck Ashling : recherches de terrains", () => {
 describe("Deck Ashling : bilan", () => {
   it("compte les cartes entièrement gérées", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "", manaCost: c.manaCost ?? "" })).level);
-    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(90);
+    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(95);
   });
 });
 
@@ -909,5 +909,145 @@ describe("Deck Ashling : gros effets et déclencheurs divers", () => {
     for (const name of ["Bane of Progress", "Living Death", "Shroudstomper", "Endurance", "Cavalier of Dawn", "Tyrant of Discord", "Greenwarden of Murasa", "Cavalier of Gales", "Cavalier of Thorns", "Fury", "Incandescent Soulstoke", "Horde of Notions"]) {
       expect(cardSupport(real(name)).level, name).toBe("full");
     }
+  });
+});
+
+describe("Deck Ashling : présage, retour du cimetière, Pyre, Descendants' Fury", () => {
+  const elemental = (name: string, manaValue = 1) => fakeCard(name, { typeLine: "Creature — Elemental", power: "2", toughness: "2", manaCost: "{R}", colors: ["R"], manaValue });
+  const goblin = (name: string, manaValue = 1) => fakeCard(name, { typeLine: "Creature — Goblin", power: "1", toughness: "1", manaCost: "{R}", colors: ["R"], manaValue });
+
+  function inGraveyard(g: GameState, playerId: string, card: CardData): [GameState, string] {
+    let id: string;
+    [g, id] = inHand(g, playerId, card, 0);
+    g = act(g, playerId, { type: "moveCard", cardId: id, to: "graveyard", force: true });
+    return [g, id];
+  }
+
+  function inLibrary(g: GameState, playerId: string, card: CardData, n: number): [GameState, string] {
+    g = structuredClone(g);
+    const id = g.players[playerId]!.zones.library[n]!;
+    g.cardData[g.cards[id]!.cardId] = { ...card, id: g.cards[id]!.cardId };
+    return [g, id];
+  }
+
+  it("Haunting Voyage : deux Élémentaux au choix, ou tous s'il a été présagé", () => {
+    let g = toMain(newTestGame(2));
+    let a: string, b: string, c: string, gob: string, voyage: string;
+    [g, a] = inGraveyard(g, "p1", elemental("Alpha"));
+    [g, b] = inGraveyard(g, "p1", elemental("Beta"));
+    [g, c] = inGraveyard(g, "p1", elemental("Gamma"));
+    [g, gob] = inGraveyard(g, "p1", goblin("Gobelin"));
+    [g, voyage] = inHand(g, "p1", real("Haunting Voyage", { manaValue: 6 }));
+    // Lancé normalement : deux Élémentaux au choix.
+    const normal = act(mana(g, "p1", "BBCCCC"), "p1", { type: "castSpell", cardId: voyage, chosenType: "Elemental" });
+    let h = resolveAll(normal);
+    const choice = h.cards[voyage]!.cardChoice!;
+    expect(choice.options.sort()).toEqual([a, b, c].sort());
+    expect(choice.max).toBe(2);
+    h = act(h, "p1", { type: "chooseCards", cardId: voyage, cardIds: [a, c] });
+    h = resolveAll(h);
+    expect(h.cards[a]!.zone).toBe("battlefield");
+    expect(h.cards[b]!.zone).toBe("graveyard");
+    // Présagé : {2} pendant son tour, puis lancé à un tour suivant pour {5}{B}{B}.
+    g = act(mana(g, "p1", "CC"), "p1", { type: "foretell", cardId: voyage });
+    expect(g.cards[voyage]!.zone).toBe("exile");
+    expect(g.cards[voyage]!.faceDown).toBe(true);
+    expect(refuse(mana(g, "p1", "BBCCCCC"), "p1", { type: "castSpell", cardId: voyage, chosenType: "Elemental" })).toMatch(/main/);
+    g = endTurn(g, "p1");
+    g = endTurn(g, "p2");
+    g = toMain(g);
+    g = act(mana(g, "p1", "BBCCCCC"), "p1", { type: "castSpell", cardId: voyage, chosenType: "Elemental" });
+    g = resolveAll(g);
+    for (const id of [a, b, c]) expect(g.cards[id]!.zone).toBe("battlefield");
+    expect(g.cards[gob]!.zone).toBe("graveyard");
+    expect(cardSupport(real("Haunting Voyage")).level).toBe("full");
+  });
+
+  it("Wake the Dead : seulement pendant le combat d'un adversaire, et les créatures repartent à la fin du tour", () => {
+    let g = toMain(newTestGame(2));
+    let a: string, b: string, wake: string;
+    [g, a] = inGraveyard(g, "p1", elemental("Alpha"));
+    [g, b] = inGraveyard(g, "p1", goblin("Beta"));
+    [g, wake] = inHand(g, "p1", real("Wake the Dead", { manaValue: 2 }));
+    expect(refuse(mana(g, "p1", "BBCC"), "p1", { type: "castSpell", cardId: wake, x: 2 })).toMatch(/combat/);
+    g = endTurn(g, "p1");
+    g = act(g, "p2", { type: "nextStep", to: "beginCombat" });
+    g = act(mana(g, "p1", "BBCC"), "p1", { type: "castSpell", cardId: wake, x: 2 });
+    g = resolveAll(g);
+    expect(g.cards[a]!.zone).toBe("battlefield");
+    expect(g.cards[b]!.zone).toBe("battlefield");
+    expect(g.cards[a]!.controllerId).toBe("p1");
+    g = act(g, "p2", { type: "nextStep", to: "end" });
+    g = resolveAll(g);
+    expect(g.cards[a]!.zone).toBe("graveyard");
+    expect(g.cards[b]!.zone).toBe("graveyard");
+    expect(cardSupport(real("Wake the Dead")).level).toBe("full");
+  });
+
+  it("Pyre of Heroes : sacrifie un Élémental et cherche un Élémental de valeur de mana +1", () => {
+    let g = toMain(newTestGame(2));
+    let pyre: string, a: string, wanted: string, other: string;
+    [g, pyre] = put(g, "p1", real("Pyre of Heroes"));
+    [g, a] = put(g, "p1", elemental("Alpha", 2));
+    [g, other] = inLibrary(g, "p1", goblin("Gobelin", 3), 0);
+    [g, wanted] = inLibrary(g, "p1", elemental("Cherché", 3), 1);
+    g = act(mana(g, "p1", "CC"), "p1", { type: "activateAbility", cardId: pyre, index: 0, sacrifice: a });
+    expect(g.cards[a]!.zone).toBe("graveyard");
+    g = resolveAll(g);
+    const ability = g.stack.map((id) => g.cards[id]!).find((c) => c.cardChoice)!;
+    expect(ability.cardChoice!.options).toEqual([wanted]);
+    g = act(g, "p1", { type: "chooseCards", cardId: ability.instanceId, cardIds: [wanted] });
+    g = resolveAll(g);
+    // Les cartes changent d'identifiant en quittant une zone cachée : on les retrouve par leur nom.
+    const names = (zone: "battlefield" | "library") => g.players.p1!.zones[zone].map((id) => g.cardData[g.cards[id]!.cardId]!.name);
+    expect(names("battlefield")).toContain("Cherché");
+    expect(names("library")).toContain("Gobelin");
+    expect(cardSupport(real("Pyre of Heroes")).level).toBe("full");
+  });
+
+  it("Descendants' Fury : une seule fois pour toutes les créatures, sacrifie l'une d'elles et révèle jusqu'à une créature du même type", () => {
+    let g = toMain(newTestGame(2));
+    let a: string, b: string, gob: string, hit: string;
+    [g] = put(g, "p1", real("Descendants' Fury"));
+    [g, a] = put(g, "p1", elemental("Alpha"));
+    [g, b] = put(g, "p1", elemental("Beta"));
+    [g, gob] = inLibrary(g, "p1", goblin("Gobelin"), 0);
+    [g, hit] = inLibrary(g, "p1", elemental("Trouvé"), 1);
+    g = act(g, "p1", { type: "nextStep", to: "declareAttackers" });
+    g = act(g, "p1", { type: "declareAttackers", attackers: [{ cardId: a, defender: "p2" }, { cardId: b, defender: "p2" }] });
+    g = act(g, "p1", { type: "nextStep", to: "combatDamage" });
+    g = resolveAll(g);
+    const triggers = g.stack.map((id) => g.cards[id]!).filter((c) => c.ability?.awaitingDecision);
+    expect(triggers).toHaveLength(1);
+    g = act(g, "p1", { type: "decideOptional", cardId: triggers[0]!.instanceId, accept: true });
+    g = resolveAll(g);
+    const choosing = g.stack.map((id) => g.cards[id]!).find((c) => c.cardChoice)!;
+    expect(choosing.cardChoice!.options.sort()).toEqual([a, b].sort());
+    g = act(g, "p1", { type: "chooseCards", cardId: choosing.instanceId, cardIds: [a] });
+    g = resolveAll(g);
+    expect(g.cards[a]!.zone).toBe("graveyard");
+    expect(g.cards[hit]!.zone).toBe("battlefield");
+    expect(g.players.p1!.zones.library.at(-1)).toBe(gob);
+    expect(cardSupport(real("Descendants' Fury")).level).toBe("full");
+  });
+
+  it("Subterfuge : la cible vole et fait piocher autant que ses blessures de combat", () => {
+    let g = toMain(newTestGame(2));
+    let bear: string, sub: string;
+    [g, bear] = put(g, "p1", elemental("Ours"));
+    [g, sub] = inHand(g, "p1", real("Subterfuge", { colors: ["U"], manaValue: 5 }));
+    g = act(mana(g, "p1", "UCCCC"), "p1", { type: "castSpell", cardId: sub });
+    g = resolveAll(g);
+    const etb = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.needsTargets);
+    if (etb) g = act(g, "p1", { type: "chooseTargets", cardId: etb.instanceId, targets: [{ kind: "card", id: bear }] });
+    g = resolveAll(g);
+    expect(hasKeyword(g, g.cards[bear]!, "Flying")).toBe(true);
+    const hand = g.players.p1!.zones.hand.length;
+    g = act(g, "p1", { type: "nextStep", to: "declareAttackers" });
+    g = act(g, "p1", { type: "declareAttackers", attackers: [{ cardId: bear, defender: "p2" }] });
+    g = act(g, "p1", { type: "nextStep", to: "combatDamage" });
+    g = resolveAll(g);
+    expect(g.players.p1!.zones.hand.length).toBe(hand + 2);
+    expect(cardSupport(real("Subterfuge")).level).toBe("full");
   });
 });
