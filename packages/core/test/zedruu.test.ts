@@ -590,3 +590,37 @@ describe("Deck Zedruu : artefacts qu'on donne", () => {
     }
   });
 });
+
+describe("Deck Zedruu : Chaos Warp et Approach of the Second Sun", () => {
+  it("Chaos Warp mélange le permanent dans la bibliothèque de son propriétaire, puis révèle la carte du dessus", () => {
+    let g = toMain(newTestGame(2));
+    let target: string, warp: string;
+    [g, target] = put(g, "p2", bear("B"));
+    [g, warp] = inHand(g, "p1", real("Chaos Warp"));
+    g = mana(g, "p1", "RCC");
+    const library = g.players.p2!.zones.library.length;
+    g = act(g, "p1", { type: "castSpell", cardId: warp, targets: [{ kind: "card", id: target }] });
+    g = resolveAll(g);
+    expect(g.log.some((l) => /révèle/.test(l.message))).toBe(true);
+    const onBattlefield = g.players.p2!.zones.battlefield.length;
+    expect(g.players.p2!.zones.library.length + onBattlefield).toBe(library + 1);
+  });
+
+  it("Approach of the Second Sun : la première fois 7 PV et 7e carte de la bibliothèque, la seconde fois la victoire", () => {
+    let g = toMain(newTestGame(2));
+    let first: string, second: string;
+    [g, first] = inHand(g, "p1", real("Approach of the Second Sun"));
+    [g, second] = inHand(g, "p1", real("Approach of the Second Sun"), 1);
+    g = mana(g, "p1", "WCCCCCC");
+    g = act(g, "p1", { type: "castSpell", cardId: first });
+    g = resolveAll(g);
+    expect(g.players.p1!.life).toBe(47);
+    const seventh = g.cards[g.players.p1!.zones.library[6]!]!;
+    expect(g.cardData[seventh.cardId]!.name).toBe("Approach of the Second Sun");
+    g = mana(g, "p1", "WCCCCCC");
+    g = act(g, "p1", { type: "castSpell", cardId: second });
+    g = resolveAll(g);
+    expect(g.players.p2!.lostReason).toMatch(/Approach/);
+    for (const name of ["Chaos Warp", "Approach of the Second Sun"]) expect(cardSupport(real(name)).level, name).toBe("full");
+  });
+});

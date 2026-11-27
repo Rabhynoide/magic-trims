@@ -138,6 +138,10 @@ export type Effect =
   | { type: "gainControl"; permanent: number | "self"; player: number }
   /** « Exchange control of target land you control and target land an opponent controls. » */
   | { type: "exchangeControl"; a: number; b: number; relation?: ExchangeRelation }
+  /** Chaos Warp : le propriétaire mélange le permanent dans sa bibliothèque ; `revealPermanent` : puis révèle et met en jeu un permanent. */
+  | { type: "shuffleIntoLibrary"; target: number; revealPermanent?: boolean }
+  /** Approach of the Second Sun. */
+  | { type: "approach"; position: number; life: number }
   /** Modify Memory : « If you control neither creature, draw three cards. » */
   | { type: "drawIfNeither"; a: number; b: number; count: number }
   /** « If you have 40 or more life, you win the game. » */
@@ -561,6 +565,8 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     .filter(Boolean);
 
   let wheel: "event" | "all" | null = null;
+  let revealing: Extract<Effect, { type: "shuffleIntoLibrary" }> | null = null;
+  let approach = false;
   for (const sentence of sentences) {
     let s = sentence.replace(/\.$/, "");
     if (HARMLESS.some((re) => re.test(sentence))) continue;
@@ -666,6 +672,33 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
         prev.orElse = parts.flatMap((p) => p.effects);
         continue;
       }
+    }
+    // Chaos Warp.
+    if ((m = /^the owner of target (.+?) shuffles it into their library$/i.exec(s))) {
+      const filter = parsePermanentFilter(m[1]!);
+      if (filter) {
+        result.effects.push({ type: "shuffleIntoLibrary", target: target({ label: permanentLabel(filter), permanent: filter }) });
+        continue;
+      }
+    }
+    if (/^reveals the top card of their library$/i.test(s) && prev?.type === "shuffleIntoLibrary" && !prev.revealPermanent) {
+      revealing = prev;
+      continue;
+    }
+    if (/^if it's a permanent card, they put it onto the battlefield$/i.test(s) && revealing) {
+      revealing.revealPermanent = true;
+      revealing = null;
+      continue;
+    }
+    // Approach of the Second Sun.
+    if (/^if ~ was cast from your hand and you've cast another spell named ~ this game, you win the game$/i.test(s)) {
+      approach = true;
+      continue;
+    }
+    if (approach && (m = new RegExp(`^otherwise, put ~ into its owner's library seventh from the top and you gain ${NUM} life$`, "i").exec(s))) {
+      result.effects.push({ type: "approach", position: 7, life: amount(m[1]!) as number });
+      approach = false;
+      continue;
     }
     // Bronze Bombshell : « If the player does, ~ deals 7 damage to the player. »
     if ((m = /^if the player does, ~ deals (\d+) damage to the player$/i.exec(s)) && prev?.type === "sacrificeSelf" && !prev.thenDamage) {

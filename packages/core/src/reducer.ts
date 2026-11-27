@@ -456,7 +456,10 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     }
 
     actor.spellsCast = { turn: g.turn.number, count: castThisTurn + 1 };
+    actor.castNames = [...(actor.castNames ?? []), faceData?.name ?? data.name];
+    const fromHand = card.zone === "hand";
     const cast = moveCardTo(g, cardId, "stack", "top");
+    if (fromHand) cast.castFromHand = true;
     emit(g, { type: "cast", playerId: actor.id, cardId: cast.instanceId, typeLine });
     cast.faceIndex = faceIndex;
     if (alternative) cast.alternative = true;
@@ -1094,6 +1097,7 @@ export function moveCardTo(
     delete card.scry;
     delete card.modes;
     delete card.alternative;
+    delete card.castFromHand;
   }
   card.controllerId = to === "battlefield" || to === "stack" ? (options.controllerId ?? card.controllerId) : card.ownerId;
   if (from === "battlefield" && to !== "battlefield") card.controllerId = card.ownerId;
@@ -1894,6 +1898,47 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         if (!c || c.zone !== "battlefield") break;
         c.grantedTriggers = [...(c.grantedTriggers ?? []), effect.text];
         log(g, null, `${cardName(g, c)} gagne « ${effect.text} » jusqu'à la fin du tour.`);
+        break;
+      }
+      case "shuffleIntoLibrary": {
+        const c = card(effect.target);
+        if (!c) break;
+        const owner = g.players[c.ownerId]!;
+        const name = cardName(g, c);
+        moveCardTo(g, c.instanceId, "library", "top");
+        g.rngState = shuffleInPlace(owner.zones.library, g.rngState);
+        log(g, null, `${owner.name} mélange ${name} dans sa bibliothèque.`);
+        if (!effect.revealPermanent) break;
+        const topId = owner.zones.library[0];
+        if (!topId) break;
+        const top = g.cards[topId]!;
+        addRevealed(top, g.turnOrder);
+        const topName = cardName(g, top);
+        const typeLine = g.cardData[top.cardId]?.faces?.[0]?.typeLine ?? g.cardData[top.cardId]?.typeLine ?? "";
+        if (/\b(Artifact|Creature|Enchantment|Land|Planeswalker|Battle)\b/.test(typeLine)) {
+          moveCardTo(g, topId, "battlefield", "top", { controllerId: owner.id });
+          log(g, null, `${owner.name} révèle ${topName} et le met sur le champ de bataille.`);
+        } else {
+          log(g, null, `${owner.name} révèle ${topName} (pas un permanent).`);
+        }
+        break;
+      }
+      case "approach": {
+        const name = cardName(g, source);
+        const castCount = (caster.castNames ?? []).filter((n) => n === name).length;
+        if (source.castFromHand && castCount >= 2) {
+          const losers = opponentsOf(g, caster.id);
+          for (const p of losers) p.lostReason = `${caster.name} gagne avec ${name}`;
+          log(g, null, `${caster.name} gagne la partie grâce à ${name} !`);
+          leaveGame(g, losers);
+          break;
+        }
+        if (source.zone === "stack") {
+          const owner = g.players[source.ownerId]!;
+          moveCardTo(g, source.instanceId, "library", Math.min(effect.position - 1, owner.zones.library.length));
+          log(g, null, `${name} va en ${effect.position}e position de la bibliothèque de ${owner.name}.`);
+        }
+        changeLife(g, caster.id, effect.life);
         break;
       }
       case "drawIfNeither": {

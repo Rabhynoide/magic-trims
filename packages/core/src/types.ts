@@ -184,6 +184,8 @@ export interface CardInstance {
   chapter?: number;
   /** Sort lancé pour son coût alternatif (Baleful Mastery). */
   alternative?: boolean;
+  /** Lancé depuis la main (Approach of the Second Sun). */
+  castFromHand?: boolean;
   /** Sort ou capacité sur la pile qui commence par un regard : `done` une fois les cartes rangées. */
   scry?: { count: number; done?: boolean };
   /**
@@ -266,6 +268,8 @@ export interface PlayerState {
   drawsThisTurn?: { turn: number; count: number };
   /** Sorts lancés ce tour (Moderation…). */
   spellsCast?: { turn: number; count: number };
+  /** Noms des sorts lancés pendant la partie (Approach of the Second Sun). */
+  castNames?: string[];
   /** Terrains joués ce tour (un seul par tour, règle 305.2). */
   landsPlayed: number;
   /** Réserve de mana ; elle se vide à la fin de chaque étape (règle 500.4). */
