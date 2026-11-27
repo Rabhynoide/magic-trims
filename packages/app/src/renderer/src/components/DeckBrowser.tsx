@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   deckColorIdentity,
   deckLegalityByMode,
@@ -9,11 +9,13 @@ import {
 } from "@magic-trims/core";
 import type { SavedDeck } from "../storage";
 import { ManaText } from "./ManaText";
+import { PreconTable } from "./PreconTable";
+import { loadPrecons } from "../precons";
 
 /**
  * Liste des decks en tableau : nom, couleurs, format et légalité pour chaque
- * mode de jeu. Les decks sont rangés en trois catégories ; seuls les decks
- * importés existent pour l'instant.
+ * mode de jeu. Les decks sont rangés en trois catégories : préconstruits
+ * officiels (liste embarquée, voir PreconTable), decks importés et communauté.
  */
 
 export type DeckCategory = "official" | "imported" | "community";
@@ -22,8 +24,8 @@ const CATEGORIES: { id: DeckCategory; label: string; empty: string; available: b
   {
     id: "official",
     label: "Préconstruits officiels",
-    empty: "Les decks préconstruits vendus par Wizards of the Coast arriveront plus tard.",
-    available: false,
+    empty: "",
+    available: true,
   },
   {
     id: "imported",
@@ -40,7 +42,7 @@ const CATEGORIES: { id: DeckCategory; label: string; empty: string; available: b
 ];
 
 /** Intitulés courts des colonnes de légalité (le nom complet est en infobulle). */
-const MODE_SHORT: Record<GameModeType, string> = {
+export const MODE_SHORT: Record<GameModeType, string> = {
   freeForAll: "Chacun pour soi",
   duel: "Duel",
   teams: "Équipes",
@@ -49,7 +51,7 @@ const MODE_SHORT: Record<GameModeType, string> = {
   archenemy: "Archenemy",
 };
 
-const MODES = Object.keys(GAME_MODES) as GameModeType[];
+export const MODES = Object.keys(GAME_MODES) as GameModeType[];
 
 interface Props {
   decks: SavedDeck[];
@@ -61,11 +63,19 @@ interface Props {
   onSelect?: (deck: SavedDeck) => void;
   /** Boutons propres à chaque ligne (modifier, supprimer…). */
   actions?: (deck: SavedDeck) => ReactNode;
+  /** Préconstruit choisi : il vient d'être ajouté à « Mes decks ». */
+  onPrecon?: (deck: SavedDeck) => void;
+  /** Intitulé du bouton des préconstruits (« Ajouter à mes decks », « Jouer ce deck »…). */
+  preconLabel?: string;
 }
 
 export function DeckBrowser(props: Props) {
   const [category, setCategory] = useState<DeckCategory>("imported");
-  const counts: Record<DeckCategory, number> = { official: 0, imported: props.decks.length, community: 0 };
+  const [preconCount, setPreconCount] = useState(0);
+  useEffect(() => {
+    void loadPrecons().then((f) => setPreconCount(f.decks.length));
+  }, []);
+  const counts: Record<DeckCategory, number> = { official: preconCount, imported: props.decks.length, community: 0 };
   const current = CATEGORIES.find((c) => c.id === category)!;
   const decks = category === "imported" ? props.decks : [];
 
@@ -87,7 +97,13 @@ export function DeckBrowser(props: Props) {
         ))}
       </div>
 
-      {decks.length === 0 ? (
+      {category === "official" ? (
+        <PreconTable
+          {...(props.currentMode ? { currentMode: props.currentMode } : {})}
+          actionLabel={props.preconLabel ?? "Ajouter à mes decks"}
+          onAdded={(deck) => props.onPrecon?.(deck)}
+        />
+      ) : decks.length === 0 ? (
         <p className="hint deck-empty">{current.empty}</p>
       ) : (
         <div className="deck-table-wrap">
@@ -158,7 +174,7 @@ function DeckRow(props: Props & { deck: SavedDeck; selected: boolean }) {
   );
 }
 
-function LegalityMark(props: { issues: DeckIssue[]; mode: GameModeType }) {
+export function LegalityMark(props: { issues: DeckIssue[]; mode: GameModeType }) {
   const legal = isDeckLegal(props.issues);
   const label = GAME_MODES[props.mode].label;
   const title = legal

@@ -11,7 +11,8 @@
     "host": "npm run host -w @magic-trims/host --",
     "app": "npm run dev -w @magic-trims/app",
     "dist": "npm run dist -w @magic-trims/app",
-    "postinstall": "node scripts/install-electron.mjs"
+    "postinstall": "node scripts/install-electron.mjs",
+    "precons": "tsx scripts/fetch-precons.ts"
   },
   "engines": {
     "node": ">=20"

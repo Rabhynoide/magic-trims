@@ -202,6 +202,24 @@ describe("validation Commander", () => {
     expect(validateCommanderDeck(deck, "duel")).toEqual([{ level: "warning", message: "Sol Ring est bannie en Duel Commander." }]);
   });
 
+  it("accepte un Vaisseau ou un Véhicule légendaire avec force/endurance comme commandant", () => {
+    const deck = fakeDeck("A");
+    deck.commanders[0] = fakeCard("Inspirit", { typeLine: "Legendary Artifact — Spacecraft", power: "5", toughness: "5" });
+    expect(validateCommanderDeck(deck)).toEqual([]);
+    deck.commanders[0] = fakeCard("Station", { typeLine: "Legendary Artifact — Spacecraft" });
+    expect(validateCommanderDeck(deck).map((i) => i.message)).toEqual(["Station n'est pas une créature légendaire."]);
+  });
+
+  it("accepte un Docteur et son compagnon comme paire de commandants", () => {
+    const deck = fakeDeck("A");
+    deck.cards.pop();
+    deck.commanders = [
+      fakeCard("The Fourth Doctor", { typeLine: "Legendary Creature — Time Lord Doctor" }),
+      fakeCard("Sarah Jane Smith", { typeLine: "Legendary Creature — Human Detective", keywords: ["Doctor's companion"] }),
+    ];
+    expect(validateCommanderDeck(deck)).toEqual([]);
+  });
+
   it("exige un commandant", () => {
     const issues = validateCommanderDeck({ commanders: [], cards: [] });
     expect(issues[0]).toEqual({ level: "error", message: "Aucun commandant n'est désigné." });
