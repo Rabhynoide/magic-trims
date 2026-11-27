@@ -61,7 +61,8 @@ export type GameAction =
    * pile vide). `face` : 1 pour jouer le verso d'une carte modale.
    */
   /** `chosenType` : « As ~ enters, choose a creature type » (Secluded Courtyard). */
-  | { type: "playLand"; cardId: CardInstanceId; face?: number; chosenType?: string }
+  /** `untap` : révéler la carte ou payer les PV demandés pour que le terrain arrive dégagé. */
+  | { type: "playLand"; cardId: CardInstanceId; face?: number; chosenType?: string; untap?: boolean }
   /**
    * Lance un sort depuis la main (ou son commandant depuis la zone de
    * commandement) en payant son coût avec la réserve ; les terrains qui

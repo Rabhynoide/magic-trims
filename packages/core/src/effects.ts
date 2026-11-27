@@ -127,6 +127,8 @@ export type Effect =
   | { type: "returnSelf" }
   /** « ~ gets +1/+1 until end of turn. » */
   | { type: "pumpSelf"; power: number; toughness: number }
+  /** « Target creature gets +2/+2 and gains haste until end of turn. » */
+  | { type: "pumpTarget"; target: number; power: number; toughness: number; keywords: string[] }
   /** « Creatures you control gain lifelink until end of turn. » */
   | { type: "grantAll"; filter: PermanentFilter; keywords: string[] }
   /** Équiper : attache la source à la cible. */
@@ -823,6 +825,10 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       }
       const t = target({ label: permanentLabel(filter), permanent: filter, ...(m[2] ? { upTo: true } : {}) });
       result.effects.push({ type: m[1]!.toLowerCase() === "destroy" ? "destroy" : "exile", target: t });
+    } else if ((m = /^(up to one )?target (creature(?: you control)?) (?:gets ([+-]\d+)\/([+-]\d+)(?: and gains (.+?))?|gains (.+?)) until end of turn$/i.exec(s)) && keywordList(m[5] ?? m[6] ?? "").every((k) => KEYWORD_HELP[k])) {
+      const filter = parsePermanentFilter(m[2]!)!;
+      const t = target({ label: permanentLabel(filter), permanent: filter, ...(m[1] ? { upTo: true } : {}) });
+      result.effects.push({ type: "pumpTarget", target: t, power: m[3] ? parseInt(m[3], 10) : 0, toughness: m[4] ? parseInt(m[4], 10) : 0, keywords: m[5] ?? m[6] ? keywordList(m[5] ?? m[6]!) : [] });
     } else if ((m = /^(destroy|exile) all (.+)$/i.exec(s))) {
       const filter = parsePermanentFilter(m[2]!);
       if (!filter) {

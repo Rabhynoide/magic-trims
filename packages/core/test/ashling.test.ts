@@ -213,7 +213,7 @@ describe("Deck Ashling : recherches de terrains", () => {
 describe("Deck Ashling : bilan", () => {
   it("compte les cartes entièrement gérées", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "", manaCost: c.manaCost ?? "" })).level);
-    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(53);
+    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(57);
   });
 });
 
@@ -224,6 +224,7 @@ describe("Deck Ashling : type choisi et mana réservé", () => {
     let g = toMain(newTestGame(2));
     let beyond: string, ours: string, elem: string;
     [g, beyond] = put(g, "p1", real("Primal Beyond"));
+    g.cards[beyond]!.tapped = false;
     [g, ours] = inHand(g, "p1", bear("Ours"), 1);
     [g, elem] = inHand(g, "p1", elemental("Élémental", "{G}"), 2);
     g = act(g, "p1", { type: "tapForMana", cardId: beyond, choice: 5 });
@@ -287,6 +288,56 @@ describe("Deck Ashling : type choisi et mana réservé", () => {
     expect(g.cards[spell]!.zone).toBe("stack");
     for (const name of ["Primal Beyond", "Secluded Courtyard", "Unclaimed Territory", "Herald's Horn", "Urza's Incubator", "Cloud Key", "Morophon, the Boundless", "Smokebraider", "Flamebraider", "Incandescent Soulstoke", "Goblin Anarchomancer"]) {
       expect(cardSupport(real(name)).level, name).not.toBe("manual");
+    }
+  });
+});
+
+describe("Deck Ashling : terrains engagés sous condition", () => {
+  const elemental = fakeCard("Élémental", { typeLine: "Creature — Elemental", power: "2", toughness: "2", manaCost: "{1}{R}" });
+
+  it("Overgrown Tomb : payer 2 PV pour l'avoir dégagé", () => {
+    let g = toMain(newTestGame(2));
+    let tomb: string;
+    [g, tomb] = inHand(g, "p1", real("Overgrown Tomb"));
+    const life = g.players.p1!.life;
+    const paid = act(g, "p1", { type: "playLand", cardId: tomb, untap: true });
+    expect(paid.cards[tomb]!.tapped).toBe(false);
+    expect(paid.players.p1!.life).toBe(life - 2);
+    const tapped = act(g, "p1", { type: "playLand", cardId: tomb });
+    expect(tapped.cards[tomb]!.tapped).toBe(true);
+    expect(tapped.players.p1!.life).toBe(life);
+  });
+
+  it("Flamekin Village et Primal Beyond : révéler un Élémental", () => {
+    let g = toMain(newTestGame(2));
+    let village: string;
+    [g, village] = inHand(g, "p1", real("Flamekin Village"));
+    expect(() => act(g, "p1", { type: "playLand", cardId: village, untap: true })).toThrow(/Elemental/);
+    expect(act(g, "p1", { type: "playLand", cardId: village }).cards[village]!.tapped).toBe(true);
+    [g] = inHand(g, "p1", elemental, 1);
+    const shown = act(g, "p1", { type: "playLand", cardId: village, untap: true });
+    expect(shown.cards[village]!.tapped).toBe(false);
+    expect(JSON.stringify(shown.log.slice(-3))).toMatch(/révèle Élémental/);
+    // {R}, {T} : la créature ciblée gagne la célérité.
+    let fresh: string;
+    [g, fresh] = put(shown, "p1", elemental, 0);
+    g.cards[fresh]!.summoningSick = true;
+    g = mana(g, "p1", "R");
+    g = act(g, "p1", { type: "activateAbility", cardId: village, index: 0, targets: [{ kind: "card", id: fresh }] });
+    g = resolveAll(g);
+    expect(hasKeyword(g, g.cards[fresh]!, "Haste")).toBe(true);
+  });
+
+  it("Sodden Verdure : dégagé avec deux terrains de base", () => {
+    let g = toMain(newTestGame(2));
+    let verdure: string;
+    [g] = put(g, "p1", basic("Forest"));
+    [g, verdure] = inHand(g, "p1", real("Sodden Verdure"));
+    expect(act(g, "p1", { type: "playLand", cardId: verdure }).cards[verdure]!.tapped).toBe(true);
+    [g] = put(g, "p1", basic("Island"), 1);
+    expect(act(g, "p1", { type: "playLand", cardId: verdure }).cards[verdure]!.tapped).toBe(false);
+    for (const name of ["Flamekin Village", "Primal Beyond", "Overgrown Tomb", "Sodden Verdure"]) {
+      expect(cardSupport(real(name)).level, name).toBe("full");
     }
   });
 });

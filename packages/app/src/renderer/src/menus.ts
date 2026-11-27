@@ -7,6 +7,7 @@ import {
   auraTarget,
   evokeOptions,
   chooseTypeOf,
+  entersUntappedChoice,
   mostCommonCreatureType,
   stateFromView,
   sagaChapters,
@@ -325,16 +326,23 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
         return ui.ask("Type de créature choisi (en anglais : Elemental, Elf…)", mostCommonCreatureType(stateFromView(view), view.viewerId), "text");
       };
       if (/\bLand\b/.test(f.typeLine)) {
-        return [
-          {
-            label: `Jouer ${f.name}`,
-            onClick: async () => {
-              const chosenType = await askType();
-              if (chosenType === null) return;
-              void act({ type: "playLand", cardId: id, ...face, ...(chosenType ? { chosenType } : {}) });
-            },
-          },
-        ];
+        const play = (untap: boolean) => async () => {
+          const chosenType = await askType();
+          if (chosenType === null) return;
+          void act({ type: "playLand", cardId: id, ...face, ...(chosenType ? { chosenType } : {}), ...(untap ? { untap } : {}) });
+        };
+        // « You may reveal an Elemental card / pay 2 life. If you don't, it enters tapped. »
+        const state = view.settings.enforceRules ? stateFromView(view) : null;
+        const instance = state?.cards[id];
+        const offer = state && instance ? entersUntappedChoice(state, view.viewerId, instance, f.face ?? 0) : null;
+        if (offer) {
+          const how = offer.life ? `payer ${offer.life} PV` : `révéler une carte ${offer.reveal}`;
+          return [
+            { label: `Jouer ${f.name} dégagé (${how})`, disabled: !offer.possible, onClick: play(true) },
+            { label: `Jouer ${f.name} engagé`, onClick: play(false) },
+          ];
+        }
+        return [{ label: `Jouer ${f.name}`, onClick: play(false) }];
       }
       const cast = (alternative: boolean, evoke?: true | "granted", exileColor?: string) => async () => {
           let x: number | undefined;

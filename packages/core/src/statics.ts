@@ -36,7 +36,15 @@ export type StaticAbility =
   /** « Players have no maximum hand size. » */
   | { kind: "noMaxHandSizeAll" }
   /** « This land enters tapped. » */
-  | { kind: "entersTapped" }
+  | {
+      kind: "entersTapped";
+      /** Sodden Verdure : dégagé si l'on contrôle au moins ce nombre de terrains de base. */
+      unlessBasics?: number;
+      /** Flamekin Village, Primal Beyond : dégagé si l'on révèle une carte de ce type depuis sa main. */
+      unlessReveal?: string;
+      /** Overgrown Tomb : dégagé si l'on paie ce nombre de points de vie. */
+      unlessLife?: number;
+    }
   /** « Creatures can't attack you unless their controller pays {2} for each creature… » (X : nombre d'enchantements). */
   | { kind: "attackTax"; amount: number | "enchantments" }
   /** « You can't cast creature spells. » */
@@ -108,6 +116,16 @@ export function parseStaticLine(line: string): StaticAbility | null {
   }
   if (/^players have no maximum hand size$/i.test(l)) return { kind: "noMaxHandSizeAll" };
   if (/^~ enters tapped$/i.test(l)) return { kind: "entersTapped" };
+  if ((m = /^~ enters tapped unless you control (\w+) or more basic lands$/i.exec(l))) {
+    const n = NUMBER_WORDS[m[1]!.toLowerCase()] ?? parseInt(m[1]!, 10);
+    if (Number.isInteger(n)) return { kind: "entersTapped", unlessBasics: n };
+  }
+  if ((m = /^as ~ enters, you may reveal an? (\w+) card from your hand\. if you don't, (?:~|it) enters tapped$/i.exec(l))) {
+    return { kind: "entersTapped", unlessReveal: m[1]!.charAt(0).toUpperCase() + m[1]!.slice(1).toLowerCase() };
+  }
+  if ((m = /^as ~ enters, you may pay (\d+) life\. if you don't, (?:~|it) enters tapped$/i.exec(l))) {
+    return { kind: "entersTapped", unlessLife: parseInt(m[1]!, 10) };
+  }
   if (/^you can't play lands$/i.test(l)) return { kind: "cantPlayLands" };
   if (/^you can't cast more than one spell each turn$/i.test(l)) return { kind: "oneSpellPerTurn" };
   if ((m = /^you can't cast (creature|noncreature|artifact|enchantment|instant|sorcery) spells$/i.exec(l))) return { kind: "cantCast", types: [m[1]!.toLowerCase()] };
@@ -273,9 +291,34 @@ export function hasNoMaxHandSize(g: GameState, playerId: PlayerId): boolean {
   return controls(g, playerId, "noMaxHandSize") || g.turnOrder.some((id) => !g.players[id]!.hasConceded && controls(g, id, "noMaxHandSizeAll"));
 }
 
-/** Le permanent arrive-t-il engagé (« This land enters tapped ») ? */
+/** Le permanent arrive-t-il engagé (« This land enters tapped ») ? Sans `g`, toute condition compte comme non remplie. */
 export function entersTapped(data: CardData | undefined, faceIndex: number): boolean {
   return staticsOfData(data, faceIndex).some((s) => s.kind === "entersTapped");
+}
+
+export type EntersTappedStatic = Extract<StaticAbility, { kind: "entersTapped" }>;
+
+/** La condition « arrive engagé sauf si… » de la carte, ou undefined. */
+export function entersTappedStatic(data: CardData | undefined, faceIndex: number): EntersTappedStatic | undefined {
+  return staticsOfData(data, faceIndex).find((s): s is EntersTappedStatic => s.kind === "entersTapped");
+}
+
+/** Le choix proposé au joueur pour que le terrain arrive dégagé (révéler une carte, payer des PV), ou null. */
+export function entersUntappedChoice(g: GameState, playerId: PlayerId, card: CardInstance, faceIndex: number): { reveal?: string; life?: number; possible: boolean } | null {
+  const s = entersTappedStatic(g.cardData[card.cardId], faceIndex);
+  if (!s) return null;
+  if (s.unlessReveal) {
+    const subtype = s.unlessReveal;
+    const possible = g.players[playerId]!.zones.hand.some((id) => id !== card.instanceId && typeLineHasCreatureType(handTypeLine(g, id), g.cardData[g.cards[id]!.cardId]?.oracleText ?? "", subtype));
+    return { reveal: subtype, possible };
+  }
+  if (s.unlessLife) return { life: s.unlessLife, possible: g.players[playerId]!.life >= s.unlessLife };
+  return null;
+}
+
+function handTypeLine(g: GameState, id: string): string {
+  const data = g.cardData[g.cards[id]!.cardId];
+  return [data?.typeLine ?? "", ...(data?.faces ?? []).map((f) => f.typeLine)].join(" // ");
 }
 
 /** Taxe à payer pour chaque créature qui attaque ce joueur (Ghostly Prison, Propaganda…). */

@@ -37,6 +37,8 @@ import {
   castRestriction,
   costReduction,
   entersTapped,
+  entersTappedStatic,
+  entersUntappedChoice,
   hasNoMaxHandSize,
   maxOneCreature,
   modifyDamage,
@@ -381,7 +383,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     destroyLethal(g);
   },
 
-  playLand(g, actor, { cardId, face, chosenType }) {
+  playLand(g, actor, { cardId, face, chosenType, untap }) {
     const card = getCard(g, cardId);
     if (card.ownerId !== actor.id || card.zone !== "hand") throw new ActionError("Joue un terrain de ta main.");
     const faceIndex = face ?? 0;
@@ -392,9 +394,13 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const what = chooseTypeOf(g.cardData[card.cardId], faceIndex);
     const chosen = what ? checkChosenType(what, chosenType) : undefined;
     if (chosen) card.chosenType = chosen;
-    const played = moveCardTo(g, cardId, "battlefield", "top");
-    played.faceIndex = faceIndex;
-    if (g.settings.enforceRules && entersTapped(g.cardData[played.cardId], faceIndex)) played.tapped = true;
+    if (untap && g.settings.enforceRules) {
+      const offer = entersUntappedChoice(g, actor.id, card, faceIndex);
+      if (!offer) throw new ActionError(`${cardName(g, card)} n'a pas de choix pour arriver dégagé.`);
+      if (!offer.possible) throw new ActionError(offer.life ? `Pas assez de points de vie pour payer ${offer.life} PV.` : `Tu n'as pas de carte ${offer.reveal} à révéler.`);
+    }
+    card.faceIndex = faceIndex;
+    const played = moveCardTo(g, cardId, "battlefield", "top", { untapChoice: untap ?? false });
     actor.landsPlayed += 1;
     log(g, actor.id, `${actor.name} joue ${cardName(g, played)}.`);
     emit(g, { type: "landPlayed", playerId: actor.id });
@@ -1039,7 +1045,7 @@ export function moveCardTo(
   cardId: CardInstanceId,
   to: Zone,
   position: "top" | "bottom" | number,
-  options: { controllerId?: PlayerId | undefined; tapped?: boolean | undefined; faceDown?: boolean | undefined } = {},
+  options: { controllerId?: PlayerId | undefined; tapped?: boolean | undefined; faceDown?: boolean | undefined; untapChoice?: boolean | undefined } = {},
 ): CardInstance {
   const card = getCard(g, cardId);
   const from = card.zone;
@@ -1160,9 +1166,9 @@ export function moveCardTo(
   card.faceDown = (to === "battlefield" || to === "exile") && (options.faceDown ?? false);
   if (to !== "battlefield") card.faceIndex = 0;
   if (to === "battlefield") card.tapped = options.tapped ?? false;
-  // « This land enters tapped. »
+  // « This land enters tapped », éventuellement « unless … ».
   if (to === "battlefield" && from !== "battlefield" && g.settings.enforceRules && !card.faceDown && entersTapped(g.cardData[card.cardId], card.faceIndex)) {
-    card.tapped = true;
+    card.tapped = !entersUntapped(g, card, options.untapChoice ?? false);
   }
 
   if (card.faceDown) {
@@ -2184,6 +2190,19 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         log(g, null, `${cardName(g, pumped)} reçoit ${sign(effect.power)}/${sign(effect.toughness)} jusqu'à la fin du tour.`);
         break;
       }
+      case "pumpTarget": {
+        const c = card(effect.target);
+        if (!c || c.zone !== "battlefield") break;
+        if (effect.power || effect.toughness) {
+          const boost = c.ptBoost ?? { power: 0, toughness: 0 };
+          c.ptBoost = { power: boost.power + effect.power, toughness: boost.toughness + effect.toughness };
+        }
+        if (effect.keywords.length > 0) c.grants = [...new Set([...(c.grants ?? []), ...effect.keywords])];
+        const sign = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
+        const parts = [...(effect.power || effect.toughness ? [`${sign(effect.power)}/${sign(effect.toughness)}`] : []), ...effect.keywords.map((k) => KEYWORD_HELP[k]?.name.toLowerCase() ?? k)];
+        log(g, null, `${cardName(g, c)} gagne ${parts.join(" et ")} jusqu'à la fin du tour.`);
+        break;
+      }
       case "grantAll": {
         const all = allMatching(effect.filter);
         for (const c of all) c.grants = [...new Set([...(c.grants ?? []), ...effect.keywords])];
@@ -2503,6 +2522,31 @@ function setController(g: GameState, card: CardInstance, playerId: PlayerId): vo
 }
 
 /** Payer des points de vie (une perte de points de vie). */
+/** « … unless you control two or more basic lands », « you may reveal … / pay 2 life. If you don't, it enters tapped. » */
+function entersUntapped(g: GameState, card: CardInstance, choice: boolean): boolean {
+  const s = entersTappedStatic(g.cardData[card.cardId], card.faceIndex);
+  if (!s) return false;
+  const player = g.players[card.controllerId]!;
+  if (s.unlessBasics !== undefined) {
+    const basics = player.zones.battlefield.filter((id) => id !== card.instanceId && /\bBasic\b/.test(g.cardData[g.cards[id]!.cardId]?.typeLine ?? "")).length;
+    return basics >= s.unlessBasics;
+  }
+  if (!choice) return false;
+  const offer = entersUntappedChoice(g, player.id, card, card.faceIndex);
+  if (!offer?.possible) return false;
+  if (offer.life) {
+    payLife(g, player, offer.life);
+    log(g, player.id, `${player.name} paie ${offer.life} points de vie : ${cardName(g, card)} arrive dégagé.`);
+    return true;
+  }
+  if (offer.reveal) {
+    const shown = player.zones.hand.find((id) => id !== card.instanceId && typeLineHasCreatureType(g.cardData[g.cards[id]!.cardId]?.typeLine ?? "", g.cardData[g.cards[id]!.cardId]?.oracleText ?? "", offer.reveal!));
+    if (shown) log(g, player.id, `${player.name} révèle ${cardName(g, g.cards[shown]!)} : ${cardName(g, card)} arrive dégagé.`);
+    return true;
+  }
+  return false;
+}
+
 function payLife(g: GameState, actor: PlayerState, amount: number): void {
   for (const p of lifeSharers(g, actor.id)) p.life -= amount;
   emit(g, { type: "lifeLoss", playerId: actor.id, amount });
