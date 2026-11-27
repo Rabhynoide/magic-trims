@@ -30,6 +30,10 @@ Tous les réglages (points de vie, poison, partage entre coéquipiers…) resten
 
 `evaluateOutcome()` indique les joueurs éliminés (points de vie, poison, blessures de commandant, abandon) et les vainqueurs selon le mode.
 
+## Serveur central (facultatif)
+
+Un petit serveur commun permet de **partager ses decks avec son groupe d'amis** (onglet « Communauté » de la liste des decks). Il est facultatif : sans lui, le jeu fonctionne exactement pareil. Il tourne gratuitement sur Cloudflare (Workers + Durable Objects, sans carte bancaire). Mise en ligne, comptes (code de groupe + pseudo) et essai local : voir [docs/serveur-central.md](docs/serveur-central.md).
+
 ## Lancer l'appli
 
 ```sh
