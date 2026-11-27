@@ -39,6 +39,7 @@ import {
   type Who,
   type PermanentFilter,
   type TokenSpec,
+  type CopyExcept,
 } from "./effects.js";
 import { abilitiesOf, colorsOfCost, manaValueOfCost, triggerConditionHolds, conditionMatches, parsePermanentAbilities, sagaChapters, stackTrigger, type TriggeredAbility, type TriggerEvent } from "./triggers.js";
 import {
@@ -68,6 +69,8 @@ import {
   hasCreatureType,
   typeLineHasCreatureType,
   sharesCreatureType,
+  legendRuleApplies,
+  enterAsCopyOf,
 } from "./statics.js";
 import { canAttack, canBlock, cantAttack, cantBlock, colorsOf, creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatKeyword, type CombatState } from "./combat.js";
 import { MAX_HAND_SIZE, STEP_LABELS, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
@@ -1128,14 +1131,21 @@ export function moveCardTo(
   cardId: CardInstanceId,
   to: Zone,
   position: "top" | "bottom" | number,
-  options: { controllerId?: PlayerId | undefined; tapped?: boolean | undefined; faceDown?: boolean | undefined; untapChoice?: boolean | undefined } = {},
+  options: { controllerId?: PlayerId | undefined; tapped?: boolean | undefined; faceDown?: boolean | undefined; untapChoice?: boolean | undefined; copyDataId?: string | undefined } = {},
 ): CardInstance {
   const card = getCard(g, cardId);
   const from = card.zone;
+  // Ses valeurs copiables au moment où il part (une copie reste une copie : Ratadrabik).
+  const lastDataId = card.originalCardId ?? card.cardId;
   // Une créature transformée par une aura retrouve sa vraie carte en quittant le champ de bataille.
   if (card.originalCardId) {
     card.cardId = card.originalCardId;
     delete card.originalCardId;
+  }
+  // Une copie (Clone, Sakashima) redevient elle-même hors du champ de bataille.
+  if (card.copyBaseId) {
+    card.cardId = card.copyBaseId;
+    delete card.copyBaseId;
   }
   const wasPublic = isVisibleToAll(card);
   removeFromZone(g, card);
@@ -1151,7 +1161,7 @@ export function moveCardTo(
           type: "dies",
           cardId: card.instanceId,
           controllerId: card.controllerId,
-          dataId: card.cardId,
+          dataId: lastDataId,
           faceIndex: card.faceIndex,
           isToken: card.isToken,
           ...(card.grantedTriggers ? { granted: [...card.grantedTriggers] } : {}),
@@ -1159,6 +1169,10 @@ export function moveCardTo(
       : null;
 
   if (to === "battlefield" && from !== "battlefield") {
+    if (options.copyDataId && g.cardData[options.copyDataId]) {
+      card.copyBaseId = card.cardId;
+      card.cardId = options.copyDataId;
+    }
     card.summoningSick = true;
     // Un planeswalker arrive avec ses marqueurs de loyauté.
     const data = g.cardData[card.cardId];
@@ -1188,7 +1202,7 @@ export function moveCardTo(
         type: "leaves",
         cardId: card.instanceId,
         controllerId: card.controllerId,
-        dataId: card.cardId,
+        dataId: lastDataId,
         faceIndex: card.faceIndex,
         to,
         ...(card.grantedTriggers ? { granted: [...card.grantedTriggers] } : {}),
@@ -1656,6 +1670,11 @@ function flushTriggers(g: GameState): boolean {
     if (ev.type === "dies" || ev.type === "leaves") {
       instance.ability.eventCardId = ev.cardId;
       instance.ability.eventZone = ev.type === "dies" ? "graveyard" : ev.to;
+      // Ce qu'était la créature (Ratadrabik copie aussi un jeton ou une copie disparus).
+      if (ev.type === "dies") {
+        instance.ability.eventDataId = ev.dataId;
+        instance.ability.eventFaceIndex = ev.faceIndex;
+      }
     } else if (ev.type === "attacks" || ev.type === "enters" || ev.type === "combatDamage" || ev.type === "playerDamage") {
       instance.ability.eventCardId = ev.cardId;
     } else if (ev.type === "targeted") {
@@ -2417,11 +2436,13 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         const entered = ability?.eventCardId ? g.cards[ability.eventCardId] : undefined;
         const dataId = ability?.eventDataId ?? (entered && !entered.faceDown ? entered.cardId : undefined);
         if (!dataId || !g.cardData[dataId]) break;
-        const instance = newInstance(g, dataId, caster.id, "battlefield");
-        instance.faceIndex = ability?.eventFaceIndex ?? entered?.faceIndex ?? 0;
+        const faceIndex = ability?.eventFaceIndex ?? entered?.faceIndex ?? 0;
+        const copyId = effect.except ? copyDataWith(g, dataId, faceIndex, effect.except) : dataId;
+        const instance = newInstance(g, copyId, caster.id, "battlefield");
+        instance.faceIndex = copyId === dataId ? faceIndex : 0;
         instance.isToken = true;
         instance.summoningSick = true;
-        if (effect.haste) instance.grants = ["haste"];
+        if (effect.haste || effect.except?.haste) instance.grants = ["haste"];
         if (effect.endStepUnless) instance.grantedTriggers = [`At the beginning of your end step, sacrifice this permanent unless you pay ${effect.endStepUnless}.`];
         if (effect.sacrificeAtEnd) instance.grantedTriggers = ["At the beginning of each end step, sacrifice this permanent."];
         caster.zones.battlefield.push(instance.instanceId);
@@ -3210,6 +3231,9 @@ function finishSpell(g: GameState, card: CardInstance): void {
   moveCardTo(g, card.instanceId, "graveyard", "top");
 }
 
+/** Index du choix « enter as a copy » dans `choices` d'un sort de permanent. */
+const COPY_CHOICE = -1;
+
 function resolveTop(g: GameState, stackId?: CardInstanceId): void {
   const id = stackId ?? g.stack.at(-1)!;
   const card = g.cards[id]!;
@@ -3248,10 +3272,32 @@ function resolveTop(g: GameState, stackId?: CardInstanceId): void {
       log(g, null, `${name} n'a plus de cible valide : elle va au cimetière.`);
       return;
     }
+    // « You may have ~ enter as a copy of … » (Clone, Sakashima) : son contrôleur choisit d'abord la créature copiée.
+    const asCopy = !card.faceDown && g.settings.enforceRules ? enterAsCopyOf(g.cardData[card.cardId], card.faceIndex) : undefined;
+    let copyDataId: string | undefined;
+    if (asCopy) {
+      const chosen = card.choices?.[COPY_CHOICE];
+      if (!chosen) {
+        const options = Object.values(g.cards)
+          .filter((c) => c.zone === "battlefield" && !c.faceDown && isCreature(g, c) && (!asCopy.yours || c.controllerId === card.controllerId))
+          .map((c) => c.instanceId);
+        if (options.length > 0) {
+          card.cardChoice = { index: COPY_CHOICE, options, min: 0, max: 1, label: `Choisis la créature que ${name} copie en arrivant (ou aucune)` };
+          log(g, null, `${g.players[card.controllerId]!.name} choisit si ${name} arrive en copie d'une créature.`);
+          return;
+        }
+      } else if (chosen[0]) {
+        const copied = g.cards[chosen[0]];
+        if (copied && copied.zone === "battlefield" && !copied.faceDown) {
+          copyDataId = enterCopyData(g, card.cardId, copied.originalCardId ?? copied.cardId, copied.faceIndex, asCopy.keepOthers);
+          log(g, null, `${name} arrive en copie de ${cardName(g, copied)}.`);
+        }
+      }
+    }
     const evoked = card.evoked;
     // Évoquée : elle se sacrifie en arrivant (une capacité déclenchée, en même temps que les siennes).
     if (evoked) card.grantedTriggers = [...(card.grantedTriggers ?? []), EVOKE_TRIGGER];
-    const entered = moveCardTo(g, id, "battlefield", "top", { controllerId: card.controllerId });
+    const entered = moveCardTo(g, id, "battlefield", "top", { controllerId: card.controllerId, copyDataId });
     if (host?.kind === "card") {
       entered.attachedTo = host.id;
       log(g, null, `${name} enchante ${targetName(g, host)}.`);
@@ -4248,6 +4294,75 @@ function setCounter(card: CardInstance, kind: string, value: number): void {
 }
 
 /**
+ * Les données d'une copie modifiée (Ratadrabik : « except it's not legendary
+ * and it's a 2/2 black Zombie in addition to its other colors and types »),
+ * ajoutées une fois pour toutes à `g.cardData` ; rend leur identifiant.
+ */
+function copyDataWith(g: GameState, dataId: string, faceIndex: number, except: CopyExcept): string {
+  const id = `${dataId}#copie:${faceIndex}:${JSON.stringify(except)}`;
+  if (g.cardData[id]) return id;
+  const base = g.cardData[dataId]!;
+  const face = base.faces?.[faceIndex];
+  let typeLine = face?.typeLine ?? base.typeLine;
+  if (except.nonLegendary) typeLine = typeLine.replace(/\bLegendary\s+/, "");
+  let [types, subs] = typeLine.split(/\s+—\s+/) as [string, string | undefined];
+  for (const t of except.types ?? []) {
+    if (!new RegExp(`\\b${t}\\b`).test(types)) types = /\bCreature\b/.test(types) ? types.replace(/\bCreature\b/, `${t} Creature`) : `${types} ${t}`;
+  }
+  const subList = (subs ?? "").split(/\s+/).filter(Boolean);
+  for (const sub of except.subtypes ?? []) if (!subList.includes(sub)) subList.push(sub);
+  typeLine = subList.length > 0 ? `${types} — ${subList.join(" ")}` : types;
+  g.cardData[id] = {
+    ...base,
+    id,
+    name: face?.name ?? base.name,
+    manaCost: face?.manaCost ?? base.manaCost,
+    typeLine,
+    oracleText: face?.oracleText ?? base.oracleText,
+    power: except.power ?? face?.power ?? base.power,
+    toughness: except.toughness ?? face?.toughness ?? base.toughness,
+    colors: [...new Set([...base.colors, ...(except.colors ?? [])])],
+    faces: undefined,
+  } as CardData;
+  return id;
+}
+
+/**
+ * Les données d'une créature arrivée en copie d'une autre (Clone) ; avec
+ * `keepOthers`, elle garde aussi ses autres capacités (Sakashima).
+ */
+function enterCopyData(g: GameState, selfDataId: string, copiedId: string, copiedFace: number, keepOthers: boolean): string {
+  const copied = g.cardData[copiedId]!;
+  const face = copied.faces?.[copiedFace];
+  if (!keepOthers && !face) return copiedId;
+  const id = `${copiedId}#copie:${copiedFace}${keepOthers ? `+${selfDataId}` : ""}`;
+  if (g.cardData[id]) return id;
+  const self = g.cardData[selfDataId]!;
+  const name = face?.name ?? copied.name;
+  // Ses autres capacités : toutes ses lignes sauf « enter as a copy », son nom remplacé par celui de la copie.
+  const others = keepOthers
+    ? self.oracleText
+        .split("\n")
+        .filter((line) => !/enter as a copy of/i.test(line))
+        .map((line) => [self.name, self.name.split(",")[0]!].reduce((t, n) => t.split(n).join(name), line))
+    : [];
+  g.cardData[id] = {
+    ...copied,
+    id,
+    name,
+    manaCost: face?.manaCost ?? copied.manaCost,
+    typeLine: face?.typeLine ?? copied.typeLine,
+    oracleText: [face?.oracleText ?? copied.oracleText, ...others].filter(Boolean).join("\n"),
+    power: face?.power ?? copied.power,
+    toughness: face?.toughness ?? copied.toughness,
+    colors: copied.colors,
+    keywords: [...new Set([...copied.keywords, ...(keepOthers ? self.keywords : [])])],
+    faces: undefined,
+  } as CardData;
+  return id;
+}
+
+/**
  * Règle des légendes : un joueur qui contrôle deux permanents légendaires du
  * même nom garde le plus récent ; les autres vont au cimetière.
  */
@@ -4258,6 +4373,8 @@ function legendRule(g: GameState): void {
     for (const id of [...player.zones.battlefield].reverse()) {
       const card = g.cards[id]!;
       if (card.faceDown || !/\bLegendary\b/.test(currentTypeLine(g, card))) continue;
+      // Sakashima (tous ses permanents), Cadric (ses jetons) : la règle ne s'applique pas.
+      if (!legendRuleApplies(g, card)) continue;
       const name = cardName(g, card);
       if (seen.has(name)) {
         moveCardTo(g, id, "graveyard", "top");

@@ -258,7 +258,8 @@ type EffectBase =
   /** Chaos Warp : le propriétaire mélange le permanent dans sa bibliothèque ; `revealPermanent` : puis révèle et met en jeu un permanent. */
   | { type: "shuffleIntoLibrary"; target: number; revealPermanent?: boolean }
   /** Ashling : « create a token that's a copy of it » (la carte sacrifiée), avec la célérité et un sacrifice à la fin du tour. */
-  | { type: "copyEventCard"; haste?: boolean; endStepUnless?: string; sacrificeAtEnd?: boolean }
+  /** Ratadrabik : `except` (« except it's not legendary and it's a 2/2 black Zombie… »). */
+  | { type: "copyEventCard"; haste?: boolean; endStepUnless?: string; sacrificeAtEnd?: boolean; except?: CopyExcept }
   /** Paradox Haze : « that player gets an additional upkeep step after this step ». */
   | { type: "extraUpkeep" }
   /** Wedding Ring : « target opponent creates a token that's a copy of it ». */
@@ -849,6 +850,51 @@ function parseToken(text: string): TokenSpec | null {
   return { power: m[1]!.toUpperCase(), toughness: m[2]!.toUpperCase(), colors, subtypes, keywords, artifact: !!m[4] };
 }
 
+/** Ce qu'une copie a de différent (« except it's not legendary and it's a 2/2 black Zombie… »). */
+export interface CopyExcept {
+  nonLegendary?: boolean;
+  power?: string;
+  toughness?: string;
+  /** Couleurs en plus (« black » → B). */
+  colors?: string[];
+  /** Types de carte en plus (« an artifact »). */
+  types?: string[];
+  /** Sous-types en plus (« Zombie »). */
+  subtypes?: string[];
+  haste?: boolean;
+}
+
+/** Lit « except … » d'une copie ; `null` si une partie n'est pas comprise. */
+const COPY_COLORS: Record<string, string> = { white: "W", blue: "U", black: "B", red: "R", green: "G" };
+
+export function parseCopyExcept(text: string): CopyExcept | null {
+  const out: CopyExcept = {};
+  for (const raw of text.split(/,? and (?=it(?:'s| has| gains) )/i)) {
+    const part = raw.trim();
+    let m: RegExpExecArray | null;
+    if (/^it's not legendary$/i.test(part)) {
+      out.nonLegendary = true;
+    } else if (/^it (?:has|gains) haste$/i.test(part)) {
+      out.haste = true;
+    } else if ((m = /^it's an? (?:(\d+)\/(\d+) )?((?:(?:white|blue|black|red|green)(?:,? and |, | ))*)((?:[A-Za-z]+ )*?[A-Za-z]+) in addition to its other (?:colors and types|types)$/i.exec(part))) {
+      if (m[1]) {
+        out.power = m[1];
+        out.toughness = m[2]!;
+      }
+      const colors = (m[3] ?? "").split(/,? and |, | /).filter(Boolean).map((c) => COPY_COLORS[c.toLowerCase()]!);
+      if (colors.length > 0) out.colors = colors;
+      for (const w of m[4]!.split(" ")) {
+        if (/^(artifact|creature|enchantment|land)$/i.test(w)) (out.types ??= []).push(w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+        else if (/^[A-Z][a-z]+$/.test(w)) (out.subtypes ??= []).push(w);
+        else return null;
+      }
+    } else {
+      return null;
+    }
+  }
+  return out;
+}
+
 /** Lit les effets d'un éphémère ou d'un rituel. */
 export function parseSpellEffects(oracleText: string, cardName: string, options: { alternative?: boolean } = {}): SpellEffects {
   // « Choose one or more — • Sell Contraband — Create a Treasure token. … • … »
@@ -1096,6 +1142,14 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     if (/^create a token that's a copy of it$/i.test(s)) {
       result.effects.push({ type: "copyEventCard" });
       continue;
+    }
+    // Ratadrabik : « create a token that's a copy of that creature, except it's not legendary and it's a 2/2 black Zombie… ».
+    if ((m = /^create a token that's a copy of (?:it|that creature)(?:, except (.+))?$/i.exec(s))) {
+      const except = m[1] ? parseCopyExcept(m[1]) : {};
+      if (except) {
+        result.effects.push({ type: "copyEventCard", ...(m[1] ? { except } : {}) });
+        continue;
+      }
     }
     if (/^(?:the|that) token gains haste(?: until end of turn)?$/i.test(s) && prev?.type === "copyEventCard") {
       prev.haste = true;
