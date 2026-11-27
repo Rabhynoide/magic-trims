@@ -37,6 +37,7 @@ export const COMBAT_KEYWORDS = [
   "Hexproof",
   "Shroud",
   "Fear",
+  "Skulk",
 ] as const;
 
 const COLOR_NAMES: Record<string, string> = { white: "W", blue: "U", black: "B", red: "R", green: "G" };
@@ -100,6 +101,8 @@ export function hasKeyword(g: GameState, card: CardInstance, keyword: CombatKeyw
   const text = faceOf(g, card).oracleText;
   return text.split("\n").some((line) => {
     const clean = line.replace(/\([^)]*\)/g, "").trim();
+    // Une ligne de mots-clés n'est pas une phrase (Odric cite « trample » dans une phrase).
+    if (clean.includes(".")) return false;
     return clean.split(/,\s*/).some((part) => part.toLowerCase() === keyword.toLowerCase());
   });
 }
@@ -193,6 +196,8 @@ export function canBlock(g: GameState, card: CardInstance, attacker?: CardInstan
   if (hasKeyword(g, attacker, "Flying") && !hasKeyword(g, card, "Flying") && !hasKeyword(g, card, "Reach")) return false;
   // Peur : seulement par des créatures-artefacts et/ou noires.
   if (hasKeyword(g, attacker, "Fear") && !colorsOf(g, card).includes("B") && !/\bArtifact\b/.test(faceOf(g, card).typeLine)) return false;
+  // Rôder : pas par des créatures de plus grande force.
+  if (hasKeyword(g, attacker, "Skulk") && creatureStats(g, card).power > creatureStats(g, attacker).power) return false;
   if (protectedFrom(g, attacker, colorsOf(g, card))) return false;
   return true;
 }

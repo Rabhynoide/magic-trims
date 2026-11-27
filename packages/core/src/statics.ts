@@ -840,6 +840,8 @@ export interface DamageSource {
   combat: boolean;
   /** Couleurs de la source (pour la protection). */
   colors?: string[];
+  /** Le permanent source (ou le sort), pour les déclencheurs « deals damage ». */
+  sourceId?: string;
 }
 
 /**
