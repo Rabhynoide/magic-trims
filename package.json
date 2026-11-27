@@ -1,7 +1,7 @@
 {
   "name": "magic-trims",
   "private": true,
-  "description": "Table de jeu Magic: The Gathering Commander entre amis, jusqu'à 5 joueurs en ligne.",
+  "description": "Table de jeu Magic: The Gathering Commander entre amis, jusqu'\u00e0 5 joueurs en ligne.",
   "workspaces": [
     "packages/*"
   ],
@@ -12,7 +12,8 @@
     "app": "npm run dev -w @magic-trims/app",
     "dist": "npm run dist -w @magic-trims/app",
     "postinstall": "node scripts/install-electron.mjs",
-    "central": "npm run central -w @magic-trims/central --"
+    "central": "npm run central -w @magic-trims/central --",
+    "central:deploy": "npm run deploy -w @magic-trims/central"
   },
   "engines": {
     "node": ">=20"

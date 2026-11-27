@@ -1,17 +1,23 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import type { CentralGroup, CentralMember, ResolvedDeck, SharedDeck } from "@magic-trims/core";
 
 /**
- * Données du serveur central, dans un seul fichier SQLite (facile à
- * sauvegarder : il suffit de copier le fichier).
+ * Données du serveur central, en SQLite : celui des Durable Objects de
+ * Cloudflare en production, `node:sqlite` pour l'essai local et les tests.
  *
  * Comptes : chaque groupe d'amis a un code secret. Un joueur rejoint le
  * groupe avec ce code et son pseudo, et reçoit un jeton que l'appli garde.
  * Seule l'empreinte des jetons est stockée.
+ *
+ * N'utilise que des API web standard (Web Crypto), communes à Node et aux Workers.
  */
+
+/** Accès SQL minimal, pour brancher le SQLite de Cloudflare ou celui de Node. */
+export interface Sql {
+  /** Exécute un script de plusieurs instructions, sans paramètre. */
+  script(sql: string): void;
+  all<T>(sql: string, ...params: (string | number | null)[]): T[];
+  run(sql: string, ...params: (string | number | null)[]): void;
+}
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS groups (
@@ -40,12 +46,18 @@ CREATE TABLE IF NOT EXISTS decks (
 );
 `;
 
+const ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+
+function randomString(length: number, alphabet: string): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(length));
+  let out = "";
+  for (const b of bytes) out += alphabet[b % alphabet.length];
+  return out;
+}
+
 /** Code de groupe lisible : 10 caractères sans lettres ambiguës, en deux blocs. */
 export function newGroupCode(): string {
-  const alphabet = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
-  const bytes = randomBytes(10);
-  let code = "";
-  for (let i = 0; i < 10; i++) code += alphabet[bytes[i]! % alphabet.length];
+  const code = randomString(10, ALPHABET);
   return `${code.slice(0, 5)}-${code.slice(5)}`;
 }
 
@@ -54,7 +66,12 @@ export function normalizeGroupCode(code: string): string {
   return code.toUpperCase().replace(/[^0-9A-Z]/g, "");
 }
 
-const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
+const formatCode = (code: string) => `${code.slice(0, 5)}-${code.slice(5)}`;
+
+async function hashToken(token: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 export interface GroupWithCode extends CentralGroup {
   code: string;
@@ -71,35 +88,26 @@ interface DeckRow {
 }
 
 export class CentralStore {
-  private readonly db: DatabaseSync;
-
-  /** `:memory:` pour les tests. */
-  constructor(path: string) {
-    if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-    this.db = new DatabaseSync(path);
-    this.db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
-    this.db.exec(SCHEMA);
-  }
-
-  close(): void {
-    this.db.close();
+  constructor(private readonly sql: Sql) {
+    sql.script(SCHEMA);
   }
 
   createGroup(name: string): GroupWithCode {
-    const group = { id: randomUUID(), name: name.trim() || "Mes amis", code: newGroupCode() };
-    this.db
-      .prepare("INSERT INTO groups (id, name, code, created_at) VALUES (?, ?, ?, ?)")
-      .run(group.id, group.name, normalizeGroupCode(group.code), Date.now());
+    const group = { id: crypto.randomUUID(), name: name.trim() || "Mes amis", code: newGroupCode() };
+    this.sql.run(
+      "INSERT INTO groups (id, name, code, created_at) VALUES (?, ?, ?, ?)",
+      group.id,
+      group.name,
+      normalizeGroupCode(group.code),
+      Date.now(),
+    );
     return group;
   }
 
   listGroups(): GroupWithCode[] {
-    const rows = this.db.prepare("SELECT id, name, code FROM groups ORDER BY created_at").all() as {
-      id: string;
-      name: string;
-      code: string;
-    }[];
-    return rows.map((r) => ({ id: r.id, name: r.name, code: `${r.code.slice(0, 5)}-${r.code.slice(5)}` }));
+    return this.sql
+      .all<{ id: string; name: string; code: string }>("SELECT id, name, code FROM groups ORDER BY created_at")
+      .map((r) => ({ id: r.id, name: r.name, code: formatCode(r.code) }));
   }
 
   /**
@@ -107,37 +115,40 @@ export class CentralStore {
    * compte avec un nouveau jeton (réinstallation, autre PC) : entre amis, le
    * code du groupe suffit comme preuve.
    */
-  join(code: string, name: string): { token: string; member: CentralMember; group: CentralGroup } | null {
-    const group = this.db.prepare("SELECT id, name FROM groups WHERE code = ?").get(normalizeGroupCode(code)) as
-      | CentralGroup
-      | undefined;
+  async join(code: string, name: string): Promise<{ token: string; member: CentralMember; group: CentralGroup } | null> {
+    const group = this.sql.all<CentralGroup>("SELECT id, name FROM groups WHERE code = ?", normalizeGroupCode(code))[0];
     if (!group) return null;
-    const token = randomBytes(24).toString("base64url");
-    const existing = this.db
-      .prepare("SELECT id, name FROM members WHERE group_id = ? AND name = ?")
-      .get(group.id, name) as CentralMember | undefined;
+    const token = randomString(32, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
+    const hash = await hashToken(token);
+    const existing = this.sql.all<CentralMember>(
+      "SELECT id, name FROM members WHERE group_id = ? AND name = ?",
+      group.id,
+      name,
+    )[0];
     let member: CentralMember;
     if (existing) {
-      this.db.prepare("UPDATE members SET token_hash = ? WHERE id = ?").run(hashToken(token), existing.id);
+      this.sql.run("UPDATE members SET token_hash = ? WHERE id = ?", hash, existing.id);
       member = { id: existing.id, name: existing.name };
     } else {
-      member = { id: randomUUID(), name };
-      this.db
-        .prepare("INSERT INTO members (id, group_id, name, token_hash, created_at) VALUES (?, ?, ?, ?, ?)")
-        .run(member.id, group.id, name, hashToken(token), Date.now());
+      member = { id: crypto.randomUUID(), name };
+      this.sql.run(
+        "INSERT INTO members (id, group_id, name, token_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+        member.id,
+        group.id,
+        name,
+        hash,
+        Date.now(),
+      );
     }
     return { token, member, group: { id: group.id, name: group.name } };
   }
 
-  authenticate(token: string): { member: CentralMember; group: CentralGroup } | null {
-    const row = this.db
-      .prepare(
-        `SELECT m.id AS member_id, m.name AS member_name, g.id AS group_id, g.name AS group_name
-         FROM members m JOIN groups g ON g.id = m.group_id WHERE m.token_hash = ?`,
-      )
-      .get(hashToken(token)) as
-      | { member_id: string; member_name: string; group_id: string; group_name: string }
-      | undefined;
+  async authenticate(token: string): Promise<{ member: CentralMember; group: CentralGroup } | null> {
+    const row = this.sql.all<{ member_id: string; member_name: string; group_id: string; group_name: string }>(
+      `SELECT m.id AS member_id, m.name AS member_name, g.id AS group_id, g.name AS group_name
+       FROM members m JOIN groups g ON g.id = m.group_id WHERE m.token_hash = ?`,
+      await hashToken(token),
+    )[0];
     if (!row) return null;
     return {
       member: { id: row.member_id, name: row.member_name },
@@ -146,14 +157,14 @@ export class CentralStore {
   }
 
   listDecks(groupId: string): SharedDeck[] {
-    const rows = this.db
-      .prepare(
+    return this.sql
+      .all<DeckRow>(
         `SELECT d.id, d.name, d.text, d.deck_json, d.updated_at, d.owner_id, m.name AS owner_name
          FROM decks d JOIN members m ON m.id = d.owner_id
          WHERE d.group_id = ? ORDER BY d.updated_at DESC`,
+        groupId,
       )
-      .all(groupId) as unknown as DeckRow[];
-    return rows.map(toSharedDeck);
+      .map(toSharedDeck);
   }
 
   /** Partage ou met à jour un deck ; `"forbidden"` si ce deck appartient à un autre joueur. */
@@ -162,30 +173,36 @@ export class CentralStore {
     owner: CentralMember,
     deck: { id: string; name: string; text: string; deck: ResolvedDeck },
   ): SharedDeck | "forbidden" {
-    const existing = this.db.prepare("SELECT owner_id FROM decks WHERE group_id = ? AND id = ?").get(groupId, deck.id) as
-      | { owner_id: string }
-      | undefined;
-    if (existing && existing.owner_id !== owner.id) return "forbidden";
+    const existing = this.ownerOf(groupId, deck.id);
+    if (existing && existing !== owner.id) return "forbidden";
     const updatedAt = Date.now();
-    this.db
-      .prepare(
-        `INSERT INTO decks (id, group_id, owner_id, name, text, deck_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (group_id, id) DO UPDATE SET name = excluded.name, text = excluded.text,
-           deck_json = excluded.deck_json, updated_at = excluded.updated_at`,
-      )
-      .run(deck.id, groupId, owner.id, deck.name, deck.text, JSON.stringify(deck.deck), updatedAt);
+    this.sql.run(
+      `INSERT INTO decks (id, group_id, owner_id, name, text, deck_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (group_id, id) DO UPDATE SET name = excluded.name, text = excluded.text,
+         deck_json = excluded.deck_json, updated_at = excluded.updated_at`,
+      deck.id,
+      groupId,
+      owner.id,
+      deck.name,
+      deck.text,
+      JSON.stringify(deck.deck),
+      updatedAt,
+    );
     return { id: deck.id, name: deck.name, text: deck.text, deck: deck.deck, owner, updatedAt };
   }
 
   /** `"missing"` si le deck n'existe pas, `"forbidden"` s'il appartient à un autre joueur. */
   deleteDeck(groupId: string, ownerId: string, id: string): "ok" | "missing" | "forbidden" {
-    const existing = this.db.prepare("SELECT owner_id FROM decks WHERE group_id = ? AND id = ?").get(groupId, id) as
-      | { owner_id: string }
-      | undefined;
+    const existing = this.ownerOf(groupId, id);
     if (!existing) return "missing";
-    if (existing.owner_id !== ownerId) return "forbidden";
-    this.db.prepare("DELETE FROM decks WHERE group_id = ? AND id = ?").run(groupId, id);
+    if (existing !== ownerId) return "forbidden";
+    this.sql.run("DELETE FROM decks WHERE group_id = ? AND id = ?", groupId, id);
     return "ok";
+  }
+
+  private ownerOf(groupId: string, id: string): string | undefined {
+    return this.sql.all<{ owner_id: string }>("SELECT owner_id FROM decks WHERE group_id = ? AND id = ?", groupId, id)[0]
+      ?.owner_id;
   }
 }
 

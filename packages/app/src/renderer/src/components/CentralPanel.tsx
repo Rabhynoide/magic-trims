@@ -44,7 +44,7 @@ export function CentralPanel(props: { community: Community; name: string }) {
           >
             <label className="field">
               Adresse du serveur
-              <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="ex. monserveur.fr ou 26.12.34.56" />
+              <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="ex. magic-trims-central.toto.workers.dev" />
             </label>
             <label className="field">
               Code du groupe

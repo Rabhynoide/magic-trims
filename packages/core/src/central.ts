@@ -6,7 +6,7 @@ import type { ResolvedDeck } from "./deck/resolve.js";
  * communauté sont indisponibles.
  */
 
-/** Port par défaut du serveur central (celui des parties est 47474). */
+/** Port du serveur central d'essai local (celui des parties est 47474). */
 export const CENTRAL_DEFAULT_PORT = 47475;
 
 export interface CentralMember {
@@ -60,11 +60,19 @@ export class CentralError extends Error {
   }
 }
 
-/** Complète une adresse saisie par le joueur : `monserveur.fr` → `http://monserveur.fr:47475`. */
+/**
+ * Complète une adresse saisie par le joueur. Un nom de domaine passe en
+ * https (`magic-trims-central.toto.workers.dev` → `https://…`) ; une adresse IP
+ * ou `localhost` (serveur d'essai) passe en http sur le port 47475.
+ */
 export function normalizeCentralUrl(input: string): string {
   let url = input.trim().replace(/\/+$/, "");
   if (!url) throw new CentralError("Adresse du serveur central vide.", 400);
-  if (!/^https?:\/\//i.test(url)) url = `http://${url}`;
+  if (!/^https?:\/\//i.test(url)) {
+    const host = url.split(/[/:]/)[0]!;
+    const local = host === "localhost" || /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+    url = `${local ? "http" : "https"}://${url}`;
+  }
   let parsed: URL;
   try {
     parsed = new URL(url);

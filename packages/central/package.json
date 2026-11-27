@@ -3,23 +3,25 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Serveur central facultatif : partage de decks entre amis d'un même groupe. Le jeu fonctionne sans lui.",
+  "description": "Serveur central facultatif (Cloudflare Workers + Durable Objects) : partage de decks entre amis d'un m\u00eame groupe. Le jeu fonctionne sans lui.",
   "exports": {
     ".": "./src/index.ts"
   },
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit -p .",
-    "central": "tsx src/cli.ts"
+    "typecheck": "tsc --noEmit -p . && tsc --noEmit -p tsconfig.worker.json",
+    "central": "tsx src/cli.ts",
+    "deploy": "npx --yes wrangler@4 deploy",
+    "dev:worker": "npx --yes wrangler@4 dev"
   },
   "dependencies": {
-    "@magic-trims/core": "0.1.0",
-    "@magic-trims/host": "0.1.0"
+    "@magic-trims/core": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.0",
-    "tsx": "^4.20.0"
+    "tsx": "^4.20.0",
+    "@cloudflare/workers-types": "^4.20251001.0"
   }
 }

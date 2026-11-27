@@ -8,7 +8,7 @@ afterEach(async () => {
 });
 
 async function start() {
-  const server = await startCentralServer({ port: 0, hostname: "127.0.0.1", dbPath: ":memory:" });
+  const server = await startCentralServer({ port: 0, hostname: "127.0.0.1", dbPath: ":memory:", adminKey: "cle-admin" });
   servers.push(server);
   const group = server.store.createGroup("Les amis");
   const url = `http://127.0.0.1:${server.port}`;
@@ -91,10 +91,39 @@ describe("serveur central", () => {
   });
 });
 
+describe("administration à distance", () => {
+  it("crée et liste les groupes avec la clé d'administration", async () => {
+    const { url } = await start();
+    const call = (key: string, method: string, body?: unknown) =>
+      fetch(`${url}/api/admin/groups`, {
+        method,
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+    expect((await call("fausse", "GET")).status).toBe(403);
+    const created = (await (await call("cle-admin", "POST", { name: "Jeudi" })).json()) as { code: string; name: string };
+    expect(created.code).toMatch(/^[0-9A-Z]{5}-[0-9A-Z]{5}$/);
+    const list = (await (await call("cle-admin", "GET")).json()) as { groups: { name: string }[] };
+    expect(list.groups.map((g) => g.name)).toEqual(["Les amis", "Jeudi"]);
+    const joined = await new CentralClient({ url }).join(created.code, "Rémi");
+    expect(joined.group.name).toBe("Jeudi");
+  });
+
+  it("ferme l'administration quand aucune clé n'est configurée", async () => {
+    const server = await startCentralServer({ port: 0, hostname: "127.0.0.1", dbPath: ":memory:" });
+    servers.push(server);
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/admin/groups`, { headers: { Authorization: "Bearer " } });
+    expect(res.status).toBe(403);
+  });
+});
+
 describe("client du serveur central", () => {
   it("complète l'adresse saisie", () => {
-    expect(normalizeCentralUrl("monserveur.fr")).toBe("http://monserveur.fr:47475");
+    expect(normalizeCentralUrl("magic-trims-central.toto.workers.dev")).toBe(
+      "https://magic-trims-central.toto.workers.dev",
+    );
     expect(normalizeCentralUrl("https://central.exemple.fr/")).toBe("https://central.exemple.fr");
+    expect(normalizeCentralUrl("localhost")).toBe("http://localhost:47475");
     expect(normalizeCentralUrl("192.168.1.10:8000")).toBe("http://192.168.1.10:8000");
   });
 
