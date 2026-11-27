@@ -17,3 +17,10 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   shortcutName: Magic Trims
+# Mises à jour automatiques : l'appli installée cherche les nouvelles versions
+# dans les GitHub Releases du dépôt (publiées par la CI à chaque fusion sur main).
+publish:
+  provider: github
+  owner: Rabhynoide
+  repo: magic-trims
+  releaseType: release
