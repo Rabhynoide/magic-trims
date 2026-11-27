@@ -3,6 +3,7 @@ import { parseDeckList } from "../src/deck/parse.js";
 import { resolveDeck } from "../src/deck/resolve.js";
 import { ScryfallClient, toCardData, type ScryfallCard } from "../src/deck/scryfall.js";
 import { deckColorIdentity, deckLegalityByMode, validateCommanderDeck } from "../src/deck/validate.js";
+import type { CardData } from "../src/types.js";
 import { fakeCard, fakeDeck } from "./helpers.js";
 
 describe("lecture d'une liste Moxfield", () => {
@@ -218,6 +219,79 @@ describe("validation Commander", () => {
       fakeCard("Sarah Jane Smith", { typeLine: "Legendary Creature — Human Detective", keywords: ["Doctor's companion"] }),
     ];
     expect(validateCommanderDeck(deck)).toEqual([]);
+  });
+
+  describe("paires de commandants", () => {
+    type Spec = readonly [string, Partial<CardData>];
+    const legend = ([name, extra]: Spec) => fakeCard(name, { typeLine: "Legendary Creature — Test", ...extra });
+    const pair = (a: Spec, b: Spec) => {
+      const deck = fakeDeck("A");
+      deck.cards.pop();
+      deck.commanders = [legend(a), legend(b)];
+      return validateCommanderDeck(deck).map((i) => i.message);
+    };
+    const partner = "Partner (You can have two commanders if both have partner.)";
+
+    it("accepte deux cartes avec « Partner » (Yoshimaru et Sakashima)", () => {
+      expect(pair(["Yoshimaru, Ever Faithful", { oracleText: partner }], ["Sakashima of a Thousand Faces", { oracleText: partner }])).toEqual([]);
+    });
+
+    it("refuse un commandant avec « Partner » et un autre sans", () => {
+      expect(pair(["Yoshimaru, Ever Faithful", { oracleText: partner }], ["Jodah, the Unifier", {}])).toEqual([
+        "Jodah, the Unifier n'a pas « Partenaire » : les deux commandants doivent l'avoir.",
+      ]);
+    });
+
+    it("« Partner with » n'accepte que le partenaire désigné", () => {
+      const pir = ["Pir, Imaginative Rascal", { oracleText: "Partner with Toothy, Imaginary Friend (When this creature enters, target player may put Toothy into their hand from their library, then shuffle.)" }] as const;
+      const toothy = ["Toothy, Imaginary Friend", { oracleText: "Partner with Pir, Imaginative Rascal (When this creature enters, target player may put Pir into their hand from their library, then shuffle.)" }] as const;
+      expect(pair(pir, toothy)).toEqual([]);
+      expect(pair(pir, ["Yoshimaru, Ever Faithful", { oracleText: partner }])).toEqual([
+        "Pir, Imaginative Rascal ne peut faire équipe qu'avec Toothy, Imaginary Friend (« Partenaire avec »).",
+      ]);
+    });
+
+    it("« Partner—Survivors » exige le même genre", () => {
+      const survivor = "Partner—Survivors (You can have two commanders if both have this ability.)";
+      expect(pair(["A", { oracleText: survivor }], ["B", { oracleText: survivor }])).toEqual([]);
+      expect(pair(["A", { oracleText: survivor }], ["B", { oracleText: "Partner—Father & son" }])).toEqual([
+        "A et B n'ont pas la même capacité « Partenaire — … ».",
+      ]);
+    });
+
+    it("« Friends forever » ne se combine pas avec « Partner »", () => {
+      const ff = "Friends forever (You can have two commanders if both have friends forever.)";
+      expect(pair(["A", { oracleText: ff }], ["B", { oracleText: ff }])).toEqual([]);
+      expect(pair(["A", { oracleText: ff }], ["B", { oracleText: partner }])).toEqual([
+        "« Partenaire » et « Amis pour toujours » ne se combinent pas entre eux.",
+      ]);
+    });
+
+    it("« Choose a Background » va avec un Historique", () => {
+      const choose = "Choose a Background (You can have a Background as a second commander.)";
+      const bg = { typeLine: "Legendary Enchantment — Background", oracleText: "Commander creatures you own have menace." };
+      expect(pair(["Wilson", { oracleText: choose }], ["Raised by Giants", bg])).toEqual([]);
+      expect(pair(["Wilson", { oracleText: choose }], ["Jodah", {}])).toEqual([
+        "Jodah n'est pas un Historique (« Choisissez un historique »).",
+      ]);
+    });
+
+    it("signale un Historique seul comme commandant", () => {
+      const deck = fakeDeck("A");
+      deck.commanders[0] = fakeCard("Raised by Giants", { typeLine: "Legendary Enchantment — Background" });
+      expect(validateCommanderDeck(deck).map((i) => i.message)).toEqual([
+        "Raised by Giants est un Historique : il accompagne un commandant avec « Choisissez un historique ».",
+      ]);
+    });
+
+    it("accepte un planeswalker qui « can be your commander » (Dihada)", () => {
+      const deck = fakeDeck("A");
+      deck.commanders[0] = fakeCard("Dihada, Binder of Wills", {
+        typeLine: "Legendary Planeswalker — Dihada",
+        oracleText: "Dihada, Binder of Wills can be your commander.",
+      });
+      expect(validateCommanderDeck(deck)).toEqual([]);
+    });
   });
 
   it("exige un commandant", () => {
