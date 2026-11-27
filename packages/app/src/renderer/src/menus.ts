@@ -383,6 +383,12 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
             view.settings.enforceRules && /\b(Instant|Sorcery)\b/.test(f.typeLine)
               ? parseSpellEffects(faceData?.oracleText ?? data.oracleText, f.name, { alternative })
               : null;
+          // Toxic Deluge : X PV payés en coût supplémentaire.
+          if (parsed?.payLifeX && x === undefined) {
+            const value = await ui.ask("Valeur de X (PV à payer)", "1", "number");
+            if (value === null) return;
+            x = Math.max(0, Math.floor(Number(value) || 0));
+          }
           // Modes avec des cibles (Ashling's Command) : choisis d'abord, leurs cibles suivent.
           let modes: number[] | undefined;
           if (parsed?.modes && modesTargeted(parsed)) {
