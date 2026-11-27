@@ -10,7 +10,7 @@
 import type { GameAction } from "./actions.js";
 import { canAttack, cantBlock, creatureStats, hasKeyword, isCreature } from "./combat.js";
 import { isLegalTarget, type Target } from "./effects.js";
-import { abilitiesOf } from "./triggers.js";
+import { abilitiesOf, stackTrigger } from "./triggers.js";
 import { areTeammates, isActivePlayer, teamOf } from "./modes.js";
 import { applyAction } from "./reducer.js";
 import { MAX_HAND_SIZE } from "./turn.js";
@@ -31,7 +31,7 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
   // Ses capacités déclenchées qui attendent des cibles : un adversaire de préférence.
   const waiting = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.needsTargets && c.controllerId === botId);
   if (waiting) {
-    const specs = abilitiesOf(g.cardData[waiting.cardId], waiting.ability!.faceIndex).triggers[waiting.ability!.index]?.effects.targets ?? [];
+    const specs = stackTrigger(g.cardData[waiting.cardId], waiting.ability!)?.effects.targets ?? [];
     const players = [...g.turnOrder].sort((a, b) => Number(areTeammates(g, a, botId) || a === botId) - Number(areTeammates(g, b, botId) || b === botId));
     const candidates = [
       ...players.map((id) => ({ kind: "player", id }) as Target),
@@ -44,9 +44,10 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
   // Ses capacités facultatives : oui, sauf s'il faut sacrifier (ou payer sans le pouvoir).
   const deciding = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.awaitingDecision && c.controllerId === botId);
   if (deciding) {
-    const trigger = abilitiesOf(g.cardData[deciding.cardId], deciding.ability!.faceIndex).triggers[deciding.ability!.index];
+    const trigger = stackTrigger(g.cardData[deciding.cardId], deciding.ability!);
     const sacrifice = trigger?.effects.effects.some((e) => e.type === "sacrifice");
-    const yes: GameAction = { type: "decideOptional", cardId: deciding.instanceId, accept: true };
+    const x = trigger?.payMana && /\{X\}/i.test(trigger.payMana) ? (deciding.ability!.eventAmount ?? 0) : undefined;
+    const yes: GameAction = { type: "decideOptional", cardId: deciding.instanceId, accept: true, ...(x !== undefined ? { x } : {}) };
     if (!sacrifice && applyAction(g, { actorId: botId, action: yes }).ok) return yes;
     return { type: "decideOptional", cardId: deciding.instanceId, accept: false };
   }

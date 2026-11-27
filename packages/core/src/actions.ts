@@ -73,6 +73,8 @@ export type GameAction =
       targets?: Target[];
       /** Le permanent sacrifié pour un coût supplémentaire (« As an additional cost… sacrifice a creature »). */
       sacrifice?: CardInstanceId;
+      /** Payer le coût alternatif du sort (« You may pay {1}{B} rather than pay this spell's mana cost »). */
+      alternative?: boolean;
     }
   /**
    * Active la capacité n° `index` (parmi les capacités activées reconnues de
@@ -89,7 +91,8 @@ export type GameAction =
       color?: ManaType;
     }
   /** Répond à une capacité facultative (« you may ») sur la pile ; `choice` : le permanent choisi (sacrifice). */
-  | { type: "decideOptional"; cardId: CardInstanceId; accept: boolean; choice?: CardInstanceId }
+  /** `x` : la valeur payée pour « you may pay {X} » (Well of Lost Dreams). */
+  | { type: "decideOptional"; cardId: CardInstanceId; accept: boolean; choice?: CardInstanceId; x?: number }
   /** Regard : les cartes gardées au-dessus (dans l'ordre, la première en haut) et celles mises au-dessous. */
   | { type: "scry"; cardId: CardInstanceId; top: CardInstanceId[]; bottom: CardInstanceId[] }
   /** Choisit les cibles d'une capacité déclenchée qu'on contrôle, sur la pile. */

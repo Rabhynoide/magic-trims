@@ -101,6 +101,12 @@ export type Effect =
   | { type: "halfLibraryHalfLife"; who: Who }
   /** Teferi's Puzzle Box : mettre sa main au-dessous de sa bibliothèque, puis piocher autant de cartes. */
   | { type: "wheelHand"; who: Who }
+  /** « Return that card to the battlefield under your control » : la carte de l'événement (morte ou exilée). */
+  | { type: "returnEventCard"; tapped: boolean; owner: boolean }
+  /** « Until end of turn, that creature gains "When this creature dies, …" » : une capacité déclenchée donnée. */
+  | { type: "grantTrigger"; target: number; text: string }
+  /** « Until end of turn, whenever a player taps a Swamp for mana, that player adds an additional {B}. » */
+  | { type: "manaBonus"; subtype: string; mana: string }
   /** « Scry 2 » : le contrôleur range les cartes du dessus avant le reste de la résolution (seulement en premier effet). */
   | { type: "scry"; count: number };
 
@@ -118,6 +124,8 @@ export interface SpellEffects {
   targets: TargetSpec[];
   /** Coût supplémentaire : sacrifier un permanent (« As an additional cost to cast this spell, sacrifice a creature »). */
   sacrifice?: PermanentFilter;
+  /** Coût alternatif (« You may pay {1}{B} rather than pay this spell's mana cost »). */
+  alternativeCost?: string;
   effects: Effect[];
   /** Phrases que le moteur ne sait pas appliquer. */
   unknown: string[];
@@ -255,6 +263,9 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
   if ((m = new RegExp(`^that player draws ${NUM} (?:additional )?cards?$`, "i").exec(s))) {
     return [{ type: "draw", who: "event", count: amount(m[1]!) }];
   }
+  if ((m = /^return (?:it|that card) to the battlefield( tapped)? under (your|its owner's) control$/i.exec(s))) {
+    return [{ type: "returnEventCard", tapped: !!m[1], owner: /owner/i.test(m[2]!) }];
+  }
   if ((m = new RegExp(`^~ deals ${NUM} damage to that player$`, "i").exec(s))) {
     return [{ type: "damage", target: "event", amount: amount(m[1]!) }];
   }
@@ -373,7 +384,7 @@ function parseToken(text: string): TokenSpec | null {
 }
 
 /** Lit les effets d'un éphémère ou d'un rituel. */
-export function parseSpellEffects(oracleText: string, cardName: string): SpellEffects {
+export function parseSpellEffects(oracleText: string, cardName: string, options: { alternative?: boolean } = {}): SpellEffects {
   const result: SpellEffects = { targets: [], effects: [], unknown: [] };
   const target = (spec: TargetSpec) => result.targets.push(spec) - 1;
   // Texte de rappel entre parenthèses, nom de la carte remplacé par « ~ ».
@@ -389,9 +400,42 @@ export function parseSpellEffects(oracleText: string, cardName: string): SpellEf
 
   let wheel: "event" | "all" | null = null;
   for (const sentence of sentences) {
-    const s = sentence.replace(/\.$/, "");
+    let s = sentence.replace(/\.$/, "");
     if (HARMLESS.some((re) => re.test(sentence))) continue;
     let m: RegExpExecArray | null;
+
+    if ((m = /^you may pay ((?:\{[^}]+\})+) rather than pay ~'s mana cost$/i.exec(s))) {
+      result.alternativeCost = m[1]!;
+      continue;
+    }
+    // « If the {1}{B} cost was paid, an opponent draws a card. » : seulement quand le coût alternatif est payé.
+    if ((m = /^if the ((?:\{[^}]+\})+) cost was paid, (.+)$/i.exec(s))) {
+      if (!options.alternative) continue;
+      s = m[2]!.charAt(0).toUpperCase() + m[2]!.slice(1);
+    }
+    if ((m = /^until end of turn, whenever a player taps an? (Plains|Island|Swamp|Mountain|Forest) for mana, that player adds an additional \{([WUBRG])\}$/i.exec(s))) {
+      result.effects.push({ type: "manaBonus", subtype: m[1]!.charAt(0).toUpperCase() + m[1]!.slice(1).toLowerCase(), mana: m[2]!.toUpperCase() });
+      continue;
+    }
+    if ((m = /^choose target (.+)$/i.exec(s))) {
+      const filter = parsePermanentFilter(m[1]!);
+      if (filter) {
+        target({ label: permanentLabel(filter), permanent: filter });
+        continue;
+      }
+    }
+    if ((m = /^until end of turn, (that creature|target creature) gains "(When .+?)\.?"\.?$/i.exec(sentence.trim()))) {
+      const t = /^target/i.test(m[1]!) ? target({ label: "créature", permanent: { types: ["creature"], notTypes: [] } }) : result.targets.length - 1;
+      if (t >= 0) {
+        result.effects.push({ type: "grantTrigger", target: t, text: `${m[2]!}.` });
+        continue;
+      }
+    }
+    if ((m = new RegExp(`^an opponent draws ${NUM} cards?$`, "i").exec(s))) {
+      const who = { target: target({ label: "adversaire qui pioche", player: true, opponent: true, choice: true }) };
+      result.effects.push({ type: "draw", who, count: amount(m[1]!) });
+      continue;
+    }
 
     const additional = /^as an additional cost to cast ~, sacrifice (?:a|an) (.+)$/i.exec(s);
     const sacrificed = additional && parsePermanentFilter(additional[1]!);
@@ -623,13 +667,13 @@ export function isLegalTarget(g: GameState, spec: TargetSpec, target: Target, ca
 }
 
 /** Effets d'une carte sur sa face visible, s'il s'agit d'un éphémère ou d'un rituel. */
-export function spellEffectsOf(g: GameState, card: CardInstance, faceIndex = card.faceIndex): SpellEffects | null {
+export function spellEffectsOf(g: GameState, card: CardInstance, faceIndex = card.faceIndex, alternative = card.alternative ?? false): SpellEffects | null {
   const data = g.cardData[card.cardId];
   if (!data) return null;
   const face = data.faces?.[faceIndex];
   const typeLine = face?.typeLine ?? data.typeLine;
   if (!/\b(Instant|Sorcery)\b/.test(typeLine)) return null;
-  return parseSpellEffects(face?.oracleText ?? data.oracleText, face?.name ?? data.name);
+  return parseSpellEffects(face?.oracleText ?? data.oracleText, face?.name ?? data.name, { alternative });
 }
 
 /** Valeur d'un nombre d'effet, avec la valeur de X choisie au lancement. */
@@ -665,7 +709,22 @@ interface LineStatus {
   manual?: string[];
 }
 
+/** Ce qu'une aura enchante (« Enchant creature or planeswalker you control ») : la cible à choisir en la lançant. */
+export function auraTarget(typeLine: string, oracleText: string): TargetSpec | null {
+  if (!/\bAura\b/.test(typeLine)) return null;
+  for (const raw of oracleText.split("\n")) {
+    const m = /^enchant (.+)$/i.exec(raw.replace(/\([^)]*\)/g, "").trim());
+    if (!m) continue;
+    if (/^player$/i.test(m[1]!)) return { label: "joueur", player: true };
+    if (/^opponent$/i.test(m[1]!)) return { label: "adversaire", player: true, opponent: true };
+    const filter = parsePermanentFilter(m[1]!);
+    return filter ? { label: permanentLabel(filter), permanent: filter } : null;
+  }
+  return null;
+}
+
 function permanentLineStatus(line: string, typeLine: string, name: string): LineStatus {
+  if (/^enchant /i.test(line) && auraTarget(typeLine, line)) return { title: "Aura", status: "auto" };
   const abilities = parsePermanentAbilities(line, name, typeLine);
   if (/^\{T\}: Add /.test(line) && manaOptions(typeLine, line).length > 0) return { title: "Capacité de mana", status: "auto" };
   if (abilities.triggers.length > 0) return { title: "Capacité déclenchée", status: "auto" };
@@ -684,8 +743,8 @@ function permanentLineStatus(line: string, typeLine: string, name: string): Line
 
 function faceSupport(typeLine: string, oracleText: string, name: string): { known: number; unknown: string[] } {
   if (/\b(Instant|Sorcery)\b/.test(typeLine)) {
-    const parsed = parseSpellEffects(oracleText, name);
-    return { known: parsed.effects.length + (parsed.sacrifice ? 1 : 0), unknown: parsed.unknown };
+    const parsed = parseSpellEffects(oracleText, name, { alternative: true });
+    return { known: parsed.effects.length + (parsed.sacrifice ? 1 : 0) + (parsed.alternativeCost ? 1 : 0), unknown: parsed.unknown };
   }
   let known = 0;
   const unknown: string[] = [];
@@ -787,10 +846,11 @@ export function abilityReport(data: CardData, faceIndex = 0): AbilityReportItem[
       continue;
     }
     if (spell) {
-      const parsed = parseSpellEffects(line, name);
-      const known = parsed.effects.length + (parsed.sacrifice ? 1 : 0);
+      const parsed = parseSpellEffects(line, name, { alternative: true });
+      const known = parsed.effects.length + (parsed.sacrifice ? 1 : 0) + (parsed.alternativeCost ? 1 : 0);
       const status = known === 0 ? "manual" : parsed.unknown.length === 0 ? "auto" : "partial";
-      items.push({ title: parsed.sacrifice && parsed.effects.length === 0 ? "Coût supplémentaire" : "Effet du sort", text: line, status, ...(status === "partial" ? { manual: parsed.unknown } : {}) });
+      const title = parsed.alternativeCost && parsed.effects.length === 0 ? "Coût alternatif" : parsed.sacrifice && parsed.effects.length === 0 ? "Coût supplémentaire" : "Effet du sort";
+      items.push({ title, text: line, status, ...(status === "partial" ? { manual: parsed.unknown } : {}) });
       continue;
     }
     const st = permanentLineStatus(line, typeLine, name);

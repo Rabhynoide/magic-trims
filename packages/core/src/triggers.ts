@@ -14,12 +14,14 @@ import { parseSpellEffects, selfToTilde, type SpellEffects } from "./effects.js"
 import { parseStaticLine, type StaticAbility } from "./statics.js";
 import { areTeammates } from "./modes.js";
 import type { TurnStep } from "./turn.js";
-import type { CardData, CardInstanceId, GameState, PlayerId } from "./types.js";
+import type { CardData, CardInstanceId, GameState, PlayerId, StackAbility, Zone } from "./types.js";
 
 export type TriggerEvent =
   | { type: "enters"; cardId: CardInstanceId; controllerId: PlayerId; creature: boolean }
-  | { type: "dies"; cardId: CardInstanceId; controllerId: PlayerId; dataId: string; faceIndex: number; isToken: boolean }
-  | { type: "draw"; playerId: PlayerId }
+  /** `granted` : capacités données à la créature jusqu'à la fin du tour (Malakir Rebirth). */
+  | { type: "dies"; cardId: CardInstanceId; controllerId: PlayerId; dataId: string; faceIndex: number; isToken: boolean; granted?: string[] }
+  /** `nth` : combientième carte piochée par ce joueur ce tour-ci. */
+  | { type: "draw"; playerId: PlayerId; nth?: number }
   | { type: "lifeGain"; playerId: PlayerId; amount: number }
   | { type: "lifeLoss"; playerId: PlayerId; amount: number }
   | { type: "step"; step: TurnStep; playerId: PlayerId }
@@ -28,7 +30,17 @@ export type TriggerEvent =
   | { type: "attacks"; cardId: CardInstanceId }
   | { type: "blocks"; cardId: CardInstanceId }
   | { type: "exploits"; cardId: CardInstanceId }
-  | { type: "leaves"; cardId: CardInstanceId; controllerId: PlayerId; dataId: string; faceIndex: number };
+  /** `auras` : les auras attachées au permanent quand il est parti (Kaya's Ghostform). */
+  | {
+      type: "leaves";
+      cardId: CardInstanceId;
+      controllerId: PlayerId;
+      dataId: string;
+      faceIndex: number;
+      to: Zone;
+      granted?: string[];
+      auras?: { cardId: CardInstanceId; controllerId: PlayerId; dataId: string; faceIndex: number }[];
+    };
 
 /** Qui, par rapport au contrôleur de la capacité. */
 type Whose = "you" | "opponent" | "any";
@@ -37,15 +49,16 @@ export type TriggerCondition =
   | { on: "enters"; self: boolean; another: boolean; creature: boolean; whose: Whose }
   /** `batched` : « one or more … die » se déclenche une fois par action, quel que soit le nombre de morts. */
   | { on: "dies"; self: boolean; others: boolean; whose: Whose; batched?: boolean }
-  | { on: "draw" | "lifeGain" | "lifeLoss" | "landPlayed"; whose: Whose }
+  /** `nth` : « draw your second card each turn ». */
+  | { on: "draw" | "lifeGain" | "lifeLoss" | "landPlayed"; whose: Whose; nth?: number }
   | { on: "step"; step: "upkeep" | "draw" | "end"; whose: Whose }
   | { on: "cast"; whose: Whose; types: string[]; notTypes: string[] }
   /** « Whenever ~ attacks », « … blocks », « … attacks or blocks ». */
   | { on: "combat"; attacks: boolean; blocks: boolean }
   /** « When ~ exploits a creature ». */
   | { on: "exploits" }
-  /** « When ~ leaves the battlefield ». */
-  | { on: "leaves" };
+  /** « When ~ leaves the battlefield » ; `enchanted` : « When enchanted permanent dies or is put into exile » (`to` : zones visées). */
+  | { on: "leaves"; enchanted?: boolean; to?: Zone[] };
 
 export interface TriggeredAbility {
   /** Texte de la capacité, tel qu'imprimé. */
@@ -107,6 +120,9 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
     return { on: "dies", self: m[1]!.startsWith("~"), others: true, whose: who };
   }
   if ((m = /^(you|an opponent|a player) draws? a card$/i.exec(t))) return { on: "draw", whose: whose(m[1]!)! };
+  if ((m = /^(you|an opponent|a player) draws? (?:your|their|his or her) (second|third) card each turn$/i.exec(t))) {
+    return { on: "draw", whose: whose(m[1]!)!, nth: m[2]!.toLowerCase() === "second" ? 2 : 3 };
+  }
   if ((m = /^(you|an opponent|a player) gains? life$/i.exec(t))) return { on: "lifeGain", whose: whose(m[1]!)! };
   if ((m = /^(you|an opponent|a player) loses? life$/i.exec(t))) return { on: "lifeLoss", whose: whose(m[1]!)! };
   if ((m = /^(you|an opponent|a player) plays? a land$/i.exec(t))) return { on: "landPlayed", whose: whose(m[1]!)! };
@@ -125,6 +141,11 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   }
   if (/^~ exploits a creature$/i.test(t)) return { on: "exploits" };
   if (/^~ leaves the battlefield$/i.test(t)) return { on: "leaves" };
+  if ((m = /^enchanted (?:permanent|creature) (dies|is put into exile|dies or is put into exile|leaves the battlefield)$/i.exec(t))) {
+    const what = m[1]!.toLowerCase();
+    const to: Zone[] = what.startsWith("leaves") ? [] : [...(what.includes("dies") ? (["graveyard"] as Zone[]) : []), ...(what.includes("exile") ? (["exile"] as Zone[]) : [])];
+    return { on: "leaves", enchanted: true, ...(to.length > 0 ? { to } : {}) };
+  }
   if ((m = /^the beginning of (your|each|each player's|each opponent's) (upkeep|draw step|end step)$/i.exec(t))) {
     const step = m[2]!.toLowerCase().startsWith("upkeep") ? "upkeep" : m[2]!.toLowerCase().startsWith("draw") ? "draw" : "end";
     return { on: "step", step, whose: whose(m[1]!)! };
@@ -137,6 +158,9 @@ const cache = new Map<string, PermanentAbilities>();
 /** Lit le corps d'une capacité déclenchée : ses effets, et si elle est facultative. */
 function parseTriggerBody(text: string): { effects: SpellEffects; optional: boolean; payMana?: string } | null {
   const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+  // Well of Lost Dreams : X au plus égal à la quantité de l'événement.
+  const payX = /^you may pay \{X\}, where X is less than or equal to the amount of life you (?:gained|lost)\. If you do, (.+)$/i.exec(text);
+  if (payX) return { effects: parseSpellEffects(cap(payX[1]!), "~"), optional: true, payMana: "{X}" };
   const pay = /^you may pay ((?:\{[^}]+\})+)\. If you do, (.+)$/i.exec(text);
   if (pay) return { effects: parseSpellEffects(cap(pay[2]!), "~"), optional: true, payMana: pay[1]! };
   const may = /^you may (.+)$/i.exec(text);
@@ -223,6 +247,13 @@ export function abilitiesOf(data: CardData | undefined, faceIndex = 0): Permanen
   return parsePermanentAbilities(face?.oracleText ?? data.oracleText, face?.name ?? data.name, face?.typeLine ?? data.typeLine);
 }
 
+/** La capacité déclenchée d'un objet de la pile : celle de la carte source, ou celle qui lui a été donnée. */
+export function stackTrigger(data: CardData | undefined, ability: StackAbility): TriggeredAbility | undefined {
+  if (ability.activated) return undefined;
+  if (ability.grantedText !== undefined) return parsePermanentAbilities(ability.grantedText, ability.sourceName).triggers[0];
+  return abilitiesOf(data, ability.faceIndex).triggers[ability.index];
+}
+
 function whoseMatches(g: GameState, w: Whose, controllerId: PlayerId, playerId: PlayerId): boolean {
   if (w === "any") return true;
   const mine = playerId === controllerId;
@@ -262,8 +293,14 @@ export function conditionMatches(
       return c.on === "combat" && (event.type === "attacks" ? c.attacks : c.blocks) && event.cardId === source.instanceId;
     case "exploits":
       return c.on === "exploits" && event.cardId === source.instanceId;
+    case "draw":
+      if (c.on !== "draw" || (c.nth !== undefined && event.nth !== c.nth)) return false;
+      return whoseMatches(g, c.whose, source.controllerId, event.playerId);
     case "leaves":
-      return c.on === "leaves" && event.cardId === source.instanceId;
+      if (c.on !== "leaves") return false;
+      if (c.to && !c.to.includes(event.to)) return false;
+      if (c.enchanted) return Boolean(event.auras?.some((a) => a.cardId === source.instanceId));
+      return event.cardId === source.instanceId;
     default:
       return c.on === event.type && whoseMatches(g, c.whose, source.controllerId, event.playerId);
   }

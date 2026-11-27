@@ -115,8 +115,9 @@ describe("Lecture des effets", () => {
       "full",
     );
     expect(cardSupport(spell("Bubbling Muck", "Until end of turn, whenever a player taps a Swamp for mana, that player adds an additional {B}.")).level).toBe(
-      "manual",
+      "full",
     );
+    expect(cardSupport(spell("Pacte", "Search your library for a card and put it into your hand.")).level).toBe("manual");
   });
 });
 

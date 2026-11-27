@@ -433,10 +433,135 @@ describe("Regard, Wound Reflection, Teferi's Puzzle Box", () => {
   });
 });
 
+describe("Coût alternatif, retours sur le champ de bataille, auras", () => {
+  it("Baleful Mastery : pour {1}{B}, un adversaire choisi pioche une carte", () => {
+    let g = toMain(newTestGame(3));
+    let victim: string, mastery: string;
+    [g, victim] = put(g, "p2", real("Sheoldred, the Apocalypse"));
+    [g, mastery] = inHand(g, "p1", real("Baleful Mastery", { manaCost: "{3}{B}" }));
+    g = mana(g, "p1", "BB");
+    const hand = g.players.p3!.zones.hand.length;
+    expect(refuse(g, "p1", { type: "castSpell", cardId: mastery, targets: [{ kind: "card", id: victim }] })).toMatch(/Pas assez de mana/);
+    g = act(g, "p1", {
+      type: "castSpell",
+      cardId: mastery,
+      alternative: true,
+      targets: [{ kind: "player", id: "p3" }, { kind: "card", id: victim }],
+    });
+    g = resolveAll(g);
+    expect(g.cards[victim]!.zone).toBe("exile");
+    expect(g.players.p3!.zones.hand.length).toBe(hand + 1);
+    expect(g.cards[mastery]!.alternative).toBeUndefined();
+  });
+
+  it("Malakir Rebirth : la créature revient engagée quand elle meurt ce tour-ci", () => {
+    let g = toMain(newTestGame(2));
+    let bear0: string, rebirth: string;
+    [g, bear0] = put(g, "p1", bear());
+    [g, rebirth] = inHand(g, "p1", real("Malakir Rebirth // Malakir Mire", { faces: [] }));
+    g = structuredClone(g);
+    // Les faces du test n'ont pas de texte : on donne celui de la face sort.
+    const oracle = 'Choose target creature. You lose 2 life. Until end of turn, that creature gains "When this creature dies, return it to the battlefield tapped under its owner\'s control."';
+    g.cardData[g.cards[rebirth]!.cardId] = { ...g.cardData[g.cards[rebirth]!.cardId]!, typeLine: "Instant", oracleText: oracle, manaCost: "{B}" };
+    g = mana(g, "p1", "B");
+    g = act(g, "p1", { type: "castSpell", cardId: rebirth, targets: [{ kind: "card", id: bear0 }] });
+    g = resolveAll(g);
+    expect(g.players.p1!.life).toBe(38);
+    expect(g.cards[bear0]!.grantedTriggers).toHaveLength(1);
+    g = act(g, "p1", { type: "moveCard", cardId: bear0, to: "graveyard" });
+    g = resolveAll(g);
+    expect(g.cards[bear0]!.zone).toBe("battlefield");
+    expect(g.cards[bear0]!.tapped).toBe(true);
+    expect(g.cards[bear0]!.grantedTriggers).toBeUndefined();
+    // Elle n'a plus la capacité : une seconde mort est définitive.
+    g = act(g, "p1", { type: "moveCard", cardId: bear0, to: "graveyard" });
+    g = resolveAll(g);
+    expect(g.cards[bear0]!.zone).toBe("graveyard");
+  });
+
+  it("Kaya's Ghostform : lancée sur une créature, elle la ramène quand elle meurt ou est exilée", () => {
+    let g = toMain(newTestGame(2));
+    let bear0: string, ghost: string;
+    [g, bear0] = put(g, "p1", bear());
+    [g, ghost] = inHand(g, "p1", real("Kaya's Ghostform"));
+    g = mana(g, "p1", "B");
+    expect(refuse(g, "p1", { type: "castSpell", cardId: ghost })).toMatch(/aura enchante/);
+    g = act(g, "p1", { type: "castSpell", cardId: ghost, targets: [{ kind: "card", id: bear0 }] });
+    g = resolveAll(g);
+    expect(g.cards[ghost]!.zone).toBe("battlefield");
+    expect(g.cards[ghost]!.attachedTo).toBe(bear0);
+    g = act(g, "p1", { type: "moveCard", cardId: bear0, to: "exile" });
+    g = resolveAll(g);
+    expect(g.cards[bear0]!.zone).toBe("battlefield");
+    expect(g.cards[ghost]!.zone).toBe("graveyard");
+  });
+
+  it("les cartes sont reconnues en entier", () => {
+    for (const name of ["Baleful Mastery", "Kaya's Ghostform"]) expect(cardSupport(real(name)).level, name).toBe("full");
+  });
+});
+
+describe("Deuxième pioche, mana en plus, payer X", () => {
+  it("Gixian Puppeteer : seulement à la deuxième carte piochée du tour", () => {
+    let g = toMain(newTestGame(2));
+    [g] = put(g, "p1", real("Gixian Puppeteer"));
+    g = act(g, "p1", { type: "draw", count: 1 });
+    g = resolveAll(g);
+    // La pioche du tour compte : le tour 1 de p1 n'en a pas, donc ceci est la première… ou la deuxième.
+    const drawn = g.players.p1!.drawsThisTurn!.count;
+    g = act(g, "p1", { type: "draw", count: 1 });
+    g = resolveAll(g);
+    g = act(g, "p1", { type: "draw", count: 1 });
+    g = resolveAll(g);
+    // Une seule fois sur ces pioches, quand le compte passe par 2.
+    expect(drawn).toBeLessThanOrEqual(2);
+    expect(g.players.p2!.life).toBe(38);
+    expect(g.players.p1!.life).toBe(42);
+  });
+
+  it("Bubbling Muck : chaque Swamp engagé donne {B} en plus jusqu'à la fin du tour", () => {
+    let g = toMain(newTestGame(2));
+    let swamp: string, muck: string;
+    [g, swamp] = put(g, "p1", fakeCard("Swamp", { typeLine: "Basic Land — Swamp", manaCost: "" }));
+    [g, muck] = inHand(g, "p1", real("Bubbling Muck", { manaCost: "{B}" }));
+    g = mana(g, "p1", "B");
+    g = act(g, "p1", { type: "castSpell", cardId: muck });
+    g = resolveAll(g);
+    g = act(g, "p1", { type: "tapForMana", cardId: swamp });
+    expect(g.players.p1!.manaPool.B).toBe(2);
+    g = act(g, "p1", { type: "passTurn" });
+    expect(g.manaBonuses).toBeUndefined();
+  });
+
+  it("Well of Lost Dreams : payer X (au plus les PV gagnés) pour piocher X cartes", () => {
+    let g = toMain(newTestGame(2));
+    let well: string, knight: string;
+    [g, well] = put(g, "p1", real("Well of Lost Dreams"));
+    void well;
+    [g, knight] = inHand(g, "p1", fakeCard("Soin", { typeLine: "Sorcery", oracleText: "You gain 3 life.", manaCost: "{B}" }));
+    g = mana(g, "p1", "BBBB");
+    g = act(g, "p1", { type: "castSpell", cardId: knight });
+    g = resolveAll(g);
+    const decide = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.awaitingDecision)!;
+    expect(decide).toBeDefined();
+    expect(refuse(g, "p1", { type: "decideOptional", cardId: decide.instanceId, accept: true, x: 4 })).toMatch(/entre 0 et 3/);
+    const hand = g.players.p1!.zones.hand.length;
+    g = act(g, "p1", { type: "decideOptional", cardId: decide.instanceId, accept: true, x: 2 });
+    g = resolveAll(g);
+    expect(g.players.p1!.zones.hand.length).toBe(hand + 2);
+    expect(g.players.p1!.manaPool.B).toBe(1);
+  });
+
+  it("les cartes sont reconnues en entier", () => {
+    for (const name of ["Bubbling Muck", "Well of Lost Dreams"]) expect(cardSupport(real(name)).level, name).toBe("full");
+    expect(cardSupport(real("Gixian Puppeteer")).level).toBe("partial");
+  });
+});
+
 describe("Deck Sheoldred", () => {
   it("la plupart des cartes sont gérées en entier", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "" })).level);
     const full = levels.filter((l) => l === "full").length;
-    expect(full).toBeGreaterThanOrEqual(55);
+    expect(full).toBeGreaterThanOrEqual(59);
   });
 });

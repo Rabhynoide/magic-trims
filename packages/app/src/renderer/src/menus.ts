@@ -4,6 +4,7 @@ import {
   formatMana,
   hasX,
   parseSpellEffects,
+  auraTarget,
   permanentLabel,
   type ActivationCost,
   type CardData,
@@ -309,14 +310,12 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
   // Les dos des cartes à transformer ne se lancent pas : seulement les faces avec un coût, ou des terrains.
   return entries
     .filter((f, i) => i === 0 || f.manaCost || /\bLand\b/.test(f.typeLine))
-    .map((f) => {
+    .flatMap((f): MenuItem[] => {
       const face = f.face !== undefined ? { face: f.face } : {};
       if (/\bLand\b/.test(f.typeLine)) {
-        return { label: `Jouer ${f.name}`, onClick: () => void act({ type: "playLand", cardId: id, ...face }) };
+        return [{ label: `Jouer ${f.name}`, onClick: () => void act({ type: "playLand", cardId: id, ...face }) }];
       }
-      return {
-        label: `Lancer ${f.name}${f.manaCost ? ` ${f.manaCost}` : ""}`,
-        onClick: async () => {
+      const cast = (alternative: boolean) => async () => {
           let x: number | undefined;
           if (hasX(f.manaCost)) {
             const value = await ui.ask("Valeur de X", "1", "number");
@@ -327,7 +326,7 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
           const faceData = faces ? faces[f.face ?? 0] : data;
           const effects =
             view.settings.enforceRules && /\b(Instant|Sorcery)\b/.test(f.typeLine)
-              ? parseSpellEffects(faceData?.oracleText ?? data.oracleText, f.name)
+              ? parseSpellEffects(faceData?.oracleText ?? data.oracleText, f.name, { alternative })
               : null;
           // Coût supplémentaire : la créature à sacrifier (Village Rites…).
           let sacrifice: string | undefined;
@@ -342,6 +341,13 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
             if (!chosen) return;
             targets = chosen;
           }
+          // Une aura : ce qu'elle va enchanter.
+          const aura = view.settings.enforceRules && !effects ? auraTarget(f.typeLine, faceData?.oracleText ?? data.oracleText) : null;
+          if (aura?.permanent) {
+            const chosen = await ui.chooseTargets(cardName(view, card), id, [aura]);
+            if (!chosen) return;
+            targets = chosen;
+          }
           void act({
             type: "castSpell",
             cardId: id,
@@ -349,8 +355,14 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
             ...(x !== undefined ? { x } : {}),
             ...(targets ? { targets } : {}),
             ...(sacrifice ? { sacrifice } : {}),
+            ...(alternative ? { alternative } : {}),
           });
-        },
       };
+      const items: MenuItem[] = [{ label: `Lancer ${f.name}${f.manaCost ? ` ${f.manaCost}` : ""}`, onClick: cast(false) }];
+      // Coût alternatif (Baleful Mastery) : une seconde entrée.
+      const faceText = (faces ? faces[f.face ?? 0]?.oracleText : data.oracleText) ?? "";
+      const alt = view.settings.enforceRules && /\b(Instant|Sorcery)\b/.test(f.typeLine) ? parseSpellEffects(faceText, f.name).alternativeCost : undefined;
+      if (alt) items.push({ label: `Lancer ${f.name} pour ${alt} (coût alternatif)`, onClick: cast(true) });
+      return items;
     });
 }

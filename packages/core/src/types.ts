@@ -172,6 +172,10 @@ export interface CardInstance {
   grants?: string[];
   /** Capacités activées « une fois par tour » déjà utilisées (loyauté comprise) : le tour et leurs index. */
   usedAbilities?: { turn: number; indices: number[] };
+  /** Capacités déclenchées données jusqu'à la fin du tour (texte « When ~ dies, … »). */
+  grantedTriggers?: string[];
+  /** Sort lancé pour son coût alternatif (Baleful Mastery). */
+  alternative?: boolean;
   /** Sort ou capacité sur la pile qui commence par un regard : `done` une fois les cartes rangées. */
   scry?: { count: number; done?: boolean };
   /**
@@ -199,6 +203,11 @@ export interface StackAbility {
   faceIndex: number;
   /** Joueur et quantité de l'événement (« that player », « that much »). */
   eventPlayerId?: PlayerId;
+  /** Carte de l'événement (« return that card »), et la zone où elle est allée. */
+  eventCardId?: CardInstanceId;
+  eventZone?: Zone;
+  /** Capacité donnée à la source (« that creature gains "When this creature dies, …" ») : son texte. */
+  grantedText?: string;
   eventAmount?: number;
   /** Le contrôleur doit encore choisir les cibles. */
   needsTargets?: boolean;
@@ -239,6 +248,8 @@ export interface PlayerState {
   mulliganBottom: number;
   /** Points de vie perdus ce tour (Wound Reflection). */
   lifeLost?: { turn: number; amount: number };
+  /** Cartes piochées ce tour (Gixian Puppeteer). */
+  drawsThisTurn?: { turn: number; count: number };
   /** Sorts lancés ce tour (Moderation…). */
   spellsCast?: { turn: number; count: number };
   /** Terrains joués ce tour (un seul par tour, règle 305.2). */
@@ -325,6 +336,8 @@ export interface GameState {
   cards: Record<CardInstanceId, CardInstance>;
   /** Données Scryfall des cartes présentes, indexées par `CardData.id`. */
   cardData: Record<string, CardData>;
+  /** Mana en plus quand on engage un terrain de ce type, jusqu'à la fin du tour (Bubbling Muck). */
+  manaBonuses?: { turn: number; subtype: string; mana: ManaType }[];
   /**
    * Équipes. En chacun pour soi, chaque joueur est seul dans son équipe.
    * L'ordre des joueurs à l'intérieur d'une équipe suit l'ordre du tour.

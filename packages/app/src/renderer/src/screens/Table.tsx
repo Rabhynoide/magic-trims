@@ -6,6 +6,7 @@ import {
   RESPONSE_STEPS,
   STEP_LABELS,
   abilitiesOf,
+  stackTrigger,
   creatureStats,
   hasKeyword,
   stateFromView,
@@ -374,7 +375,7 @@ function useTriggerTargets(view: GameView): { waitingName: string | null; reopen
   useEffect(() => {
     if (!waiting?.instanceId || asking.current === waiting.instanceId) return;
     const ability = waiting.ability!;
-    const specs = abilitiesOf(view.cardData[waiting.cardId], ability.faceIndex).triggers[ability.index]?.effects.targets ?? [];
+    const specs = stackTrigger(view.cardData[waiting.cardId], ability)?.effects.targets ?? [];
     if (specs.length === 0) return;
     asking.current = waiting.instanceId;
     const id = waiting.instanceId;
@@ -412,7 +413,7 @@ function DecisionBanner(props: { view: GameView }) {
     );
   }
   const ability = waiting.ability!;
-  const trigger = abilitiesOf(view.cardData[waiting.cardId], ability.faceIndex).triggers[ability.index];
+  const trigger = stackTrigger(view.cardData[waiting.cardId], ability);
   const sacrifice = trigger?.effects.effects.find((e) => e.type === "sacrifice");
   const id = waiting.instanceId!;
   const accept = async () => {
@@ -422,6 +423,13 @@ function DecisionBanner(props: { view: GameView }) {
       ]);
       if (!chosen) return;
       return void act({ type: "decideOptional", cardId: id, accept: true, choice: chosen[0]!.id });
+    }
+    // « You may pay {X} » (Well of Lost Dreams) : X au plus égal à la quantité de l'événement.
+    if (trigger?.payMana && /\{X\}/i.test(trigger.payMana)) {
+      const max = ability.eventAmount ?? 0;
+      const value = await ui.ask(`Valeur de X (0 à ${max})`, String(max), "number");
+      if (value === null) return;
+      return void act({ type: "decideOptional", cardId: id, accept: true, x: Math.max(0, Math.min(max, Math.floor(Number(value) || 0))) });
     }
     void act({ type: "decideOptional", cardId: id, accept: true });
   };

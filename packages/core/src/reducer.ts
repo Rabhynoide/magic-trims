@@ -19,13 +19,14 @@ import {
   matchesPermanent,
   resolveAmount,
   spellEffectsOf,
+  auraTarget,
   permanentLabel,
   type Effect,
   type SpellEffects,
   type Target,
   type Who,
 } from "./effects.js";
-import { abilitiesOf, conditionMatches, type TriggerEvent } from "./triggers.js";
+import { abilitiesOf, conditionMatches, parsePermanentAbilities, stackTrigger, type TriggeredAbility, type TriggerEvent } from "./triggers.js";
 import {
   attackTaxPerCreature,
   cantGainLife,
@@ -359,7 +360,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     emit(g, { type: "landPlayed", playerId: actor.id });
   },
 
-  castSpell(g, actor, { cardId, face, x, targets, sacrifice }) {
+  castSpell(g, actor, { cardId, face, x, targets, sacrifice, alternative }) {
     const card = getCard(g, cardId);
     const fromCommand = card.zone === "command" && card.isCommander;
     if (card.ownerId !== actor.id || (card.zone !== "hand" && !fromCommand)) {
@@ -387,7 +388,8 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       if (restriction) throw new ActionError(restriction);
     }
     // Cibles des effets que le moteur sait appliquer.
-    const effects = g.settings.enforceRules ? spellEffectsOf(g, card, faceIndex) : null;
+    const effects = g.settings.enforceRules ? spellEffectsOf(g, card, faceIndex, alternative ?? false) : null;
+    if (alternative && !effects?.alternativeCost) throw new ActionError("Ce sort n'a pas de coût alternatif.");
     const chosen = targets ?? [];
     if (effects && effects.targets.length > 0) {
       if (chosen.length !== effects.targets.length) {
@@ -399,7 +401,13 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
         }
       });
     }
-    const costText = faceData?.manaCost || data.manaCost;
+    // Une aura enchante ce qu'on choisit en la lançant (« Enchant creature you control »).
+    const auraSpec = g.settings.enforceRules && !effects ? auraTarget(typeLine, faceData?.oracleText ?? data.oracleText) : null;
+    const aura = auraSpec?.permanent ? auraSpec : null;
+    if (aura && (chosen.length !== 1 || !isLegalTarget(g, aura, chosen[0]!, actor.id, card.instanceId))) {
+      throw new ActionError(`Choisis ce que l'aura enchante : un(e) ${aura.label}.`);
+    }
+    const costText = alternative ? effects!.alternativeCost! : faceData?.manaCost || data.manaCost;
     const tax = fromCommand ? 2 * (actor.commanderCasts[card.instanceId] ?? 0) : 0;
     const name = cardName(g, card);
     // Coût supplémentaire : sacrifier un permanent (Village Rites…).
@@ -424,6 +432,8 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const cast = moveCardTo(g, cardId, "stack", "top");
     emit(g, { type: "cast", playerId: actor.id, cardId: cast.instanceId, typeLine });
     cast.faceIndex = faceIndex;
+    if (alternative) cast.alternative = true;
+    if (aura) cast.targets = [{ ...chosen[0]! }];
     if (effects) {
       cast.targets = effects.targets.length > 0 ? chosen.map((t) => ({ ...t })) : [];
       if (x !== undefined) cast.xValue = xValue;
@@ -433,6 +443,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       .join(" et ");
     const details = [
       x !== undefined ? `X = ${xValue}` : "",
+      alternative ? "coût alternatif" : "",
       tax > 0 ? `taxe de commandant {${tax}}` : "",
       reduction > 0 ? `réduction de {${reduction}}` : "",
     ]
@@ -642,12 +653,12 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     activateAbility(g, actor, cardId, index, targets ?? [], sacrifice, color);
   },
 
-  decideOptional(g, actor, { cardId, accept, choice }) {
+  decideOptional(g, actor, { cardId, accept, choice, x }) {
     const card = getCard(g, cardId);
     const ability = card.ability;
     if (!ability?.awaitingDecision || card.zone !== "stack") throw new ActionError("Cette capacité n'attend pas de réponse.");
     if (card.controllerId !== actor.id) throw new ActionError("Seul le contrôleur de la capacité décide.");
-    const trigger = abilitiesOf(g.cardData[card.cardId], ability.faceIndex).triggers[ability.index];
+    const trigger = stackTrigger(g.cardData[card.cardId], ability);
     if (accept && trigger) {
       const sac = trigger.effects.effects.find((e) => e.type === "sacrifice");
       if (sac && sac.type === "sacrifice") {
@@ -658,7 +669,14 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
         ability.choice = chosen.instanceId;
       }
       if (trigger.payMana) {
-        const paid = payMana(g, actor, trigger.payMana, 0, 0, undefined, "payer ce coût");
+        let xValue = 0;
+        if (/\{X\}/i.test(trigger.payMana)) {
+          xValue = x ?? 0;
+          const max = ability.eventAmount ?? 0;
+          if (!Number.isInteger(xValue) || xValue < 0 || xValue > max) throw new ActionError(`X doit être entre 0 et ${max}.`);
+          card.xValue = xValue;
+        }
+        const paid = payMana(g, actor, trigger.payMana, xValue, 0, undefined, "payer ce coût");
         log(g, actor.id, `${actor.name} paie ${paid.spent.length > 0 ? formatMana(paid.spent) : "rien"}.`);
       }
     }
@@ -881,7 +899,15 @@ export function moveCardTo(
   // « Meurt » : une créature va du champ de bataille au cimetière (règle 700.4).
   const dies =
     from === "battlefield" && to === "graveyard" && !card.faceDown && isCreature(g, card)
-      ? ({ type: "dies", cardId: card.instanceId, controllerId: card.controllerId, dataId: card.cardId, faceIndex: card.faceIndex, isToken: card.isToken } as const)
+      ? ({
+          type: "dies",
+          cardId: card.instanceId,
+          controllerId: card.controllerId,
+          dataId: card.cardId,
+          faceIndex: card.faceIndex,
+          isToken: card.isToken,
+          ...(card.grantedTriggers ? { granted: [...card.grantedTriggers] } : {}),
+        } as const)
       : null;
 
   if (to === "battlefield" && from !== "battlefield") {
@@ -900,7 +926,19 @@ export function moveCardTo(
   }
   if (from === "battlefield" && to !== "battlefield") {
     if (!card.faceDown) {
-      emit(g, { type: "leaves", cardId: card.instanceId, controllerId: card.controllerId, dataId: card.cardId, faceIndex: card.faceIndex });
+      const auras = Object.values(g.cards)
+        .filter((o) => o.attachedTo === card.instanceId && o.zone === "battlefield" && !o.faceDown)
+        .map((o) => ({ cardId: o.instanceId, controllerId: o.controllerId, dataId: o.cardId, faceIndex: o.faceIndex }));
+      emit(g, {
+        type: "leaves",
+        cardId: card.instanceId,
+        controllerId: card.controllerId,
+        dataId: card.cardId,
+        faceIndex: card.faceIndex,
+        to,
+        ...(card.grantedTriggers ? { granted: [...card.grantedTriggers] } : {}),
+        ...(auras.length > 0 ? { auras } : {}),
+      });
     }
     delete card.summoningSick;
     delete card.hasLoyalty;
@@ -908,6 +946,7 @@ export function moveCardTo(
     delete card.deathtouched;
     delete card.ptBoost;
     delete card.grants;
+    delete card.grantedTriggers;
     delete card.usedAbilities;
     if (g.combat) {
       delete g.combat.attackers[card.instanceId];
@@ -937,7 +976,10 @@ export function moveCardTo(
     owner.commanderCasts[card.instanceId] = (owner.commanderCasts[card.instanceId] ?? 0) + 1;
   }
 
-  if (from === "stack") delete card.scry;
+  if (from === "stack") {
+    delete card.scry;
+    delete card.alternative;
+  }
   card.controllerId = to === "battlefield" || to === "stack" ? (options.controllerId ?? card.controllerId) : card.ownerId;
   if (from === "battlefield" && to !== "battlefield") card.controllerId = card.ownerId;
   card.zone = to;
@@ -1166,6 +1208,9 @@ function emitEnters(g: GameState, card: CardInstance): void {
 /** Les capacités déclenchées « une fois par tour » sont notées dans `usedAbilities` à partir de cet index. */
 const TRIGGER_KEY = 1000;
 
+/** Index des capacités déclenchées données (Malakir Rebirth), pour les distinguer de celles de la carte. */
+const GRANTED_KEY = 2000;
+
 /** Au plus autant de capacités déclenchées par action : garde-fou contre les boucles sans fin. */
 const MAX_TRIGGERS_PER_ACTION = 50;
 
@@ -1178,25 +1223,55 @@ function flushTriggers(g: GameState): boolean {
   const events = g.events ?? [];
   delete g.events;
   if (events.length === 0) return false;
-  type Pending = { source: CardInstance; dataId: string; faceIndex: number; index: number; controllerId: PlayerId; event: TriggerEvent };
+  type Pending = {
+    source: CardInstance;
+    dataId: string;
+    faceIndex: number;
+    index: number;
+    controllerId: PlayerId;
+    event: TriggerEvent;
+    trigger: TriggeredAbility;
+    grantedText?: string;
+  };
   const pending: Pending[] = [];
   const permanents = g.turnOrder
     .flatMap((id) => g.players[id]!.zones.battlefield)
     .map((id) => g.cards[id]!)
     .filter((c) => !c.faceDown);
   for (const event of events) {
-    const sources: { card: CardInstance; dataId: string; faceIndex: number }[] = permanents.map((c) => ({
+    type Source = { card: CardInstance; dataId: string; faceIndex: number; granted?: string[] };
+    const sources: Source[] = permanents.map((c) => ({
       card: c,
       dataId: c.cardId,
       faceIndex: c.faceIndex,
+      ...(c.grantedTriggers ? { granted: c.grantedTriggers } : {}),
     }));
     // « Quand ~ meurt » : la carte regarde en arrière, depuis le cimetière (ou disparue si c'est un jeton).
     if (event.type === "dies" || event.type === "leaves") {
       const dead = g.cards[event.cardId] ?? ({ instanceId: event.cardId, controllerId: event.controllerId } as CardInstance);
-      sources.push({ card: { ...dead, controllerId: event.controllerId }, dataId: event.dataId, faceIndex: event.faceIndex });
+      sources.push({
+        card: { ...dead, controllerId: event.controllerId },
+        dataId: event.dataId,
+        faceIndex: event.faceIndex,
+        ...(event.granted ? { granted: event.granted } : {}),
+      });
     }
-    for (const { card, dataId, faceIndex } of sources) {
-      abilitiesOf(g.cardData[dataId], faceIndex).triggers.forEach((trigger, index) => {
+    // Les auras attachées au permanent parti regardent en arrière aussi (Kaya's Ghostform).
+    if (event.type === "leaves") {
+      for (const a of event.auras ?? []) {
+        if (sources.some((s) => s.card.instanceId === a.cardId)) continue;
+        const aura = g.cards[a.cardId] ?? ({ instanceId: a.cardId } as CardInstance);
+        sources.push({ card: { ...aura, controllerId: a.controllerId }, dataId: a.dataId, faceIndex: a.faceIndex });
+      }
+    }
+    for (const { card, dataId, faceIndex, granted } of sources) {
+      const own = abilitiesOf(g.cardData[dataId], faceIndex).triggers.map((trigger, index) => ({ trigger, index, grantedText: undefined as string | undefined }));
+      const sourceName = g.cardData[dataId]?.faces?.[faceIndex]?.name ?? g.cardData[dataId]?.name ?? "?";
+      const given = (granted ?? []).flatMap((text, i) => {
+        const trigger = parsePermanentAbilities(text, sourceName).triggers[0];
+        return trigger ? [{ trigger, index: GRANTED_KEY + i, grantedText: text }] : [];
+      });
+      [...own, ...given].forEach(({ trigger, index, grantedText }) => {
         if (!conditionMatches(g, trigger.condition, event, card)) return;
         if (trigger.ifUntapped && card.tapped) return;
         // « One or more … » et « only once each turn » : une seule fois pour cette action (et ce tour).
@@ -1208,7 +1283,7 @@ function flushTriggers(g: GameState): boolean {
           if (used.includes(TRIGGER_KEY + index)) return;
           if (live) live.usedAbilities = { turn: g.turn.number, indices: [...used, TRIGGER_KEY + index] };
         }
-        pending.push({ source: card, dataId, faceIndex, index, controllerId: card.controllerId, event });
+        pending.push({ source: card, dataId, faceIndex, index, controllerId: card.controllerId, event, trigger, ...(grantedText ? { grantedText } : {}) });
       });
     }
   }
@@ -1222,14 +1297,19 @@ function flushTriggers(g: GameState): boolean {
       log(g, null, `Trop de capacités déclenchées d'un coup : les suivantes sont ignorées (à gérer à la main).`);
       break;
     }
-    const trigger = abilitiesOf(g.cardData[p.dataId], p.faceIndex).triggers[p.index]!;
+    const trigger = p.trigger;
     const sourceName = g.cardData[p.dataId]?.faces?.[p.faceIndex]?.name ?? g.cardData[p.dataId]?.name ?? "?";
     const instance = newInstance(g, p.dataId, p.controllerId, "stack");
     instance.faceIndex = p.faceIndex;
     instance.ownerId = p.controllerId;
     instance.revealedTo = [...g.turnOrder];
     instance.ability = { sourceId: p.source.instanceId, sourceName, text: trigger.text, index: p.index, faceIndex: p.faceIndex };
+    if (p.grantedText) instance.ability.grantedText = p.grantedText;
     const ev = p.event;
+    if (ev.type === "dies" || ev.type === "leaves") {
+      instance.ability.eventCardId = ev.cardId;
+      instance.ability.eventZone = ev.type === "dies" ? "graveyard" : ev.to;
+    }
     if ("playerId" in ev) instance.ability.eventPlayerId = ev.playerId;
     if ("amount" in ev) instance.ability.eventAmount = ev.amount;
     // Cibles : choisies d'office quand il n'y a qu'un choix possible.
@@ -1269,8 +1349,8 @@ function legalTargets(g: GameState, spec: Parameters<typeof isLegalTarget>[1], c
 function abilityEffects(g: GameState, card: CardInstance): SpellEffects | undefined {
   const ability = card.ability;
   if (!ability) return undefined;
-  const abilities = abilitiesOf(g.cardData[card.cardId], ability.faceIndex);
-  return ability.activated ? abilities.activated[ability.index]?.effects : abilities.triggers[ability.index]?.effects;
+  if (ability.activated) return abilitiesOf(g.cardData[card.cardId], ability.faceIndex).activated[ability.index]?.effects;
+  return stackTrigger(g.cardData[card.cardId], ability)?.effects;
 }
 
 function resolveAbility(g: GameState, card: CardInstance): void {
@@ -1282,7 +1362,7 @@ function resolveAbility(g: GameState, card: CardInstance): void {
     return;
   }
   // « You may » : le contrôleur répond d'abord (la capacité reste sur la pile en attendant).
-  const trigger = ability.activated ? undefined : abilitiesOf(g.cardData[card.cardId], ability.faceIndex).triggers[ability.index];
+  const trigger = stackTrigger(g.cardData[card.cardId], ability);
   if (trigger?.optional && ability.accepted === undefined) {
     ability.awaitingDecision = true;
     log(g, null, `${g.players[card.controllerId]!.name} choisit s'il applique la capacité de ${ability.sourceName}.`);
@@ -1480,6 +1560,27 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
       case "scry":
         // Déjà fait avant la résolution (voir startScry).
         break;
+      case "returnEventCard": {
+        const id = ability?.eventCardId;
+        const back = id ? g.cards[id] : undefined;
+        // La carte doit être restée là où l'événement l'a mise (sinon c'est un nouvel objet, règle 400.7).
+        if (!back || back.zone !== ability?.eventZone || back.ability) break;
+        const controllerId = effect.owner ? back.ownerId : caster.id;
+        moveCardTo(g, back.instanceId, "battlefield", "top", { controllerId, tapped: effect.tapped });
+        log(g, null, `${cardName(g, back)} revient sur le champ de bataille${effect.tapped ? " engagé(e)" : ""} sous le contrôle de ${g.players[controllerId]!.name}.`);
+        break;
+      }
+      case "manaBonus":
+        (g.manaBonuses ??= []).push({ turn: g.turn.number, subtype: effect.subtype, mana: effect.mana as ManaType });
+        log(g, null, `Jusqu'à la fin du tour, chaque ${effect.subtype} engagé pour du mana donne {${effect.mana}} en plus.`);
+        break;
+      case "grantTrigger": {
+        const c = card(effect.target);
+        if (!c || c.zone !== "battlefield") break;
+        c.grantedTriggers = [...(c.grantedTriggers ?? []), effect.text];
+        log(g, null, `${cardName(g, c)} gagne « ${effect.text} » jusqu'à la fin du tour.`);
+        break;
+      }
       case "loseLifeManaValue": {
         const t = targets[effect.target];
         const target = t?.kind === "card" ? g.cards[t.id] : undefined;
@@ -1685,7 +1786,20 @@ function resolveTop(g: GameState, stackId?: CardInstanceId): void {
       log(g, null, `À appliquer à la main pour ${name} : « ${effects.unknown.join(" ")} »`);
     }
   } else {
-    moveCardTo(g, id, "battlefield", "top", { controllerId: card.controllerId });
+    // Une aura dont la cible est devenue invalide va au cimetière (règle 608.3b).
+    const data0 = g.cardData[card.cardId];
+    const aura = card.targets?.length && data0 ? auraTarget(typeLine, data0.faces?.[card.faceIndex]?.oracleText ?? data0.oracleText) : null;
+    const host = aura ? card.targets![0]! : null;
+    if (aura && host && !isLegalTarget(g, aura, host, card.controllerId, id)) {
+      moveCardTo(g, id, "graveyard", "top");
+      log(g, null, `${name} n'a plus de cible valide : elle va au cimetière.`);
+      return;
+    }
+    const entered = moveCardTo(g, id, "battlefield", "top", { controllerId: card.controllerId });
+    if (host?.kind === "card") {
+      entered.attachedTo = host.id;
+      log(g, null, `${name} enchante ${targetName(g, host)}.`);
+    }
     const data = g.cardData[card.cardId];
     const manual = data && !card.faceDown && cardSupport(data).level !== "full";
     log(g, null, `${name} se résout et arrive sur le champ de bataille${manual ? " (ses capacités sont à gérer à la main)" : ""}.`);
@@ -1864,8 +1978,12 @@ function tapForMana(g: GameState, actor: PlayerState, card: CardInstance, choice
   if (!mana) throw new ActionError("Choix de mana invalide.");
   card.tapped = true;
   const pool = g.players[card.controllerId]!.manaPool;
-  for (const m of mana) pool[m] += 1;
-  log(g, actor.id, `${actor.name} engage ${cardName(g, card)} pour ${formatMana(mana)}.`);
+  // Bubbling Muck : du mana en plus pour un terrain de ce type.
+  const typeLine = faceTypeLine(g, card, card.faceIndex);
+  const bonus = (g.manaBonuses ?? []).filter((b) => b.turn === g.turn.number && new RegExp(`\\b${b.subtype}\\b`).test(typeLine)).map((b) => b.mana);
+  const all = [...mana, ...bonus];
+  for (const m of all) pool[m] += 1;
+  log(g, actor.id, `${actor.name} engage ${cardName(g, card)} pour ${formatMana(all)}.`);
 }
 
 /**
@@ -2413,7 +2531,9 @@ function enterStep(g: GameState, step: TurnStep): void {
         delete card.deathtouched;
         delete card.ptBoost;
         delete card.grants;
+        delete card.grantedTriggers;
       }
+      delete g.manaBonuses;
       break;
   }
   if (!g.settings.autoTurnActions) return;
@@ -2458,7 +2578,9 @@ function drawCards(g: GameState, player: PlayerState, count: number): void {
   const drawn = Math.min(count, library.length);
   for (let i = 0; i < drawn; i++) {
     moveCardTo(g, library[0]!, "hand", "top");
-    emit(g, { type: "draw", playerId: player.id });
+    const before = player.drawsThisTurn?.turn === g.turn.number ? player.drawsThisTurn.count : 0;
+    player.drawsThisTurn = { turn: g.turn.number, count: before + 1 };
+    emit(g, { type: "draw", playerId: player.id, nth: before + 1 });
   }
   log(g, player.id, `${player.name} pioche ${plural(drawn, "carte")}.`);
   if (drawn < count) {
