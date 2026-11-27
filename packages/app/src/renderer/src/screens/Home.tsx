@@ -117,6 +117,10 @@ export function Home() {
           </div>
           <DeckBrowser
             decks={decks}
+            onPrecon={(deck) => {
+              setDecks(storage.getDecks());
+              session.toast(`« ${deck.name} » est dans Mes decks.`, "info");
+            }}
             community={{
               status: community.status,
               ...(community.error !== undefined ? { error: community.error } : {}),

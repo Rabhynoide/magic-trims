@@ -367,6 +367,12 @@ export function Lobby() {
               chooseDeck(d.id);
               setPicking(false);
             }}
+            preconLabel="Jouer ce deck"
+            onPrecon={(d) => {
+              setDecks(storage.getDecks());
+              chooseDeck(d.id);
+              setPicking(false);
+            }}
           />
           <p className="hint">
             La colonne surlignée est le mode de cette partie. Survole une croix pour voir ce qui rend le deck non légal.

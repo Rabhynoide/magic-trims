@@ -9,6 +9,8 @@ export interface SavedDeck {
   text: string;
   deck: ResolvedDeck;
   importedAt: number;
+  /** Préconstruit officiel d'origine (identifiant mtg.wtf), s'il y en a un. */
+  preconId?: string;
 }
 
 export interface LastSession {

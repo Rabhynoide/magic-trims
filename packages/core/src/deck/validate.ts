@@ -37,7 +37,7 @@ export function validateCommanderDeck(deck: ResolvedDeck, format: DeckFormat = "
       issues.push({ level: "warning", message: `${c.name} n'est pas une créature légendaire.` });
     }
   }
-  if (commanders.length === 2 && !commanders.every(hasPairingAbility)) {
+  if (commanders.length === 2 && !commanders.every(hasPairingAbility) && !isDoctorPair(commanders)) {
     issues.push({
       level: "warning",
       message: "Deux commandants nécessitent « Partenaire », « Choisissez un historique » ou une capacité similaire.",
@@ -90,6 +90,9 @@ export function validateCommanderDeck(deck: ResolvedDeck, format: DeckFormat = "
 function canBeCommander(card: CardData): boolean {
   const type = card.faces?.[0]?.typeLine ?? card.typeLine;
   if (/legendary/i.test(type) && /creature/i.test(type)) return true;
+  // Depuis Edge of Eternities (2025) : Véhicules et Vaisseaux légendaires avec force/endurance.
+  const power = card.faces?.[0]?.power ?? card.power;
+  if (/legendary/i.test(type) && /\b(vehicle|spacecraft)\b/i.test(type) && power !== undefined) return true;
   if (/background/i.test(type)) return true;
   return /can be your commander/i.test(card.oracleText);
 }
@@ -103,6 +106,14 @@ function hasPairingAbility(card: CardData): boolean {
     /doctor's companion/i.test(card.oracleText) ||
     card.keywords.some((k) => /partner|friends forever|doctor's companion/i.test(k))
   );
+}
+
+/** « Compagnon du Docteur » : la paire est un Docteur Seigneur du Temps et son compagnon. */
+function isDoctorPair(commanders: CardData[]): boolean {
+  const companion = commanders.findIndex((c) => /doctor's companion/i.test(c.oracleText) || c.keywords.some((k) => /doctor's companion/i.test(k)));
+  if (companion < 0) return false;
+  const other = commanders[1 - companion]!;
+  return /time lord doctor/i.test(other.faces?.[0]?.typeLine ?? other.typeLine);
 }
 
 function allowsMultipleCopies(card: CardData): boolean {

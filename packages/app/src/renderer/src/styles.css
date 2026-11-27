@@ -1680,3 +1680,15 @@ textarea:focus {
 .deck-name .deck-owner {
   font-style: italic;
 }
+.deck-search {
+  width: 100%;
+  margin: 6px 0;
+}
+.deck-name .deck-set {
+  font-style: italic;
+}
+.deck-name .deck-set .badge {
+  display: inline;
+  margin-left: 6px;
+  font-style: normal;
+}
