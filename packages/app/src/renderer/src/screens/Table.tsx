@@ -507,12 +507,15 @@ export function Table() {
             <button onClick={trigger.reopen}>Choisir les cibles</button>
           </div>
         )}
-        <div className={`opponents opponents-${others.length}`}>
-          {others.map((id) => (
-            <PlayerArea key={id} view={view} playerId={id} compact onOpenZone={setZoneViewer} combat={combatUi} />
-          ))}
+        <div className="board">
+          <div className={`opponents opponents-${others.length}`}>
+            {others.map((id) => (
+              <PlayerArea key={id} view={view} playerId={id} compact onOpenZone={setZoneViewer} combat={combatUi} />
+            ))}
+          </div>
+          <PlayerArea view={view} playerId={me} onOpenZone={setZoneViewer} combat={combatUi} />
+          <CenterStack view={view} />
         </div>
-        <PlayerArea view={view} playerId={me} onOpenZone={setZoneViewer} combat={combatUi} />
         <Hand view={view} />
         <CombatPanel view={view} isActive={isActive} combat={combatUi} />
         <PhaseBar view={view} isActive={isActive} />
@@ -1131,18 +1134,64 @@ function SharedZones(props: { view: GameView }) {
           Pile {view.stack.length > 0 ? `(${view.stack.length})` : ""}
           {view.priority && ` · priorité : ${view.players[view.priority.playerId]!.name}`}
         </span>
-        <div className="stack-cards">
-          {[...view.stack].reverse().map((c) => (
-            <Card
-              key={c.instanceId}
-              view={view}
-              card={c}
-              size="tiny"
-              draggable
-              onMenu={(e) => openCardMenu(e, view, c)}
-              {...(targeting ? targetProps(view, targeting, c) : {})}
-            />
+        {view.stack.length === 0 && <div className="hint stack-hint">Les sorts lancés s'affichent au centre de la table.</div>}
+      </div>
+    </div>
+  );
+}
+
+/** Écart entre deux objets de la pile, réduit quand la pile grandit pour qu'elle reste à l'écran. */
+function stackOffset(count: number): number {
+  return count <= 6 ? 26 : Math.max(10, Math.floor(156 / (count - 1)));
+}
+
+/**
+ * La pile, au centre de la table : chaque sort lancé ou capacité activée y arrive par-dessus
+ * le précédent (le dernier, en haut de la pile, est au premier plan), jusqu'à sa résolution.
+ */
+function CenterStack(props: { view: GameView }) {
+  const { view } = props;
+  const { targeting } = useUi();
+  const stackDrop = useDrop({ zone: "stack", playerId: view.viewerId }, view);
+  if (view.stack.length === 0) return null;
+  const offset = stackOffset(view.stack.length);
+  const top = view.stack.at(-1)!;
+  const topController = top.controllerId ? view.players[top.controllerId]?.name : undefined;
+  const topLabel = top.hidden ? "" : top.ability ? `Capacité de ${cardName(view, top)}` : cardName(view, top);
+  // Pendant un ciblage qui ne vise pas un sort, la pile s'efface pour laisser cliquer les cartes dessous.
+  const spec = targeting?.specs[targeting.chosen.length];
+  const passive = Boolean(targeting && !spec?.spell);
+  return (
+    <div className={`center-stack ${passive ? "passive" : ""}`} aria-label="Pile">
+      <div className={`center-stack-box ${stackDrop.className}`} {...stackDrop.handlers}>
+        <div className="center-stack-title">
+          Pile ({view.stack.length})
+          {view.priority && <> · priorité : {view.players[view.priority.playerId]!.name}</>}
+        </div>
+        <div
+          className="center-stack-cards"
+          style={{ width: 118 + offset * (view.stack.length - 1), height: 165 + offset * (view.stack.length - 1) }}
+        >
+          {view.stack.map((c, i) => (
+            <div
+              key={c.instanceId ?? i}
+              className={`center-stack-item ${c.controllerId === view.viewerId ? "from-me" : "from-other"}`}
+              style={{ left: i * offset, top: i * offset, zIndex: i + 1 }}
+            >
+              <Card
+                view={view}
+                card={c}
+                size="medium"
+                draggable
+                onMenu={(e) => openCardMenu(e, view, c)}
+                {...(targeting ? targetProps(view, targeting, c) : {})}
+              />
+            </div>
           ))}
+        </div>
+        <div className="center-stack-caption">
+          {topLabel}
+          {topController && <span className="center-stack-who"> · {topController}</span>}
         </div>
       </div>
     </div>
