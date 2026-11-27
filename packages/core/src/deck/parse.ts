@@ -11,6 +11,9 @@
  *   MTGO : commandant isolé après une ligne vide à la fin de la liste
  *   deckstats.net : « 1 [C21#263] Sol Ring », commandant marqué « # !Commander »,
  *                   sections « //Main », « //Sideboard »
+ *   Moxfield par type : « //Commander », puis « //Lands », « //Creatures »…,
+ *                   « //Maybeboard » ; toute autre catégorie (« //Lands »,
+ *                   « Creatures (27) », « Ramp: ») ramène dans le deck principal
  *   Archidekt : « 1x Sol Ring (c21) 263 [Ramp] », catégories entre crochets ;
  *               « [Commander{top}] » désigne le commandant, « {noDeck} »
  *               (Maybeboard, Sideboard…) une carte hors du deck
@@ -78,6 +81,20 @@ export function parseDeckList(text: string): ParsedDeck {
       if (current.entries.length > 0) blocks.push(current);
       current = { section: matched[1], entries: [] };
       sawHeader = true;
+      return;
+    }
+    // Toute autre catégorie (« //Lands », « Creatures (27) », « Ramp: ») : on repasse
+    // dans le deck principal, sinon les cartes resteraient rangées sous « Commander ».
+    const isCategory =
+      !/^\d/.test(header) &&
+      header !== "" &&
+      (line.startsWith("//") || /:$/.test(line) || /\s\(\d+\)$/.test(line)) &&
+      header.split(/\s+/).length <= 4;
+    if (isCategory) {
+      if (current.section !== null) {
+        if (current.entries.length > 0) blocks.push(current);
+        current = { section: "main", entries: [] };
+      }
       return;
     }
     if (isComment) return;
