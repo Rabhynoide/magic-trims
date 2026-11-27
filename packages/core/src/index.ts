@@ -4,6 +4,7 @@ export {
   applyAction,
   ActionError,
   canSee,
+  cardManaOptions as permanentManaOptions,
   exilePermissionHolds,
   priorityStopsOf,
   RESPONSE_STEPS,

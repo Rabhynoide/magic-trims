@@ -8,7 +8,7 @@
  * appliquer à la main, et le journal le rappelle.
  */
 import { COMBAT_KEYWORDS, creatureStats, hasKeyword, protectedFrom } from "./combat.js";
-import { manaOptions } from "./mana.js";
+import { grantedManaAbility, manaOptions, manaTapEffect } from "./mana.js";
 import { parsePermanentAbilities } from "./triggers.js";
 import { areTeammates } from "./modes.js";
 import { joinModes, keywordList, selfToTilde } from "./text.js";
@@ -1375,6 +1375,8 @@ function permanentLineStatus(line: string, typeLine: string, name: string): Line
   const abilities = parsePermanentAbilities(line, name, typeLine);
   if (/^\{T\}: Add /.test(line) && manaOptions(typeLine, line).length > 0) return { title: "Capacité de mana", status: "auto" };
   if (/^(?:\w+ — )?\{T\}: For each color among permanents you control, add one mana of that color\.?$/.test(line)) return { title: "Capacité de mana", status: "auto" };
+  if (grantedManaAbility(line)) return { title: "Capacité de mana donnée", status: "auto" };
+  if (manaTapEffect(line)) return { title: "Mana en plus", status: "auto" };
   if (abilities.triggers.length > 0) return { title: "Capacité déclenchée", status: "auto" };
   const activated = abilities.activated[0];
   if (activated) {
