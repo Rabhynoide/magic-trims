@@ -5,6 +5,7 @@ import {
   hasX,
   parseSpellEffects,
   auraTarget,
+  sagaChapters,
   permanentLabel,
   type ActivationCost,
   type CardData,
@@ -341,6 +342,14 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
             if (!chosen) return;
             targets = chosen;
           }
+          // Saga avec lecture anticipée : le chapitre de départ.
+          let chapter: number | undefined;
+          const chapters = view.settings.enforceRules ? sagaChapters(data, f.face ?? 0) : 0;
+          if (chapters > 0 && /\bRead ahead\b/i.test(faceData?.oracleText ?? data.oracleText)) {
+            const value = await ui.ask(`Lecture anticipée : chapitre de départ (1 à ${chapters})`, "1", "number");
+            if (value === null) return;
+            chapter = Math.max(1, Math.min(chapters, Math.floor(Number(value) || 1)));
+          }
           // Une aura : ce qu'elle va enchanter.
           const aura = view.settings.enforceRules && !effects ? auraTarget(f.typeLine, faceData?.oracleText ?? data.oracleText) : null;
           if (aura?.permanent) {
@@ -356,6 +365,7 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
             ...(targets ? { targets } : {}),
             ...(sacrifice ? { sacrifice } : {}),
             ...(alternative ? { alternative } : {}),
+            ...(chapter !== undefined ? { chapter } : {}),
           });
       };
       const items: MenuItem[] = [{ label: `Lancer ${f.name}${f.manaCost ? ` ${f.manaCost}` : ""}`, onClick: cast(false) }];

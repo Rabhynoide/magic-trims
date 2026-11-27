@@ -11,6 +11,7 @@
  */
 import { parseActivatedLine, type ActivatedAbility } from "./activated.js";
 import { parseSpellEffects, selfToTilde, type SpellEffects } from "./effects.js";
+import { joinModes } from "./text.js";
 import { parseStaticLine, type StaticAbility } from "./statics.js";
 import { areTeammates } from "./modes.js";
 import type { TurnStep } from "./turn.js";
@@ -30,6 +31,8 @@ export type TriggerEvent =
   | { type: "attacks"; cardId: CardInstanceId }
   | { type: "blocks"; cardId: CardInstanceId }
   | { type: "exploits"; cardId: CardInstanceId }
+  /** Des marqueurs de savoir arrivent sur une saga : de `from` à `to`. */
+  | { type: "lore"; cardId: CardInstanceId; from: number; to: number }
   /** `auras` : les auras attachées au permanent quand il est parti (Kaya's Ghostform). */
   | {
       type: "leaves";
@@ -51,12 +54,14 @@ export type TriggerCondition =
   | { on: "dies"; self: boolean; others: boolean; whose: Whose; batched?: boolean }
   /** `nth` : « draw your second card each turn ». */
   | { on: "draw" | "lifeGain" | "lifeLoss" | "landPlayed"; whose: Whose; nth?: number }
-  | { on: "step"; step: "upkeep" | "draw" | "end"; whose: Whose }
+  | { on: "step"; step: "upkeep" | "draw" | "main1" | "end"; whose: Whose }
   | { on: "cast"; whose: Whose; types: string[]; notTypes: string[] }
   /** « Whenever ~ attacks », « … blocks », « … attacks or blocks ». */
   | { on: "combat"; attacks: boolean; blocks: boolean }
   /** « When ~ exploits a creature ». */
   | { on: "exploits" }
+  /** Chapitre d'une saga (« I, II — … »). */
+  | { on: "chapter"; chapters: number[] }
   /** « When ~ leaves the battlefield » ; `enchanted` : « When enchanted permanent dies or is put into exile » (`to` : zones visées). */
   | { on: "leaves"; enchanted?: boolean; to?: Zone[] };
 
@@ -146,6 +151,9 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
     const to: Zone[] = what.startsWith("leaves") ? [] : [...(what.includes("dies") ? (["graveyard"] as Zone[]) : []), ...(what.includes("exile") ? (["exile"] as Zone[]) : [])];
     return { on: "leaves", enchanted: true, ...(to.length > 0 ? { to } : {}) };
   }
+  if ((m = /^the beginning of (your|each|each player's|each opponent's) (?:first|precombat) main phase$/i.exec(t))) {
+    return { on: "step", step: "main1", whose: whose(m[1]!)! };
+  }
   if ((m = /^the beginning of (your|each|each player's|each opponent's) (upkeep|draw step|end step)$/i.exec(t))) {
     const step = m[2]!.toLowerCase().startsWith("upkeep") ? "upkeep" : m[2]!.toLowerCase().startsWith("draw") ? "draw" : "end";
     return { on: "step", step, whose: whose(m[1]!)! };
@@ -185,12 +193,32 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
   if (cached) return cached;
   const result: PermanentAbilities = { triggers: [], activated: [], statics: [], unknown: [] };
   const planeswalker = /\bPlaneswalker\b/.test(typeLine);
-  for (const raw of oracleText.split("\n")) {
+  for (const raw of joinModes(oracleText).split("\n")) {
     const line = raw.replace(/\([^)]*\)/g, "").trim();
     if (!line) continue;
     const tilde = selfToTilde(line, cardName).trim();
     if (/^exploit$/i.test(line)) {
       result.triggers.push(EXPLOIT);
+      continue;
+    }
+    // Chapitres d'une saga : « I — … », « II, III — … ».
+    const chapter = /^((?:I{1,3}|IV|V|VI)(?:, (?:I{1,3}|IV|V|VI))*) — (.+)$/.exec(tilde);
+    if (chapter && /\bSaga\b/.test(typeLine)) {
+      const ROMAN: Record<string, number> = { I: 1, II: 2, III: 3, IV: 4, V: 5, VI: 6 };
+      const chapters = chapter[1]!.split(/,\s*/).map((r) => ROMAN[r]!);
+      const parsed = parseTriggerBody(chapter[2]!);
+      if (!parsed || parsed.effects.unknown.length > 0 || (parsed.effects.effects.length === 0 && !parsed.effects.modes)) {
+        result.unknown.push(line);
+        continue;
+      }
+      result.triggers.push({
+        text: line,
+        condition: { on: "chapter", chapters },
+        effects: parsed.effects,
+        ifUntapped: false,
+        optional: parsed.optional,
+        ...(parsed.payMana ? { payMana: parsed.payMana } : {}),
+      });
       continue;
     }
     const m = /^(When|Whenever|At) (.+?), (.+)$/.exec(tilde);
@@ -209,7 +237,7 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         body = untapped[1]!;
       }
       const parsed = parseTriggerBody(body);
-      if (!condition || !parsed || parsed.effects.unknown.length > 0 || parsed.effects.effects.length === 0) {
+      if (!condition || !parsed || parsed.effects.unknown.length > 0 || (parsed.effects.effects.length === 0 && !parsed.effects.modes)) {
         result.unknown.push(line);
         continue;
       }
@@ -238,6 +266,15 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
   }
   cache.set(key, result);
   return result;
+}
+
+/** Dernier chapitre d'une saga (0 si ce n'en est pas une). */
+export function sagaChapters(data: CardData | undefined, faceIndex = 0): number {
+  const face = data?.faces?.[faceIndex];
+  if (!/\bSaga\b/.test(face?.typeLine ?? data?.typeLine ?? "")) return 0;
+  const ROMAN: Record<string, number> = { I: 1, II: 2, III: 3, IV: 4, V: 5, VI: 6 };
+  const text = face?.oracleText ?? data?.oracleText ?? "";
+  return Math.max(0, ...[...text.matchAll(/^((?:I{1,3}|IV|V|VI)(?:, (?:I{1,3}|IV|V|VI))*) —/gm)].flatMap((m) => m[1]!.split(/,\s*/).map((r) => ROMAN[r]!)));
 }
 
 /** Capacités déclenchées de la face visible d'une carte. */
@@ -293,6 +330,8 @@ export function conditionMatches(
       return c.on === "combat" && (event.type === "attacks" ? c.attacks : c.blocks) && event.cardId === source.instanceId;
     case "exploits":
       return c.on === "exploits" && event.cardId === source.instanceId;
+    case "lore":
+      return c.on === "chapter" && event.cardId === source.instanceId && c.chapters.some((n) => n > event.from && n <= event.to);
     case "draw":
       if (c.on !== "draw" || (c.nth !== undefined && event.nth !== c.nth)) return false;
       return whoseMatches(g, c.whose, source.controllerId, event.playerId);

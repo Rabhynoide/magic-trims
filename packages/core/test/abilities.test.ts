@@ -58,7 +58,7 @@ function inHand(g: GameState, playerId: string, card: CardData, n = 0): [GameSta
 
 function resolveAll(g: GameState, max = 100): GameState {
   for (let i = 0; i < max && g.priority && g.stack.length > 0; i++) {
-    if (g.stack.some((id) => g.cards[id]!.ability?.awaitingDecision || (g.cards[id]!.scry && !g.cards[id]!.scry!.done))) break;
+    if (g.stack.some((id) => g.cards[id]!.ability?.awaitingDecision || (g.cards[id]!.scry && !g.cards[id]!.scry!.done) || (g.cards[id]!.modes && !g.cards[id]!.modes!.chosen) || g.cards[id]!.cardChoice)) break;
     g = act(g, g.priority.playerId, { type: "passPriority" });
   }
   return g;
@@ -554,7 +554,129 @@ describe("Deuxième pioche, mana en plus, payer X", () => {
 
   it("les cartes sont reconnues en entier", () => {
     for (const name of ["Bubbling Muck", "Well of Lost Dreams"]) expect(cardSupport(real(name)).level, name).toBe("full");
-    expect(cardSupport(real("Gixian Puppeteer")).level).toBe("partial");
+  });
+});
+
+describe("Modes", () => {
+  it("Black Market Connections : au début de la première phase principale, choisir un ou plusieurs modes", () => {
+    let g = newTestGame(2);
+    [g] = put(g, "p1", real("Black Market Connections"));
+    g = act(g, "p1", { type: "nextStep", to: "main1" });
+    const ability = g.stack.map((id) => g.cards[id]!).find((c) => c.ability);
+    expect(ability).toBeDefined();
+    g = resolveAll(g);
+    expect(g.cards[ability!.instanceId]!.modes).toEqual({});
+    expect(refuse(g, "p1", { type: "chooseModes", cardId: ability!.instanceId, modes: [] })).toMatch(/Choisis entre 1 et 3/);
+    const hand = g.players.p1!.zones.hand.length;
+    g = act(g, "p1", { type: "chooseModes", cardId: ability!.instanceId, modes: [0, 1] });
+    g = resolveAll(g);
+    const treasure = g.players.p1!.zones.battlefield.map((id) => g.cards[id]!).find((c) => g.cardData[c.cardId]!.name === "Treasure");
+    expect(treasure).toBeDefined();
+    expect(g.players.p1!.zones.hand.length).toBe(hand + 1);
+    expect(g.players.p1!.life).toBe(37);
+    // Le Trésor se sacrifie pour un mana de la couleur choisie.
+    g = act(g, "p1", { type: "activateAbility", cardId: treasure!.instanceId, index: 0, color: "R" });
+    expect(g.players.p1!.manaPool.R).toBe(1);
+    expect(g.cards[treasure!.instanceId]).toBeUndefined();
+  });
+
+  it("le bot choisit un mode", () => {
+    let g = newTestGame(2);
+    [g] = put(g, "p1", real("Black Market Connections"));
+    g = act(g, "p1", { type: "nextStep", to: "main1" });
+    g = resolveAll(g);
+    const action = chooseBotAction(g, "p1");
+    expect(action).toMatchObject({ type: "chooseModes", modes: [0] });
+  });
+
+  it("une carte modale est reconnue en entier", () => {
+    expect(cardSupport(real("Black Market Connections")).level).toBe("full");
+  });
+});
+
+describe("Fenêtre de choix : cimetière, bibliothèque, main révélée, saga", () => {
+  it("Gixian Puppeteer : en mourant, ramène une autre créature de valeur de mana 3 ou moins", () => {
+    let g = toMain(newTestGame(2));
+    let puppeteer: string, small: string, big: string;
+    [g, puppeteer] = put(g, "p1", real("Gixian Puppeteer", { manaValue: 4 }));
+    [g, small] = put(g, "p1", fakeCard("Petit", { typeLine: "Creature — Bear", power: "2", toughness: "2", manaValue: 2 }));
+    [g, big] = put(g, "p1", fakeCard("Gros", { typeLine: "Creature — Giant", power: "5", toughness: "5", manaValue: 5 }));
+    g = act(g, "p1", { type: "moveCard", cardId: small, to: "graveyard" });
+    g = act(g, "p1", { type: "moveCard", cardId: big, to: "graveyard" });
+    g = act(g, "p1", { type: "moveCard", cardId: puppeteer, to: "graveyard" });
+    // Une seule cible possible (le Puppeteer lui-même est exclu) : choisie d'office.
+    const ability = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.sourceName === "Gixian Puppeteer")!;
+    expect(ability.targets).toEqual([{ kind: "card", id: small }]);
+    g = resolveAll(g);
+    expect(g.cards[small]!.zone).toBe("battlefield");
+    expect(g.cards[big]!.zone).toBe("graveyard");
+  });
+
+  it("Expedition Map : on choisit un terrain dans sa bibliothèque", () => {
+    let g = toMain(newTestGame(2));
+    let map: string;
+    [g, map] = put(g, "p1", real("Expedition Map"));
+    g = structuredClone(g);
+    const landId = g.players.p1!.zones.library[5]!;
+    g.cardData[g.cards[landId]!.cardId] = fakeCard("Swamp", { id: g.cards[landId]!.cardId, typeLine: "Basic Land — Swamp" });
+    g = mana(g, "p1", "CC");
+    g = act(g, "p1", { type: "activateAbility", cardId: map, index: 0 });
+    g = resolveAll(g);
+    const ability = g.stack.map((id) => g.cards[id]!).find((c) => c.cardChoice)!;
+    expect(ability.cardChoice!.options).toEqual([landId]);
+    expect(refuse(g, g.priority!.playerId, { type: "passPriority" })).toMatch(/choisir une carte/);
+    g = act(g, "p1", { type: "chooseCards", cardId: ability.instanceId, cardIds: [landId] });
+    const inHand = g.players.p1!.zones.hand.map((id) => g.cardData[g.cards[id]!.cardId]!.name);
+    expect(inHand).toContain("Swamp");
+    expect(g.stack).toHaveLength(0);
+  });
+
+  it("The Cruelty of Gix : lecture anticipée au chapitre III, puis sacrifiée", () => {
+    let g = toMain(newTestGame(2));
+    let saga: string, dead: string;
+    [g, dead] = put(g, "p2", fakeCard("Mort", { typeLine: "Creature — Zombie", power: "3", toughness: "3" }));
+    g = act(g, "p2", { type: "moveCard", cardId: dead, to: "graveyard" });
+    [g, saga] = inHand(g, "p1", real("The Cruelty of Gix", { manaCost: "{2}{B}" }));
+    g = mana(g, "p1", "BBB");
+    expect(refuse(g, "p1", { type: "castSpell", cardId: saga, chapter: 4 })).toMatch(/entre 1 et 3/);
+    g = act(g, "p1", { type: "castSpell", cardId: saga, chapter: 3 });
+    g = resolveAll(g);
+    expect(g.cards[dead]!.zone).toBe("battlefield");
+    expect(g.cards[dead]!.controllerId).toBe("p1");
+    expect(g.cards[saga]!.zone).toBe("graveyard");
+  });
+
+  it("The Cruelty of Gix : chapitre I, la main révélée et la défausse choisie, puis le II au tour suivant", () => {
+    let g = toMain(newTestGame(2));
+    let saga: string;
+    [g, saga] = inHand(g, "p1", real("The Cruelty of Gix", { manaCost: "{2}{B}" }));
+    g = structuredClone(g);
+    const victim = g.players.p2!.zones.hand[0]!;
+    g.cardData[g.cards[victim]!.cardId] = fakeCard("Cible", { id: g.cards[victim]!.cardId, typeLine: "Creature — Elf" });
+    g = mana(g, "p1", "BBB");
+    g = act(g, "p1", { type: "castSpell", cardId: saga });
+    g = resolveAll(g);
+    expect(g.cards[saga]!.counters["savoir"]).toBe(1);
+    const ability = g.stack.map((id) => g.cards[id]!).find((c) => c.cardChoice)!;
+    expect(ability.cardChoice!.options).toEqual([victim]);
+    expect(g.cards[victim]!.revealedTo).toContain("p1");
+    g = act(g, "p1", { type: "chooseCards", cardId: ability.instanceId, cardIds: [victim] });
+    expect(g.cards[victim]!.zone).toBe("graveyard");
+    // Tour suivant de p1 : chapitre II (recherche, 3 PV).
+    g = act(g, "p1", { type: "passTurn" });
+    g = act(g, "p2", { type: "passTurn" });
+    g = resolveAll(g);
+    if (g.turn.step !== "main1") g = act(g, "p1", { type: "nextStep", to: "main1" });
+    g = resolveAll(g);
+    expect(g.cards[saga]!.counters["savoir"]).toBe(2);
+    const search = g.stack.map((id) => g.cards[id]!).find((c) => c.cardChoice)!;
+    expect(search.cardChoice!.options.length).toBeGreaterThan(10);
+    g = act(g, "p1", { type: "chooseCards", cardId: search.instanceId, cardIds: [search.cardChoice!.options[3]!] });
+    expect(g.players.p1!.life).toBe(37);
+  });
+
+  it("les cartes sont reconnues en entier", () => {
+    for (const name of ["Gixian Puppeteer", "Expedition Map", "The Cruelty of Gix"]) expect(cardSupport(real(name)).level, name).toBe("full");
   });
 });
 
@@ -562,6 +684,6 @@ describe("Deck Sheoldred", () => {
   it("la plupart des cartes sont gérées en entier", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "" })).level);
     const full = levels.filter((l) => l === "full").length;
-    expect(full).toBeGreaterThanOrEqual(59);
+    expect(full).toBeGreaterThanOrEqual(63);
   });
 });

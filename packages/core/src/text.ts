@@ -13,8 +13,13 @@ export function selfToTilde(oracleText: string, cardName: string): string {
 }
 
 /** Les lignes du texte, sans texte de rappel ni lignes vides. */
+/** Les modes (« • … ») rejoignent la ligne « Choose one — » qui les annonce. */
+export function joinModes(oracleText: string): string {
+  return oracleText.replace(/\n\s*•/g, " •");
+}
+
 export function oracleLines(oracleText: string): string[] {
-  return oracleText
+  return joinModes(oracleText)
     .split("\n")
     .map((raw) => raw.replace(/\([^)]*\)/g, "").trim())
     .filter(Boolean);

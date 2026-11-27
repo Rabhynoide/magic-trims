@@ -9,7 +9,7 @@
  */
 import type { GameAction } from "./actions.js";
 import { canAttack, cantBlock, creatureStats, hasKeyword, isCreature } from "./combat.js";
-import { isLegalTarget, type Target } from "./effects.js";
+import { isLegalTarget, spellEffectsOf, type Target } from "./effects.js";
 import { abilitiesOf, stackTrigger } from "./triggers.js";
 import { areTeammates, isActivePlayer, teamOf } from "./modes.js";
 import { applyAction } from "./reducer.js";
@@ -50,6 +50,18 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
     const yes: GameAction = { type: "decideOptional", cardId: deciding.instanceId, accept: true, ...(x !== undefined ? { x } : {}) };
     if (!sacrifice && applyAction(g, { actorId: botId, action: yes }).ok) return yes;
     return { type: "decideOptional", cardId: deciding.instanceId, accept: false };
+  }
+
+  // La fenêtre de choix : la première carte proposée.
+  const picking = g.stack.map((id) => g.cards[id]!).find((c) => c.cardChoice && c.controllerId === botId);
+  if (picking) return { type: "chooseCards", cardId: picking.instanceId, cardIds: picking.cardChoice!.options.slice(0, 1) };
+
+  // Ses modes : le premier (ou le nombre minimum).
+  const choosing = g.stack.map((id) => g.cards[id]!).find((c) => c.modes && !c.modes.chosen && c.controllerId === botId);
+  if (choosing) {
+    const effects = choosing.ability ? stackTrigger(g.cardData[choosing.cardId], choosing.ability)?.effects : spellEffectsOf(g, choosing);
+    const n = Math.max(1, effects?.modes?.min ?? 1);
+    return { type: "chooseModes", cardId: choosing.instanceId, modes: Array.from({ length: n }, (_, i) => i) };
   }
 
   // Son regard : il garde tout au-dessus.

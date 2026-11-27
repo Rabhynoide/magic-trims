@@ -73,6 +73,8 @@ export type GameAction =
       targets?: Target[];
       /** Le permanent sacrifié pour un coût supplémentaire (« As an additional cost… sacrifice a creature »). */
       sacrifice?: CardInstanceId;
+      /** Saga avec lecture anticipée (« Read ahead ») : le chapitre de départ. */
+      chapter?: number;
       /** Payer le coût alternatif du sort (« You may pay {1}{B} rather than pay this spell's mana cost »). */
       alternative?: boolean;
     }
@@ -93,6 +95,10 @@ export type GameAction =
   /** Répond à une capacité facultative (« you may ») sur la pile ; `choice` : le permanent choisi (sacrifice). */
   /** `x` : la valeur payée pour « you may pay {X} » (Well of Lost Dreams). */
   | { type: "decideOptional"; cardId: CardInstanceId; accept: boolean; choice?: CardInstanceId; x?: number }
+  /** Les cartes choisies dans la fenêtre de choix (recherche, main révélée). */
+  | { type: "chooseCards"; cardId: CardInstanceId; cardIds: CardInstanceId[] }
+  /** Les modes choisis d'un sort ou d'une capacité modale (index dans l'ordre imprimé). */
+  | { type: "chooseModes"; cardId: CardInstanceId; modes: number[] }
   /** Regard : les cartes gardées au-dessus (dans l'ordre, la première en haut) et celles mises au-dessous. */
   | { type: "scry"; cardId: CardInstanceId; top: CardInstanceId[]; bottom: CardInstanceId[] }
   /** Choisit les cibles d'une capacité déclenchée qu'on contrôle, sur la pile. */

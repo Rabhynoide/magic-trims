@@ -174,6 +174,14 @@ export interface CardInstance {
   usedAbilities?: { turn: number; indices: number[] };
   /** Capacités déclenchées données jusqu'à la fin du tour (texte « When ~ dies, … »). */
   grantedTriggers?: string[];
+  /** Choix de cartes en attente à la résolution (recherche, main révélée) : effet n° `index`. */
+  cardChoice?: { index: number; options: CardInstanceId[]; min: number; max: number; label: string };
+  /** Cartes choisies pour chaque effet (par son index). */
+  choices?: Record<number, CardInstanceId[]>;
+  /** Sort ou capacité modale sur la pile : les modes choisis (absents tant que le contrôleur n'a pas choisi). */
+  modes?: { chosen?: number[] };
+  /** Saga avec lecture anticipée : le chapitre de départ choisi en la lançant. */
+  chapter?: number;
   /** Sort lancé pour son coût alternatif (Baleful Mastery). */
   alternative?: boolean;
   /** Sort ou capacité sur la pile qui commence par un regard : `done` une fois les cartes rangées. */

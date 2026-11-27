@@ -26,7 +26,7 @@ import {
   type Target,
   type Who,
 } from "./effects.js";
-import { abilitiesOf, conditionMatches, parsePermanentAbilities, stackTrigger, type TriggeredAbility, type TriggerEvent } from "./triggers.js";
+import { abilitiesOf, conditionMatches, parsePermanentAbilities, sagaChapters, stackTrigger, type TriggeredAbility, type TriggerEvent } from "./triggers.js";
 import {
   attackTaxPerCreature,
   cantGainLife,
@@ -360,7 +360,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     emit(g, { type: "landPlayed", playerId: actor.id });
   },
 
-  castSpell(g, actor, { cardId, face, x, targets, sacrifice, alternative }) {
+  castSpell(g, actor, { cardId, face, x, targets, sacrifice, alternative, chapter }) {
     const card = getCard(g, cardId);
     const fromCommand = card.zone === "command" && card.isCommander;
     if (card.ownerId !== actor.id || (card.zone !== "hand" && !fromCommand)) {
@@ -433,6 +433,12 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     emit(g, { type: "cast", playerId: actor.id, cardId: cast.instanceId, typeLine });
     cast.faceIndex = faceIndex;
     if (alternative) cast.alternative = true;
+    // Lecture anticipée : le chapitre de départ (1 par défaut).
+    const chapters = sagaChapters(data, faceIndex);
+    if (chapter !== undefined && chapters > 0 && /\bRead ahead\b/i.test(faceData?.oracleText ?? data.oracleText)) {
+      if (!Number.isInteger(chapter) || chapter < 1 || chapter > chapters) throw new ActionError(`Choisis un chapitre entre 1 et ${chapters}.`);
+      cast.chapter = chapter;
+    }
     if (aura) cast.targets = [{ ...chosen[0]! }];
     if (effects) {
       cast.targets = effects.targets.length > 0 ? chosen.map((t) => ({ ...t })) : [];
@@ -686,6 +692,38 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     resolveAbility(g, card);
   },
 
+  chooseCards(g, actor, { cardId, cardIds }) {
+    const card = getCard(g, cardId);
+    const pending = card.cardChoice;
+    if (!pending || card.zone !== "stack") throw new ActionError("Aucun choix de cartes n'est en attente.");
+    if (card.controllerId !== actor.id) throw new ActionError("Seul son contrôleur choisit.");
+    const chosen = [...new Set(cardIds)];
+    if (chosen.length < pending.min || chosen.length > pending.max || chosen.some((id) => !pending.options.includes(id))) {
+      throw new ActionError(pending.min === pending.max ? `Choisis ${plural(pending.max, "carte")} parmi celles proposées.` : `Choisis au plus ${plural(pending.max, "carte")} parmi celles proposées.`);
+    }
+    card.choices = { ...(card.choices ?? {}), [pending.index]: chosen };
+    delete card.cardChoice;
+    if (card.ability) resolveAbility(g, card);
+    else resolveTop(g, card.instanceId);
+  },
+
+  chooseModes(g, actor, { cardId, modes }) {
+    const card = getCard(g, cardId);
+    if (!card.modes || card.modes.chosen || card.zone !== "stack") throw new ActionError("Aucun choix de modes n'est en attente.");
+    if (card.controllerId !== actor.id) throw new ActionError("Seul son contrôleur choisit les modes.");
+    const effects = card.ability ? abilityEffects(g, card) : spellEffectsOf(g, card);
+    const spec = effects?.modes;
+    if (!spec) throw new ActionError("Ce sort n'a pas de modes.");
+    const chosen = [...new Set(modes)].sort((a, b) => a - b);
+    if (chosen.length < Math.max(1, spec.min) || chosen.length > spec.max || chosen.some((i) => !Number.isInteger(i) || i < 0 || i >= spec.list.length)) {
+      throw new ActionError(spec.min === spec.max ? `Choisis ${plural(spec.min, "mode")}.` : `Choisis entre ${Math.max(1, spec.min)} et ${spec.max} modes.`);
+    }
+    card.modes.chosen = chosen;
+    log(g, actor.id, `${actor.name} choisit : ${chosen.map((i) => `« ${spec.list[i]!.label} »`).join(", ")}.`);
+    if (card.ability) resolveAbility(g, card);
+    else resolveTop(g, card.instanceId);
+  },
+
   scry(g, actor, { cardId, top, bottom }) {
     const card = getCard(g, cardId);
     if (!card.scry || card.scry.done || card.zone !== "stack") throw new ActionError("Aucun regard n'est en attente pour ce sort.");
@@ -708,6 +746,10 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
   passPriority(g, actor) {
     const priority = g.priority;
     if (!priority) throw new ActionError("La pile est vide : personne n'a la priorité.");
+    const picking = g.stack.map((id) => g.cards[id]!).find((c) => c.cardChoice);
+    if (picking) throw new ActionError(`${g.players[picking.controllerId]!.name} doit d'abord choisir une carte pour ${cardName(g, picking)}.`);
+    const choosing = g.stack.map((id) => g.cards[id]!).find((c) => c.modes && !c.modes.chosen);
+    if (choosing) throw new ActionError(`${g.players[choosing.controllerId]!.name} doit d'abord choisir les modes de ${cardName(g, choosing)}.`);
     const scrying = g.stack.map((id) => g.cards[id]!).find((c) => c.scry && !c.scry.done);
     if (scrying) throw new ActionError(`${g.players[scrying.controllerId]!.name} doit d'abord ranger les cartes de son regard.`);
     const deciding = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.awaitingDecision);
@@ -919,6 +961,13 @@ export function moveCardTo(
       card.counters["loyauté"] = loyalty;
       card.hasLoyalty = true;
     }
+    // Une saga arrive avec un marqueur de savoir (ou au chapitre choisi avec la lecture anticipée).
+    if (!card.faceDown && g.settings.enforceRules && sagaChapters(data, card.faceIndex) > 0) {
+      const start = card.chapter ?? 1;
+      card.counters["savoir"] = start;
+      emit(g, { type: "lore", cardId: card.instanceId, from: start - 1, to: start });
+    }
+    delete card.chapter;
   }
   if (from === "stack" && to !== "stack") {
     delete card.targets;
@@ -977,7 +1026,11 @@ export function moveCardTo(
   }
 
   if (from === "stack") {
+    if (to !== "battlefield") delete card.chapter;
+    delete card.cardChoice;
+    delete card.choices;
     delete card.scry;
+    delete card.modes;
     delete card.alternative;
   }
   card.controllerId = to === "battlefield" || to === "stack" ? (options.controllerId ?? card.controllerId) : card.ownerId;
@@ -1208,6 +1261,14 @@ function emitEnters(g: GameState, card: CardInstance): void {
 /** Les capacités déclenchées « une fois par tour » sont notées dans `usedAbilities` à partir de cet index. */
 const TRIGGER_KEY = 1000;
 
+/** Texte des jetons prédéfinis (règle 111.10). */
+const NAMED_TOKENS: Record<string, string> = {
+  Treasure: "{T}, Sacrifice this artifact: Add one mana of any color.",
+  Food: "{2}, {T}, Sacrifice this artifact: You gain 3 life.",
+  Clue: "{2}, Sacrifice this artifact: Draw a card.",
+  Blood: "{1}, {T}, Discard a card, Sacrifice this artifact: Draw a card.",
+};
+
 /** Index des capacités déclenchées données (Malakir Rebirth), pour les distinguer de celles de la carte. */
 const GRANTED_KEY = 2000;
 
@@ -1341,6 +1402,7 @@ function legalTargets(g: GameState, spec: Parameters<typeof isLegalTarget>[1], c
     ...g.turnOrder.map((id) => ({ kind: "player", id }) as Target),
     ...g.turnOrder.flatMap((id) => g.players[id]!.zones.battlefield).map((id) => ({ kind: "card", id }) as Target),
     ...g.stack.map((id) => ({ kind: "card", id }) as Target),
+    ...(spec.graveyard ? g.turnOrder.flatMap((id) => g.players[id]!.zones.graveyard).map((id) => ({ kind: "card", id }) as Target) : []),
   ];
   return candidates.filter((t) => isLegalTarget(g, spec, t, casterId, sourceId));
 }
@@ -1376,9 +1438,9 @@ function resolveAbility(g: GameState, card: CardInstance): void {
   if (targets.length > 0 && legal.every((ok) => !ok)) {
     log(g, null, `La capacité de ${ability.sourceName} n'a plus de cible valide : elle ne fait rien.`);
   } else {
-    if (startScry(g, card, effects)) return;
+    if (startModes(g, card, effects) || startScry(g, card, effects) || startCardChoice(g, card, withModes(effects, card), targets, legal)) return;
     log(g, null, `La capacité de ${ability.sourceName} se résout.`);
-    applySpellEffects(g, card, effects.effects, targets, legal);
+    applySpellEffects(g, card, withModes(effects, card), targets, legal);
     if (effects.unknown.length > 0) log(g, null, `À appliquer à la main pour ${ability.sourceName} : « ${effects.unknown.join(" ")} »`);
   }
   if (g.cards[card.instanceId]) moveCardTo(g, card.instanceId, "graveyard", "top");
@@ -1570,6 +1632,82 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         log(g, null, `${cardName(g, back)} revient sur le champ de bataille${effect.tapped ? " engagé(e)" : ""} sous le contrôle de ${g.players[controllerId]!.name}.`);
         break;
       }
+      case "search": {
+        const chosen = source.choices?.[effects.indexOf(effect)] ?? [];
+        for (const id of chosen) {
+          const c = g.cards[id];
+          if (!c || c.zone !== "library") continue;
+          const name = cardName(g, c);
+          if (effect.to === "hand") moveCardTo(g, id, "hand", "top");
+          else moveCardTo(g, id, "battlefield", "top", { controllerId: caster.id });
+          log(g, null, `${caster.name} ${effect.reveal || effect.to === "battlefield" ? `prend ${name}` : "prend une carte"} dans sa bibliothèque.`);
+        }
+        if (chosen.length === 0) log(g, null, `${caster.name} ne prend aucune carte dans sa bibliothèque.`);
+        break;
+      }
+      case "shuffle":
+        shuffleLibrary(g, caster);
+        log(g, null, `${caster.name} mélange sa bibliothèque.`);
+        break;
+      case "revealHand":
+        for (const p of whoOf(effect.who)) {
+          for (const id of p.zones.hand) addRevealed(g.cards[id]!, g.turnOrder);
+          log(g, null, `${p.name} révèle sa main : ${p.zones.hand.map((id) => cardName(g, g.cards[id]!)).join(", ") || "aucune carte"}.`);
+        }
+        break;
+      case "chooseDiscard": {
+        const chosen = source.choices?.[effects.indexOf(effect)] ?? [];
+        for (const id of chosen) {
+          const c = g.cards[id];
+          if (!c || c.zone !== "hand") continue;
+          const name = cardName(g, c);
+          moveCardTo(g, id, "graveyard", "top");
+          log(g, null, `${g.players[c.ownerId]!.name} défausse ${name}.`);
+        }
+        break;
+      }
+      case "fromGraveyard": {
+        const c = card(effect.target);
+        if (!c || c.zone !== "graveyard") break;
+        const name = cardName(g, c);
+        if (effect.to === "hand") {
+          moveCardTo(g, c.instanceId, "hand", "top");
+          log(g, null, `${name} retourne dans la main de ${g.players[c.ownerId]!.name}.`);
+        } else {
+          moveCardTo(g, c.instanceId, "battlefield", "top", { controllerId: caster.id });
+          log(g, null, `${name} arrive sur le champ de bataille sous le contrôle de ${caster.name}.`);
+        }
+        break;
+      }
+      case "namedToken": {
+        const n = amountOf(effect.count);
+        const text = NAMED_TOKENS[effect.name] ?? "";
+        const id = `token:${effect.name}`;
+        g.cardData[id] ??= {
+          id,
+          oracleId: id,
+          name: effect.name,
+          manaCost: "",
+          manaValue: 0,
+          typeLine: `Token Artifact — ${effect.name}`,
+          oracleText: text,
+          colors: [],
+          colorIdentity: [],
+          keywords: [],
+          commanderLegality: "legal",
+          set: "tok",
+          collectorNumber: "0",
+        };
+        for (let i = 0; i < n; i++) {
+          const instance = newInstance(g, id, caster.id, "battlefield");
+          instance.isToken = true;
+          instance.tapped = effect.tapped;
+          caster.zones.battlefield.push(instance.instanceId);
+          emitEnters(g, instance);
+        }
+        log(g, null, `${caster.name} crée ${n > 1 ? `${n} jetons` : "un jeton"} ${effect.name}.`);
+        break;
+      }
       case "manaBonus":
         (g.manaBonuses ??= []).push({ turn: g.turn.number, subtype: effect.subtype, mana: effect.mana as ManaType });
         log(g, null, `Jusqu'à la fin du tour, chaque ${effect.subtype} engagé pour du mana donne {${effect.mana}} en plus.`);
@@ -1757,6 +1895,63 @@ function startScry(g: GameState, card: CardInstance, effects: SpellEffects): boo
   return true;
 }
 
+/**
+ * Un effet qui demande de choisir des cartes (recherche dans la bibliothèque,
+ * carte d'une main révélée) : la résolution attend le choix du contrôleur.
+ */
+function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], targets: Target[], legal: boolean[]): boolean {
+  const controller = g.players[card.controllerId]!;
+  for (const [index, effect] of effects.entries()) {
+    if (effect.type !== "search" && effect.type !== "chooseDiscard") continue;
+    if (card.choices?.[index]) continue;
+    const typeOk = (id: CardInstanceId, types: string[]) => {
+      const data = g.cardData[g.cards[id]!.cardId];
+      const typeLine = (data?.faces?.[0]?.typeLine ?? data?.typeLine ?? "").toLowerCase();
+      return types.length === 0 || types.some((t) => (t === "nonland" ? !/\bland\b/.test(typeLine) : new RegExp(`\\b${t}\\b`).test(typeLine)));
+    };
+    let options: CardInstanceId[] = [];
+    let label = "";
+    let min = 0;
+    if (effect.type === "search") {
+      options = controller.zones.library.filter((id) => typeOk(id, effect.types));
+      label = `Choisis ${effect.types.length > 0 ? `une carte (${effect.types.join(", ")})` : "une carte"} de ta bibliothèque`;
+      for (const id of options) addRevealed(g.cards[id]!, [controller.id]);
+    } else {
+      const who = effect.who;
+      const playerId = typeof who === "object" && "target" in who && legal[who.target] && targets[who.target]?.kind === "player" ? targets[who.target]!.id : undefined;
+      const victim = playerId ? g.players[playerId] : undefined;
+      // La main est révélée à tous avant le choix.
+      for (const id of victim?.zones.hand ?? []) addRevealed(g.cards[id]!, g.turnOrder);
+      options = victim ? victim.zones.hand.filter((id) => typeOk(id, effect.types)) : [];
+      label = `Choisis la carte que ${victim?.name ?? "le joueur"} défausse`;
+      min = options.length > 0 ? 1 : 0;
+    }
+    if (options.length === 0) {
+      card.choices = { ...(card.choices ?? {}), [index]: [] };
+      continue;
+    }
+    card.cardChoice = { index, options, min, max: 1, label };
+    log(g, null, `${controller.name} choisit une carte pour ${cardName(g, card)}.`);
+    return true;
+  }
+  return false;
+}
+
+/** Un sort ou une capacité modale (« Choose one or more — ») attend le choix de son contrôleur. */
+function startModes(g: GameState, card: CardInstance, effects: SpellEffects): boolean {
+  if (!effects.modes || card.modes?.chosen) return false;
+  card.modes = {};
+  log(g, null, `${g.players[card.controllerId]!.name} choisit les modes de ${cardName(g, card)}.`);
+  return true;
+}
+
+/** Les effets à appliquer : ceux du sort, puis ceux des modes choisis (dans l'ordre imprimé). */
+function withModes(effects: SpellEffects, card: CardInstance): Effect[] {
+  if (!effects.modes) return effects.effects;
+  const chosen = card.modes?.chosen ?? [];
+  return [...effects.effects, ...chosen.flatMap((i) => effects.modes!.list[i]?.effects ?? [])];
+}
+
 function resolveTop(g: GameState, stackId?: CardInstanceId): void {
   const id = stackId ?? g.stack.at(-1)!;
   const card = g.cards[id]!;
@@ -1765,7 +1960,7 @@ function resolveTop(g: GameState, stackId?: CardInstanceId): void {
   const typeLine = currentTypeLine(g, card);
   if (/\b(Instant|Sorcery)\b/.test(typeLine)) {
     const effects = card.targets ? spellEffectsOf(g, card) : null;
-    if (!effects || effects.effects.length === 0) {
+    if (!effects || (effects.effects.length === 0 && !effects.modes)) {
       moveCardTo(g, id, "graveyard", "top");
       log(g, null, `${name} se résout et va au cimetière (appliquez son effet à la main).`);
       return;
@@ -1778,9 +1973,9 @@ function resolveTop(g: GameState, stackId?: CardInstanceId): void {
       log(g, null, `${name} n'a plus de cible valide : il ne fait rien.`);
       return;
     }
-    if (startScry(g, card, effects)) return;
+    if (startModes(g, card, effects) || startScry(g, card, effects) || startCardChoice(g, card, withModes(effects, card), targets, legal)) return;
     log(g, null, `${name} se résout.`);
-    applySpellEffects(g, card, effects.effects, targets, legal);
+    applySpellEffects(g, card, withModes(effects, card), targets, legal);
     if (g.cards[id]?.zone === "stack") moveCardTo(g, id, "graveyard", "top");
     if (effects.unknown.length > 0) {
       log(g, null, `À appliquer à la main pour ${name} : « ${effects.unknown.join(" ")} »`);
@@ -2398,6 +2593,17 @@ function checkStateBasedActions(g: GameState): void {
           log(g, null, `${name} n'a plus de loyauté et va au cimetière.`);
         }
       }
+      // Une saga à son dernier chapitre est sacrifiée une fois ce chapitre parti de la pile (règle 714.4).
+      for (const card of Object.values(g.cards)) {
+        if (card.zone !== "battlefield" || card.faceDown) continue;
+        const last = sagaChapters(g.cardData[card.cardId], card.faceIndex);
+        if (last === 0 || (card.counters["savoir"] ?? 0) < last) continue;
+        if ((g.events ?? []).some((e) => e.type === "lore" && e.cardId === card.instanceId)) continue;
+        if (g.stack.some((id) => g.cards[id]!.ability?.sourceId === card.instanceId)) continue;
+        const name = cardName(g, card);
+        moveCardTo(g, card.instanceId, "graveyard", "top");
+        log(g, null, `${name} a fini son dernier chapitre : elle est sacrifiée.`);
+      }
       legendRule(g);
       // Un commandant au cimetière ou en exil retourne dans la zone de commandement (règle 903.9a).
       for (const card of Object.values(g.cards)) {
@@ -2479,8 +2685,21 @@ function startTurn(g: GameState, playerId: PlayerId): void {
 /** Entre dans une étape et fait ses actions obligatoires (actions de tour). */
 function enterStep(g: GameState, step: TurnStep): void {
   g.turn.step = step;
-  if (step === "upkeep" || step === "draw" || step === "end") {
+  if (step === "upkeep" || step === "draw" || step === "main1" || step === "end") {
     for (const p of activePlayers(g)) emit(g, { type: "step", step, playerId: p.id });
+  }
+  // Au début de la première phase principale, un marqueur de savoir sur chaque saga (règle 714.3b).
+  if (step === "main1" && g.settings.enforceRules) {
+    for (const p of activePlayers(g)) {
+      for (const id of p.zones.battlefield) {
+        const card = g.cards[id]!;
+        if (card.faceDown || sagaChapters(g.cardData[card.cardId], card.faceIndex) === 0) continue;
+        const from = card.counters["savoir"] ?? 0;
+        card.counters["savoir"] = from + 1;
+        log(g, null, `${cardName(g, card)} reçoit un marqueur de savoir (${from + 1}).`);
+        emit(g, { type: "lore", cardId: id, from, to: from + 1 });
+      }
+    }
   }
   // Le mana inutilisé disparaît entre deux étapes (règle 500.4).
   for (const p of Object.values(g.players)) p.manaPool = emptyPool();

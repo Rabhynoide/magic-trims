@@ -6,6 +6,8 @@ import {
   RESPONSE_STEPS,
   STEP_LABELS,
   abilitiesOf,
+  isLegalTarget,
+  parseSpellEffects,
   stackTrigger,
   creatureStats,
   hasKeyword,
@@ -350,7 +352,110 @@ function canTargetCard(view: GameView, spec: TargetSpec, card: CardView, sourceI
     );
   }
   if (card.zone === "stack") return Boolean(spec.spell) && spellMatches(typeLine, spec.spell!);
+  if (card.zone === "graveyard") return Boolean(spec.graveyard) && isLegalTarget(stateFromView(view), spec, { kind: "card", id }, view.viewerId, sourceId);
   return false;
+}
+
+/** Toutes les cartes visibles de la partie, par identifiant (pour la fenêtre de choix). */
+function visibleCards(view: GameView): Map<string, VisibleCardView> {
+  const out = new Map<string, VisibleCardView>();
+  const add = (c: CardView) => {
+    if (!c.hidden && c.instanceId) out.set(c.instanceId, c);
+  };
+  for (const p of Object.values(view.players)) for (const zone of Object.values(p.zones)) zone.forEach(add);
+  view.stack.forEach(add);
+  return out;
+}
+
+/**
+ * Fenêtre de choix commune : des cartes cachées ou hors de la table
+ * (bibliothèque, main révélée, cimetière) ; on clique pour choisir, puis on valide.
+ */
+function CardPicker(props: {
+  view: GameView;
+  title: string;
+  hint: string;
+  options: VisibleCardView[];
+  min: number;
+  max: number;
+  onConfirm: (ids: string[]) => void;
+  onCancel?: () => void;
+}) {
+  const { view, options, min, max } = props;
+  const [picked, setPicked] = useState<string[]>([]);
+  const key = options.map((c) => c.instanceId).join(",");
+  useEffect(() => setPicked([]), [key]);
+  const toggle = (id: string) =>
+    setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : max === 1 ? [id] : p.length < max ? [...p, id] : p));
+  const ok = picked.length >= min && picked.length <= max;
+  return (
+    <Modal title={props.title} onClose={props.onCancel ?? (() => {})} wide>
+      <p className="hint">{props.hint}</p>
+      <div className="zone-grid">
+        {options.map((c) => (
+          <Card key={c.instanceId} view={view} card={c} size="medium" selected={picked.includes(c.instanceId)} onSelect={() => toggle(c.instanceId)} />
+        ))}
+      </div>
+      <div className="row">
+        <button className="primary" disabled={!ok} onClick={() => props.onConfirm(picked)}>
+          {picked.length === 0 && min === 0 ? "Ne rien prendre" : "Valider"}
+        </button>
+        {props.onCancel && <button onClick={props.onCancel}>Annuler</button>}
+      </div>
+    </Modal>
+  );
+}
+
+/** Un sort ou une capacité attend que je choisisse des cartes (recherche, main révélée). */
+function CardChoicePanel(props: { view: GameView }) {
+  const { view } = props;
+  const waiting = view.stack.find((c): c is VisibleCardView => !c.hidden && Boolean(c.cardChoice));
+  if (!waiting) return null;
+  const choice = waiting.cardChoice!;
+  const name = waiting.ability?.sourceName ?? cardName(view, waiting);
+  if (waiting.controllerId !== view.viewerId) {
+    return (
+      <div className="targeting-banner" role="status">
+        <span>
+          {view.players[waiting.controllerId]?.name} choisit une carte pour <strong>{name}</strong>.
+        </span>
+      </div>
+    );
+  }
+  const cards = visibleCards(view);
+  const options = choice.options.map((id) => cards.get(id)).filter((c): c is VisibleCardView => Boolean(c));
+  return (
+    <CardPicker
+      view={view}
+      title={name}
+      hint={`${choice.label}.`}
+      options={options}
+      min={choice.min}
+      max={choice.max}
+      onConfirm={(ids) => void act({ type: "chooseCards", cardId: waiting.instanceId!, cardIds: ids })}
+    />
+  );
+}
+
+/** Pendant le choix des cibles, une cible dans un cimetière se choisit dans la fenêtre de choix. */
+function GraveyardTargetPicker(props: { view: GameView }) {
+  const { view } = props;
+  const { targeting } = useUi();
+  const spec = targeting?.specs[targeting.chosen.length];
+  if (!targeting || !spec?.graveyard) return null;
+  const options = [...visibleCards(view).values()].filter((c) => c.zone === "graveyard" && canTargetCard(view, spec, c, targeting.sourceId));
+  return (
+    <CardPicker
+      view={view}
+      title={targeting.sourceName}
+      hint={options.length > 0 ? `Choisis une cible : ${spec.label}.` : `Aucune ${spec.label} : impossible de cibler.`}
+      options={options}
+      min={1}
+      max={1}
+      onConfirm={(ids) => ui.pickTarget({ kind: "card", id: ids[0]! })}
+      onCancel={() => ui.cancelTargeting()}
+    />
+  );
 }
 
 /** Pendant le choix des cibles : les cartes qu'on peut cibler deviennent cliquables. */
@@ -521,6 +626,57 @@ function ScryPanel(props: { view: GameView }) {
   );
 }
 
+/** Un sort ou une capacité modale attend mes modes : une case à cocher par mode. */
+function ModesPanel(props: { view: GameView }) {
+  const { view } = props;
+  const choosing = view.stack.find((c): c is VisibleCardView => !c.hidden && Boolean(c.modes && !c.modes.chosen));
+  const [picked, setPicked] = useState<number[]>([]);
+  const key = choosing?.instanceId ?? "";
+  useEffect(() => setPicked([]), [key]);
+  if (!choosing) return null;
+  const name = cardName(view, choosing);
+  if (choosing.controllerId !== view.viewerId) {
+    return (
+      <div className="targeting-banner" role="status">
+        <span>
+          {view.players[choosing.controllerId]?.name} choisit les modes de <strong>{name}</strong>.
+        </span>
+      </div>
+    );
+  }
+  const data = view.cardData[choosing.cardId];
+  const ability = choosing.ability;
+  const effects = ability
+    ? stackTrigger(data, ability)?.effects
+    : data
+      ? parseSpellEffects(data.faces?.[choosing.faceIndex]?.oracleText ?? data.oracleText, data.faces?.[choosing.faceIndex]?.name ?? data.name)
+      : undefined;
+  const spec = effects?.modes;
+  if (!spec) return null;
+  const min = Math.max(1, spec.min);
+  const ok = picked.length >= min && picked.length <= spec.max;
+  const toggle = (i: number) =>
+    setPicked((p) => (p.includes(i) ? p.filter((x) => x !== i) : spec.max === 1 ? [i] : p.length < spec.max ? [...p, i] : p));
+  return (
+    <Modal title={`Modes de ${ability?.sourceName ?? name}`} onClose={() => {}}>
+      <p className="hint">{min === spec.max ? `Choisis ${min} mode${min > 1 ? "s" : ""}.` : `Choisis de ${min} à ${spec.max} modes.`}</p>
+      <div className="modes-list">
+        {spec.list.map((mode, i) => (
+          <label key={i} className="mode-option">
+            <input type={spec.max === 1 ? "radio" : "checkbox"} checked={picked.includes(i)} onChange={() => toggle(i)} />
+            <span>{mode.label}</span>
+          </label>
+        ))}
+      </div>
+      <div className="row">
+        <button className="primary" disabled={!ok} onClick={() => void act({ type: "chooseModes", cardId: choosing.instanceId!, modes: picked })}>
+          Valider
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 /** Bandeau du choix des cibles, avec Annuler (ou Échap). */
 function TargetingBanner() {
   const { targeting } = useUi();
@@ -582,6 +738,9 @@ export function Table() {
         <TargetingBanner />
         {!targeting && <DecisionBanner view={view} />}
         <ScryPanel view={view} />
+        <CardChoicePanel view={view} />
+        <GraveyardTargetPicker view={view} />
+        <ModesPanel view={view} />
         {trigger.waitingName && !targeting && (
           <div className="targeting-banner" role="status">
             <span>
