@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseDeckList } from "../src/deck/parse.js";
 import { resolveDeck } from "../src/deck/resolve.js";
 import { ScryfallClient, toCardData, type ScryfallCard } from "../src/deck/scryfall.js";
-import { validateCommanderDeck } from "../src/deck/validate.js";
+import { deckColorIdentity, deckLegalityByMode, validateCommanderDeck } from "../src/deck/validate.js";
 import { fakeCard, fakeDeck } from "./helpers.js";
 
 describe("lecture d'une liste Moxfield", () => {
@@ -205,5 +205,23 @@ describe("validation Commander", () => {
   it("exige un commandant", () => {
     const issues = validateCommanderDeck({ commanders: [], cards: [] });
     expect(issues[0]).toEqual({ level: "error", message: "Aucun commandant n'est désigné." });
+  });
+
+  it("donne la légalité pour chaque mode de jeu", () => {
+    const deck = fakeDeck("A");
+    deck.cards[0] = { card: fakeCard("Sol Ring", { duelLegality: "banned" }), quantity: 1 };
+    const byMode = deckLegalityByMode(deck, ["freeForAll", "duel", "teams"]);
+    expect(byMode.freeForAll).toEqual([]);
+    expect(byMode.teams).toEqual([]);
+    expect(byMode.duel).toHaveLength(1);
+  });
+
+  it("range l'identité couleur dans l'ordre WUBRG", () => {
+    const deck = fakeDeck("A");
+    deck.commanders = [
+      fakeCard("Zedruu", { colorIdentity: ["R", "W", "U"] }),
+    ];
+    expect(deckColorIdentity(deck)).toEqual(["W", "U", "R"]);
+    expect(deckColorIdentity(fakeDeck("B"))).toEqual([]);
   });
 });
