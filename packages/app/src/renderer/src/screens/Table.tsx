@@ -856,6 +856,13 @@ function PlayerArea(props: {
           value={p.poison}
           onChange={(delta) => void act({ type: "adjustPoison", playerId, delta })}
         />
+        {!isMe && (
+          <span className="hand-count" title={`${p.zones.hand.length} carte(s) en main`}>
+            <span className="hand-count-icon" aria-hidden="true" />
+            {p.zones.hand.length}
+            <small>en main</small>
+          </span>
+        )}
         <ManaPoolView view={view} playerId={playerId} />
         {Object.entries(p.counters).map(([kind, n]) => (
           <Stepper
@@ -904,7 +911,6 @@ function PlayerArea(props: {
               Cartes connues
             </button>
           )}
-          {!isMe && <span className="pile-label">Main {p.zones.hand.length}</span>}
           <Pile
             view={view}
             cards={p.zones.graveyard}
