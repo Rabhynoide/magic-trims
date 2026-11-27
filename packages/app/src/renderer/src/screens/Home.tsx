@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { SharedDeck } from "@magic-trims/core";
+import { formatAppVersion, type SharedDeck } from "@magic-trims/core";
 import { session, useSession } from "../session";
 import { storage, type SavedDeck } from "../storage";
 import { CardLanguageSelect } from "../components/CardLanguage";
@@ -15,11 +15,13 @@ export function Home() {
   const [decks, setDecks] = useState<SavedDeck[]>(storage.getDecks());
   const [importing, setImporting] = useState<SavedDeck | "new" | null>(null);
   const [hasSave, setHasSave] = useState(false);
+  const [version, setVersion] = useState<string | null>(null);
   const inApp = Boolean(window.magic);
   const community = useCommunity();
 
   useEffect(() => {
     void window.magic?.hasSavedGame().then(setHasSave);
+    void window.magic?.appInfo().then((info) => setVersion(formatAppVersion(info)));
   }, []);
 
   const cleanName = name.trim();
@@ -54,7 +56,10 @@ export function Home() {
     <div className="home">
       <header className="home-header">
         <h1>Magic Trims</h1>
-        <p>Commander entre amis, jusqu'à 5 joueurs.</p>
+        <p>
+          Commander entre amis, jusqu'à 5 joueurs.
+          {version && <span className="app-version"> · Version {version}</span>}
+        </p>
       </header>
 
       <div className="home-grid">

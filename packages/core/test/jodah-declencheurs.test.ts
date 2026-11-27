@@ -132,7 +132,7 @@ describe("Autres conditions de déclencheur : lecture", () => {
     for (const name of ["Yoshimaru, Ever Faithful", "The Great Henge", "Robe of the Archmagi", "Cadric, Soul Kindler"]) {
       expect(cardSupport(real(name)).unknown.filter((l) => !others.includes(l)), name).toEqual([]);
     }
-    // Ratadrabik : la condition est lue, la copie « except… » reste pour la famille des copies.
+    // Ratadrabik : la condition est lue (la copie « except… » : jodah-copies.test.ts).
     const rata = real("Ratadrabik of Urborg");
     const line = rata.oracleText.split("\n")[2]!;
     expect(parseTriggerCondition(/^Whenever (.+?), /.exec(line.replace("Ratadrabik of Urborg", "~"))![1]!)).toMatchObject({ legendary: true });
@@ -274,13 +274,12 @@ describe("Autres conditions de déclencheur : en partie", () => {
     g = decide(g);
     const copies = () => g.players.p1!.zones.battlefield.filter((id) => g.cards[id]!.isToken && g.cardData[g.cards[id]!.cardId]!.name === "Grizzly Legend");
     expect(g.log.map((l) => l.message)).toContain("Alice crée un jeton copie de Grizzly Legend.");
-    // La règle des légendes (et son exception pour les jetons) reste à faire : on regarde le jeton s'il a survécu.
-    if (copies().length > 0) {
-      expect(g.cards[copies()[0]!]!.grants).toContain("haste");
-      g = endTurn(g, "p1");
-      g = resolveAll(g);
-      expect(copies()).toHaveLength(0);
-    }
+    // La règle des légendes ne s'applique pas aux jetons de Cadric : le jeton reste.
+    expect(copies()).toHaveLength(1);
+    expect(g.cards[copies()[0]!]!.grants).toContain("haste");
+    g = endTurn(g, "p1");
+    g = resolveAll(g);
+    expect(copies()).toHaveLength(0);
   });
 
   it("Skullclamp : la créature équipée meurt, on pioche deux cartes", () => {

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { MagicApi } from "../shared/api.js";
+import type { MagicApi, UpdateStatus } from "../shared/api.js";
 
 const api: MagicApi = {
   startHost: (options) => ipcRenderer.invoke("host:start", options),
@@ -13,6 +13,17 @@ const api: MagicApi = {
     listDecks: (conn) => ipcRenderer.invoke("central:listDecks", conn),
     shareDeck: (conn, deck) => ipcRenderer.invoke("central:shareDeck", conn, deck),
     unshareDeck: (conn, id) => ipcRenderer.invoke("central:unshareDeck", conn, id),
+  },
+  appInfo: () => ipcRenderer.invoke("app:info"),
+  updates: {
+    status: () => ipcRenderer.invoke("updates:status"),
+    onStatus: (listener) => {
+      const handler = (_e: unknown, status: UpdateStatus) => listener(status);
+      ipcRenderer.on("updates:status", handler);
+      return () => ipcRenderer.off("updates:status", handler);
+    },
+    check: () => ipcRenderer.invoke("updates:check"),
+    install: () => ipcRenderer.invoke("updates:install"),
   },
 };
 

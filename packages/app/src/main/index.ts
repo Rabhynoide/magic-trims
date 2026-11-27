@@ -15,8 +15,12 @@ import {
   type ShareDeckInput,
 } from "@magic-trims/core";
 import { loadSnapshot, startHostServer, type HostServer } from "@magic-trims/host";
-import type { CardToLocalize, CentralResult, DeckImportResult, HostInfo } from "../shared/api.js";
+import type { AppInfo, CardToLocalize, CentralResult, DeckImportResult, HostInfo } from "../shared/api.js";
 import { FileCache, FileCardCache } from "./scryfall-cache.js";
+import { setupUpdater } from "./updater.js";
+
+/** Commit du code, inscrit au moment de la construction (voir electron.vite.config.ts). */
+declare const __APP_COMMIT__: string;
 
 const userData = app.getPath("userData");
 const savePath = join(userData, "partie-en-cours.json");
@@ -150,6 +154,25 @@ ipcMain.handle("central:unshareDeck", (_e, conn: CentralConnection, id: string) 
   central(() => centralClient(conn).unshareDeck(id)),
 );
 
+ipcMain.handle(
+  "app:info",
+  (): AppInfo => ({
+    version: app.getVersion(),
+    ...(__APP_COMMIT__ ? { commit: __APP_COMMIT__ } : {}),
+    packaged: app.isPackaged,
+  }),
+);
+
+/** Avant d'installer une mise à jour : on ferme proprement la partie hébergée et les caches. */
+async function shutdown(): Promise<void> {
+  await server?.close();
+  server = null;
+  await cardCache.flush();
+  await localizedCache.flush();
+}
+
+setupUpdater(shutdown);
+
 app.whenReady().then(() => {
   createWindow();
   app.on("activate", () => {
@@ -158,10 +181,5 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
-  void (async () => {
-    await server?.close();
-    await cardCache.flush();
-    await localizedCache.flush();
-    app.quit();
-  })();
+  void shutdown().then(() => app.quit());
 });

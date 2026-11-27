@@ -2,6 +2,7 @@ import type { GameAction } from "./actions.js";
 import type { ResolvedDeck } from "./deck/resolve.js";
 import {
   PROTOCOL_VERSION,
+  type AppVersion,
   type ClientMessage,
   type LobbyConfig,
   type LobbyState,
@@ -30,6 +31,8 @@ export interface GameClientOptions {
   token?: string;
   /** Clé de l'hôte, pour l'appli qui héberge la partie. */
   hostKey?: string;
+  /** Version de l'appli, envoyée à l'hôte. */
+  app?: AppVersion;
   /** Par défaut, le WebSocket global (navigateur, Electron, Node 22+). */
   createSocket?: WebSocketFactory;
   /** Se reconnecter automatiquement après une coupure (vrai par défaut). */
@@ -172,6 +175,7 @@ export class GameClient {
       const hello: ClientMessage = { type: "hello", protocol: PROTOCOL_VERSION, name: this.options.name };
       if (this.token) hello.token = this.token;
       if (this.options.hostKey) hello.hostKey = this.options.hostKey;
+      if (this.options.app) hello.app = this.options.app;
       this.send(hello);
     };
     socket.onmessage = (ev) => {
