@@ -1,4 +1,14 @@
-import type { CardData, DeckIssue, DeckEntry, LocalizedCard, ResolvedDeck } from "@magic-trims/core";
+import type {
+  CardData,
+  CentralConnection,
+  CentralJoinResult,
+  DeckEntry,
+  DeckIssue,
+  LocalizedCard,
+  ResolvedDeck,
+  ShareDeckInput,
+  SharedDeck,
+} from "@magic-trims/core";
 
 export interface HostInfo {
   port: number;
@@ -20,6 +30,18 @@ export interface DeckImportResult {
 
 export type CardToLocalize = Pick<CardData, "id" | "oracleId" | "set" | "collectorNumber">;
 
+/** Réponse d'un appel au serveur central : jamais d'exception, pour afficher un message clair. */
+export type CentralResult<T> = { ok: true; value: T } | { ok: false; error: string; status: number };
+
+/** Serveur central facultatif (partage de decks). Les appels passent par le processus principal. */
+export interface CentralApi {
+  /** Rejoint un groupe ; renvoie aussi l'adresse complétée (port par défaut). */
+  join(url: string, code: string, name: string): Promise<CentralResult<CentralJoinResult & { url: string }>>;
+  listDecks(conn: CentralConnection): Promise<CentralResult<SharedDeck[]>>;
+  shareDeck(conn: CentralConnection, deck: ShareDeckInput): Promise<CentralResult<SharedDeck>>;
+  unshareDeck(conn: CentralConnection, id: string): Promise<CentralResult<void>>;
+}
+
 /** Ce que le processus principal d'Electron offre à l'interface (via le preload). */
 export interface MagicApi {
   startHost(options: { resume: boolean }): Promise<HostInfo>;
@@ -30,6 +52,7 @@ export interface MagicApi {
   searchCards(query: string): Promise<CardData[]>;
   /** Cherche les cartes imprimées dans une langue (`null` : on garde l'anglais). */
   localizeCards(cards: CardToLocalize[], lang: string): Promise<Record<string, LocalizedCard | null>>;
+  central: CentralApi;
 }
 
 declare global {

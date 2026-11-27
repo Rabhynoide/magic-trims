@@ -1,4 +1,4 @@
-import type { ResolvedDeck } from "@magic-trims/core";
+import type { CentralGroup, CentralMember, ResolvedDeck } from "@magic-trims/core";
 
 /** Petites préférences gardées sur ce PC (nom, decks importés, dernière partie). */
 
@@ -9,6 +9,8 @@ export interface SavedDeck {
   text: string;
   deck: ResolvedDeck;
   importedAt: number;
+  /** Préconstruit officiel d'origine (identifiant mtg.wtf), s'il y en a un. */
+  preconId?: string;
 }
 
 export interface LastSession {
@@ -18,6 +20,14 @@ export interface LastSession {
   isHost: boolean;
 }
 
+/** Connexion au serveur central facultatif (partage de decks). */
+export interface CentralSettings {
+  url: string;
+  token: string;
+  member: CentralMember;
+  group: CentralGroup;
+}
+
 const KEYS = {
   name: "magic-trims.name",
   decks: "magic-trims.decks",
@@ -25,6 +35,7 @@ const KEYS = {
   session: "magic-trims.session",
   selectedDeck: "magic-trims.selectedDeck",
   cardLang: "magic-trims.cardLang",
+  central: "magic-trims.central",
 } as const;
 
 function read<T>(key: string, fallback: T): T {
@@ -59,4 +70,6 @@ export const storage = {
   /** Langue des cartes (code Scryfall), le français par défaut. */
   getCardLang: () => read<string>(KEYS.cardLang, "fr"),
   setCardLang: (lang: string) => write(KEYS.cardLang, lang),
+  getCentral: () => read<CentralSettings | null>(KEYS.central, null),
+  setCentral: (central: CentralSettings | null) => write(KEYS.central, central),
 };

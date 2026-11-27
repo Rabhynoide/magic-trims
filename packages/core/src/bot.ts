@@ -8,10 +8,13 @@
  * encore) : il lance donc surtout des permanents.
  */
 import type { GameAction } from "./actions.js";
-import { creatureStats, hasKeyword, isCreature } from "./combat.js";
+import { canAttack, canBlock as canBlockAttacker, cantBlock, creatureStats, hasKeyword, isCreature } from "./combat.js";
+import { isLegalTarget, spellEffectsOf, type Target } from "./effects.js";
+import { abilitiesOf, stackTrigger } from "./triggers.js";
 import { areTeammates, isActivePlayer, teamOf } from "./modes.js";
-import { applyAction } from "./reducer.js";
+import { applyAction, handSizeDiscards } from "./reducer.js";
 import { MAX_HAND_SIZE } from "./turn.js";
+import { hasNoMaxHandSize } from "./statics.js";
 import type { CardInstance, CardInstanceId, GameState, PlayerId } from "./types.js";
 
 /** La prochaine action du bot, ou `null` s'il n'a rien à faire pour l'instant. */
@@ -23,6 +26,55 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
   if (me.mulliganBottom > 0) {
     const sorted = [...me.zones.hand].sort((a, b) => manaValue(g, b) - manaValue(g, a));
     return { type: "bottomMulligan", cardIds: sorted.slice(0, me.mulliganBottom) };
+  }
+
+  // Ses capacités déclenchées qui attendent des cibles : un adversaire de préférence.
+  const waiting = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.needsTargets && c.controllerId === botId);
+  if (waiting) {
+    const specs = stackTrigger(g.cardData[waiting.cardId], waiting.ability!)?.effects.targets ?? [];
+    const players = [...g.turnOrder].sort((a, b) => Number(areTeammates(g, a, botId) || a === botId) - Number(areTeammates(g, b, botId) || b === botId));
+    const candidates = [
+      ...players.map((id) => ({ kind: "player", id }) as Target),
+      ...g.turnOrder.flatMap((id) => g.players[id]!.zones.battlefield).map((id) => ({ kind: "card", id }) as Target),
+    ];
+    const targets = specs.map((spec) => candidates.find((t) => isLegalTarget(g, spec, t, botId, waiting.instanceId)));
+    if (targets.every((t) => t)) return { type: "chooseTargets", cardId: waiting.instanceId, targets: targets as Target[] };
+  }
+
+  // Ses capacités facultatives : oui, sauf s'il faut sacrifier (ou payer sans le pouvoir).
+  const deciding = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.awaitingDecision && (c.ability.decider ?? c.controllerId) === botId);
+  if (deciding) {
+    const trigger = stackTrigger(g.cardData[deciding.cardId], deciding.ability!);
+    const sacrifice = trigger?.effects.effects.some((e) => e.type === "sacrifice");
+    const x = trigger?.payMana && /\{X\}/i.test(trigger.payMana) ? (deciding.ability!.eventAmount ?? 0) : undefined;
+    const yes: GameAction = { type: "decideOptional", cardId: deciding.instanceId, accept: true, ...(x !== undefined ? { x } : {}) };
+    if (!sacrifice && applyAction(g, { actorId: botId, action: yes }).ok) return yes;
+    return { type: "decideOptional", cardId: deciding.instanceId, accept: false };
+  }
+
+  // La fenêtre de choix : la première carte proposée.
+  const picking = g.stack.map((id) => g.cards[id]!).find((c) => c.cardChoice && (c.cardChoice.playerId ?? c.controllerId) === botId);
+  if (picking) {
+    const choice = picking.cardChoice!;
+    // Une carte par joueur (The Eternal Wanderer) : la première de chacun.
+    const ids = choice.perPlayer
+      ? choice.options.filter((id, i) => choice.options.findIndex((o) => g.cards[o]!.controllerId === g.cards[id]!.controllerId) === i)
+      : choice.options.slice(0, Math.max(1, choice.min));
+    return { type: "chooseCards", cardId: picking.instanceId, cardIds: ids };
+  }
+
+  // Ses modes : le premier (ou le nombre minimum).
+  const choosing = g.stack.map((id) => g.cards[id]!).find((c) => c.modes && !c.modes.chosen && c.controllerId === botId);
+  if (choosing) {
+    const effects = choosing.ability ? stackTrigger(g.cardData[choosing.cardId], choosing.ability)?.effects : spellEffectsOf(g, choosing);
+    const n = Math.max(1, effects?.modes?.min ?? 1);
+    return { type: "chooseModes", cardId: choosing.instanceId, modes: Array.from({ length: n }, (_, i) => i) };
+  }
+
+  // Son regard : il garde tout au-dessus.
+  const scrying = g.stack.map((id) => g.cards[id]!).find((c) => c.scry && !c.scry.done && c.controllerId === botId);
+  if (scrying) {
+    return { type: "scry", cardId: scrying.instanceId, top: g.players[botId]!.zones.library.slice(0, scrying.scry!.count), bottom: [] };
   }
 
   // Le bot ne répond jamais : il passe la priorité (pile non vide, ou avant
@@ -55,9 +107,14 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
       }
       return { type: "nextStep" };
     case "cleanup": {
-      const excess = me.zones.hand.length - MAX_HAND_SIZE;
+      const excess = handSizeDiscards(g, botId);
       if (excess > 0) {
         // Défausse : d'abord les cartes les plus chères.
+        const worst = [...me.zones.hand].sort((a, b) => manaValue(g, b) - manaValue(g, a)).slice(0, excess);
+        return { type: "discardToHandSize", cardIds: worst };
+      }
+      // Actions du tour manuelles : le bot se défausse quand même.
+      if (me.zones.hand.length > MAX_HAND_SIZE && !hasNoMaxHandSize(g, botId)) {
         const worst = [...me.zones.hand].sort((a, b) => manaValue(g, b) - manaValue(g, a))[0]!;
         return { type: "moveCard", cardId: worst, to: "graveyard" };
       }
@@ -104,6 +161,20 @@ function isPermanentSpell(type: string): boolean {
 function chooseAttacks(g: GameState, botId: PlayerId): { cardId: CardInstanceId; defender: PlayerId }[] {
   const foes = g.turnOrder.filter((id) => !g.players[id]!.hasConceded && !isActivePlayer(g, id));
   if (foes.length === 0) return [];
+  const chosen = chooseFreeAttacks(g, botId, foes);
+  // Les créatures provoquées attaquent forcément, un autre joueur que celui qui les a provoquées si possible.
+  for (const card of attackersOf(g, botId)) {
+    if (!card.goadedBy?.length) continue;
+    const defender = foes.find((f) => !card.goadedBy!.includes(f)) ?? foes[0]!;
+    const existing = chosen.find((a) => a.cardId === card.instanceId);
+    if (existing) {
+      if (card.goadedBy.includes(existing.defender) && !card.goadedBy.includes(defender)) existing.defender = defender;
+    } else chosen.push({ cardId: card.instanceId, defender });
+  }
+  return chosen;
+}
+
+function chooseFreeAttacks(g: GameState, botId: PlayerId, foes: PlayerId[]): { cardId: CardInstanceId; defender: PlayerId }[] {
   const defender = [...foes].sort((a, b) => g.players[a]!.life - g.players[b]!.life)[0]!;
   const blockers = untappedCreatures(g, defender);
   const ready = attackersOf(g, botId);
@@ -112,8 +183,7 @@ function chooseAttacks(g: GameState, botId: PlayerId): { cardId: CardInstanceId;
       const { power, toughness } = creatureStats(g, card);
       if (power <= 0) return false;
       if (blockers.length === 0) return true;
-      const flying = hasKeyword(g, card, "Flying");
-      const able = blockers.filter((b) => !flying || hasKeyword(g, b, "Flying") || hasKeyword(g, b, "Reach"));
+      const able = blockers.filter((b) => canBlockAttacker(g, b, card));
       // Un bloqueur capable de tuer l'attaquant en survivant rend l'attaque risquée.
       return !able.some((b) => {
         const s = creatureStats(g, b);
@@ -127,13 +197,7 @@ function chooseAttacks(g: GameState, botId: PlayerId): { cardId: CardInstanceId;
 function attackersOf(g: GameState, botId: PlayerId): CardInstance[] {
   return g.players[botId]!.zones.battlefield
     .map((id) => g.cards[id]!)
-    .filter(
-      (c) =>
-        isCreature(g, c) &&
-        !c.tapped &&
-        (!c.summoningSick || hasKeyword(g, c, "Haste")) &&
-        !hasKeyword(g, c, "Defender"),
-    );
+    .filter((c) => canAttack(g, c));
 }
 
 function untappedCreatures(g: GameState, playerId: PlayerId): CardInstance[] {
@@ -174,10 +238,9 @@ function chooseBlocks(g: GameState, botId: PlayerId): { cardId: CardInstanceId; 
     .filter(([id, defender]) => g.cards[id]?.zone === "battlefield" && defendingSide(g, defender).includes(botId))
     .map(([id]) => g.cards[id]!)
     .sort((a, b) => creatureStats(g, b).power - creatureStats(g, a).power);
-  const available = untappedCreatures(g, botId);
+  const available = untappedCreatures(g, botId).filter((c) => !cantBlock(g, c));
   const blocks: { cardId: CardInstanceId; attackerId: CardInstanceId }[] = [];
-  const canBlock = (blocker: CardInstance, attacker: CardInstance) =>
-    !hasKeyword(g, attacker, "Flying") || hasKeyword(g, blocker, "Flying") || hasKeyword(g, blocker, "Reach");
+  const canBlock = (blocker: CardInstance, attacker: CardInstance) => canBlockAttacker(g, blocker, attacker);
   const take = (blocker: CardInstance, attacker: CardInstance) => {
     blocks.push({ cardId: blocker.instanceId, attackerId: attacker.instanceId });
     available.splice(available.indexOf(blocker), 1);

@@ -3,15 +3,19 @@ import { join } from "node:path";
 import { app, BrowserWindow, ipcMain, shell } from "electron";
 import {
   archidektDeckId,
+  CentralClient,
+  CentralError,
   fetchArchidektDeck,
   parseDeckList,
   resolveDeck,
   ScryfallClient,
   validateCommanderDeck,
+  type CentralConnection,
   type LocalizedCard,
+  type ShareDeckInput,
 } from "@magic-trims/core";
 import { loadSnapshot, startHostServer, type HostServer } from "@magic-trims/host";
-import type { CardToLocalize, DeckImportResult, HostInfo } from "../shared/api.js";
+import type { CardToLocalize, CentralResult, DeckImportResult, HostInfo } from "../shared/api.js";
 import { FileCache, FileCardCache } from "./scryfall-cache.js";
 
 const userData = app.getPath("userData");
@@ -115,6 +119,35 @@ ipcMain.handle(
     }
     return result;
   },
+);
+
+/**
+ * Serveur central facultatif. Les erreurs (serveur injoignable, code faux…)
+ * reviennent comme valeur, pour que l'interface affiche un message clair ;
+ * rien d'autre dans l'appli n'en dépend.
+ */
+async function central<T>(run: () => Promise<T>): Promise<CentralResult<T>> {
+  try {
+    return { ok: true, value: await run() };
+  } catch (err) {
+    if (err instanceof CentralError) return { ok: false, error: err.message, status: err.status };
+    return { ok: false, error: err instanceof Error ? err.message : String(err), status: 0 };
+  }
+}
+const centralClient = (conn: CentralConnection) => new CentralClient({ url: conn.url, token: conn.token });
+
+ipcMain.handle("central:join", (_e, url: string, code: string, name: string) =>
+  central(async () => {
+    const client = new CentralClient({ url });
+    return { ...(await client.join(code, name)), url: client.url };
+  }),
+);
+ipcMain.handle("central:listDecks", (_e, conn: CentralConnection) => central(() => centralClient(conn).listDecks()));
+ipcMain.handle("central:shareDeck", (_e, conn: CentralConnection, deck: ShareDeckInput) =>
+  central(() => centralClient(conn).shareDeck(deck)),
+);
+ipcMain.handle("central:unshareDeck", (_e, conn: CentralConnection, id: string) =>
+  central(() => centralClient(conn).unshareDeck(id)),
 );
 
 app.whenReady().then(() => {

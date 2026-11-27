@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { applyAction } from "../src/reducer.js";
+import { applyAction, handSizeDiscards } from "../src/reducer.js";
+import { viewFor } from "../src/view.js";
 import type { GameAction } from "../src/actions.js";
 import { createGame, upgradeGame } from "../src/setup.js";
 import type { GameModeType, GameState } from "../src/types.js";
@@ -59,8 +60,8 @@ describe("Tours et phases", () => {
 
   it("saute plusieurs étapes en faisant les actions obligatoires", () => {
     let g = newTestGame();
-    g = act(g, "p1", { type: "nextStep", to: "declareAttackers" });
-    expect(g.turn.step).toBe("declareAttackers");
+    g = act(g, "p1", { type: "nextStep", to: "beginCombat" });
+    expect(g.turn.step).toBe("beginCombat");
     expect(g.players.p1!.zones.hand).toHaveLength(8);
     expect(refuse(g, "p1", { type: "nextStep", to: "main1" })).toMatch(/arrière/);
     expect(refuse(g, "p2", { type: "nextStep" })).toMatch(/pas ton tour/);
@@ -78,12 +79,43 @@ describe("Tours et phases", () => {
     expect(g.cards[mine]!.tapped).toBe(true);
   });
 
-  it("passe au joueur suivant après le nettoyage, et rappelle la taille maximale de main", () => {
+  it("passe au joueur suivant après le nettoyage, et fait d'abord défausser jusqu'à 7 cartes", () => {
     let g = newTestGame();
     g = act(g, "p1", { type: "nextStep", to: "cleanup" });
     expect(g.log.map((l) => l.message).join("\n")).toMatch(/Alice a 8 cartes en main et doit en défausser 1/);
-    g = act(g, "p1", { type: "nextStep" });
+    expect(handSizeDiscards(g, "p1")).toBe(1);
+    expect(viewFor(g, "p1").players.p1!.handSizeDiscards).toBe(1);
+    expect(refuse(g, "p1", { type: "nextStep" })).toMatch(/Alice doit d'abord défausser jusqu'à 7 cartes/);
+    expect(refuse(g, "p1", { type: "passTurn" })).toMatch(/défausser/);
+    const hand = g.players.p1!.zones.hand;
+    expect(refuse(g, "p1", { type: "discardToHandSize", cardIds: [] })).toMatch(/exactement 1 carte/);
+    expect(refuse(g, "p1", { type: "discardToHandSize", cardIds: [g.players.p2!.zones.hand[0]!] })).toMatch(/ta main/);
+    expect(refuse(g, "p2", { type: "discardToHandSize", cardIds: [g.players.p2!.zones.hand[0]!] })).toMatch(/pas de cartes à défausser/);
+    g = act(g, "p1", { type: "discardToHandSize", cardIds: [hand[3]!] });
+    expect(g.players.p1!.zones.graveyard).toEqual([hand[3]]);
+    expect(g.players.p1!.zones.hand).toHaveLength(7);
+    // Une fois à 7 cartes, le tour passe tout seul.
     expect(g.turn).toMatchObject({ number: 2, activePlayerId: "p2", step: "upkeep" });
+  });
+
+  it("passer son tour avec trop de cartes s'arrête au nettoyage", () => {
+    let g = newTestGame();
+    g = act(g, "p1", { type: "passTurn" });
+    expect(g.turn).toMatchObject({ number: 1, activePlayerId: "p1", step: "cleanup" });
+    // Défausser à la main (glisser au cimetière) compte aussi.
+    g = act(g, "p1", { type: "moveCard", cardId: g.players.p1!.zones.hand[0]!, to: "graveyard" });
+    expect(handSizeDiscards(g, "p1")).toBe(0);
+    g = act(g, "p1", { type: "passTurn" });
+    expect(g.turn).toMatchObject({ number: 2, activePlayerId: "p2" });
+  });
+
+  it("n'impose rien sans actions du tour automatiques", () => {
+    let g = newTestGame();
+    g = act(g, "p1", { type: "nextStep", to: "main1" });
+    g = { ...g, settings: { ...g.settings, autoTurnActions: false } };
+    g = act(g, "p1", { type: "moveTopOfLibrary", count: 3, to: "hand" });
+    g = act(g, "p1", { type: "passTurn" });
+    expect(g.turn).toMatchObject({ number: 2, activePlayerId: "p2" });
   });
 
   it("en Géant à deux têtes, l'équipe qui commence ne pioche pas et les coéquipiers piochent ensemble ensuite", () => {

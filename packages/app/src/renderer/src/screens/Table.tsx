@@ -5,7 +5,20 @@ import {
   MANA_TYPES,
   RESPONSE_STEPS,
   STEP_LABELS,
+  abilitiesOf,
+  isLegalTarget,
+  modesMax,
+  parseSpellEffects,
+  stackTrigger,
+  flattenModes,
+  creatureStats,
+  hasKeyword,
+  stateFromView,
+  permanentLabel,
+  permanentMatches,
   priorityStopsOf,
+  spellMatches,
+  type TargetSpec,
   TURN_PHASES,
   starEnemies,
   type CardData,
@@ -21,14 +34,14 @@ import { Card, DRAG_TYPE } from "../components/Card";
 import { Chat } from "../components/Chat";
 import { Modal } from "../components/Modal";
 import { Overlays } from "../components/Overlays";
-import { cardData, cardImage, cardManaOptions, cardName, cardText, isLand, manaSymbolUrl } from "../cards";
+import { battlefieldRow, cardData, cardImage, cardManaOptions, cardName, cardText, manaSymbolUrl } from "../cards";
 import { CardLanguageSelect } from "../components/CardLanguage";
 import { SoundSettings } from "../components/SoundSettings";
 import { prioritySound } from "../sound";
 import { CardZoom } from "../components/CardZoom";
 import { cardMenu, libraryMenu, manaItems, playItems } from "../menus";
 import { session, useSession } from "../session";
-import { ui, useUi } from "../ui-store";
+import { ui, useUi, type Targeting } from "../ui-store";
 
 const act = session.act.bind(session);
 
@@ -315,6 +328,437 @@ function tapOrProduce(e: React.MouseEvent, view: GameView, card: CardView) {
 }
 
 /** Double-clic dans la main (ou sur son commandant) : jouer le terrain ou lancer le sort. */
+/** La carte peut-elle être choisie comme cible ? (le moteur revérifie au lancement) */
+function canTargetCard(view: GameView, spec: TargetSpec, card: CardView, sourceId: string): boolean {
+  const id = card.instanceId;
+  if (!id || id === sourceId) return false;
+  const data = card.hidden ? undefined : cardData(view, card);
+  const typeLine =
+    card.hidden || card.faceDown ? "Creature" : (data?.faces?.[(card as VisibleCardView).faceIndex]?.typeLine ?? data?.typeLine ?? "");
+  if (card.zone === "battlefield") {
+    if (!spec.permanent) return false;
+    const g = stateFromView(view);
+    const instance = g.cards[id];
+    const has = (k: "Shroud" | "Hexproof") => (instance ? hasKeyword(g, instance, k) : (data?.keywords ?? []).includes(k));
+    if (!spec.choice && has("Shroud")) return false;
+    if (!spec.choice && has("Hexproof") && !sameSide(view, card.controllerId, view.viewerId)) return false;
+    return permanentMatches(
+      {
+        ...(instance && spec.permanent.maxTotalPT !== undefined ? creatureStats(g, instance) : {}),
+        typeLine,
+        colors: card.hidden || card.faceDown ? [] : (data?.colors ?? []),
+        controllerId: card.controllerId,
+        tapped: card.tapped,
+        attacking: Boolean(view.combat?.attackers[id]),
+        blocking: Boolean(view.combat?.blockers[id]),
+      },
+      spec.permanent,
+      view.viewerId,
+    );
+  }
+  if (card.zone === "stack") return Boolean(spec.spell) && spellMatches(typeLine, spec.spell!);
+  if (card.zone === "hand") return Boolean(spec.hand) && card.ownerId === view.viewerId;
+  if (card.zone === "graveyard") return Boolean(spec.graveyard) && isLegalTarget(stateFromView(view), spec, { kind: "card", id }, view.viewerId, sourceId);
+  return false;
+}
+
+/** Toutes les cartes visibles de la partie, par identifiant (pour la fenêtre de choix). */
+function visibleCards(view: GameView): Map<string, VisibleCardView> {
+  const out = new Map<string, VisibleCardView>();
+  const add = (c: CardView) => {
+    if (!c.hidden && c.instanceId) out.set(c.instanceId, c);
+  };
+  for (const p of Object.values(view.players)) for (const zone of Object.values(p.zones)) zone.forEach(add);
+  view.stack.forEach(add);
+  return out;
+}
+
+/**
+ * Fenêtre de choix commune : des cartes cachées ou hors de la table
+ * (bibliothèque, main révélée, cimetière) ; on clique pour choisir, puis on valide.
+ */
+function CardPicker(props: {
+  view: GameView;
+  title: string;
+  hint: string;
+  options: VisibleCardView[];
+  min: number;
+  max: number;
+  onConfirm: (ids: string[]) => void;
+  onCancel?: () => void;
+}) {
+  const { view, options, min, max } = props;
+  const [picked, setPicked] = useState<string[]>([]);
+  const key = options.map((c) => c.instanceId).join(",");
+  useEffect(() => setPicked([]), [key]);
+  const toggle = (id: string) =>
+    setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : max === 1 ? [id] : p.length < max ? [...p, id] : p));
+  const ok = picked.length >= min && picked.length <= max;
+  return (
+    <Modal title={props.title} onClose={props.onCancel ?? (() => {})} wide>
+      <p className="hint">{props.hint}</p>
+      <div className="zone-grid">
+        {options.map((c) => (
+          <Card key={c.instanceId} view={view} card={c} size="medium" selected={picked.includes(c.instanceId)} onSelect={() => toggle(c.instanceId)} />
+        ))}
+      </div>
+      <div className="row">
+        <button className="primary" disabled={!ok} onClick={() => props.onConfirm(picked)}>
+          {picked.length === 0 && min === 0 ? "Ne rien prendre" : "Valider"}
+        </button>
+        {props.onCancel && <button onClick={props.onCancel}>Annuler</button>}
+      </div>
+    </Modal>
+  );
+}
+
+/** Un sort ou une capacité attend que je choisisse des cartes (recherche, main révélée). */
+function CardChoicePanel(props: { view: GameView }) {
+  const { view } = props;
+  const waiting = view.stack.find((c): c is VisibleCardView => !c.hidden && Boolean(c.cardChoice));
+  if (!waiting) return null;
+  const choice = waiting.cardChoice!;
+  const name = waiting.ability?.sourceName ?? cardName(view, waiting);
+  const chooser = choice.playerId ?? waiting.controllerId;
+  if (chooser !== view.viewerId) {
+    return (
+      <div className="targeting-banner" role="status">
+        <span>
+          {view.players[chooser]?.name} choisit une carte pour <strong>{name}</strong>.
+        </span>
+      </div>
+    );
+  }
+  const cards = visibleCards(view);
+  const options = choice.options.map((id) => cards.get(id)).filter((c): c is VisibleCardView => Boolean(c));
+  return (
+    <CardPicker
+      view={view}
+      title={name}
+      hint={`${choice.label}.`}
+      options={options}
+      min={choice.min}
+      max={choice.max}
+      onConfirm={(ids) => void act({ type: "chooseCards", cardId: waiting.instanceId!, cardIds: ids })}
+    />
+  );
+}
+
+/** Pendant le choix des cibles, une cible dans un cimetière se choisit dans la fenêtre de choix. */
+function GraveyardTargetPicker(props: { view: GameView }) {
+  const { view } = props;
+  const { targeting } = useUi();
+  const spec = targeting?.specs[targeting.chosen.length];
+  if (!targeting || !spec?.graveyard) return null;
+  const options = [...visibleCards(view).values()].filter((c) => c.zone === "graveyard" && canTargetCard(view, spec, c, targeting.sourceId));
+  return (
+    <CardPicker
+      view={view}
+      title={targeting.sourceName}
+      hint={options.length > 0 ? `Choisis une cible : ${spec.label}.` : `Aucune ${spec.label} : impossible de cibler.`}
+      options={options}
+      min={1}
+      max={1}
+      onConfirm={(ids) => ui.pickTarget({ kind: "card", id: ids[0]! })}
+      onCancel={() => ui.cancelTargeting()}
+    />
+  );
+}
+
+/** Pendant le choix des cibles : les cartes qu'on peut cibler deviennent cliquables. */
+function targetProps(view: GameView, targeting: Targeting, card: CardView): Partial<Parameters<typeof Card>[0]> {
+  const id = card.instanceId;
+  const spec = targeting.specs[targeting.chosen.length];
+  const selected = targeting.chosen.some((t) => t.kind === "card" && t.id === id);
+  if (!id || !spec || !canTargetCard(view, spec, card, targeting.sourceId)) return { selected };
+  return { selected, onSelect: () => ui.pickTarget({ kind: "card", id }) };
+}
+
+/**
+ * Une de mes capacités déclenchées attend ses cibles : on ouvre le choix des
+ * cibles tout seul (Annuler le rouvre au prochain changement de la partie).
+ */
+function useTriggerTargets(view: GameView): { waitingName: string | null; reopen: () => void } {
+  const waiting = view.stack.find(
+    (c): c is VisibleCardView => !c.hidden && Boolean(c.ability?.needsTargets) && c.controllerId === view.viewerId,
+  );
+  const asking = useRef<string | null>(null);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (!waiting?.instanceId || asking.current === waiting.instanceId) return;
+    const ability = waiting.ability!;
+    const triggerEffects = stackTrigger(view.cardData[waiting.cardId], ability)?.effects;
+    // Modes ciblés (Titan of Industry) : les cibles des modes choisis s'ajoutent.
+    const specs = triggerEffects ? flattenModes(triggerEffects, waiting.modes?.chosen).targets : [];
+    if (specs.length === 0) return;
+    asking.current = waiting.instanceId;
+    const id = waiting.instanceId;
+    void ui.chooseTargets(`Capacité de ${ability.sourceName}`, id, specs).then((targets) => {
+      if (targets) void act({ type: "chooseTargets", cardId: id, targets });
+    });
+  }, [waiting?.instanceId, retry]);
+  return {
+    waitingName: waiting?.ability?.sourceName ?? null,
+    reopen: () => {
+      asking.current = null;
+      setRetry((n) => n + 1);
+    },
+  };
+}
+
+/**
+ * Une de mes capacités facultatives (« you may ») attend ma réponse : Oui ou
+ * Non (avec le choix de la créature à sacrifier pour l'exploitation).
+ */
+function DecisionBanner(props: { view: GameView }) {
+  const { view } = props;
+  const deciderOf = (c: VisibleCardView) => c.ability?.decider ?? c.controllerId;
+  const waiting = view.stack.find(
+    (c): c is VisibleCardView => !c.hidden && Boolean(c.ability?.awaitingDecision) && deciderOf(c as VisibleCardView) === view.viewerId,
+  );
+  const others = view.stack.find(
+    (c): c is VisibleCardView => !c.hidden && Boolean(c.ability?.awaitingDecision) && deciderOf(c as VisibleCardView) !== view.viewerId,
+  );
+  if (!waiting) {
+    if (!others) return null;
+    return (
+      <div className="targeting-banner" role="status">
+        <span>
+          {view.players[deciderOf(others)]?.name} décide pour la capacité de <strong>{others.ability!.sourceName}</strong>.
+        </span>
+      </div>
+    );
+  }
+  const ability = waiting.ability!;
+  const trigger = stackTrigger(view.cardData[waiting.cardId], ability);
+  const sacrifice = trigger?.effects.effects.find((e) => e.type === "sacrifice");
+  const id = waiting.instanceId!;
+  // « … unless that player pays » : on demande d'abord au payeur.
+  const unless = trigger?.unless && ability.unlessPaid === undefined ? trigger.unless : undefined;
+  const accept = async () => {
+    if (unless?.discard) {
+      const chosen = await ui.chooseTargets(ability.sourceName, id, [{ label: "carte de ta main à défausser", hand: true, choice: true }]);
+      if (!chosen) return;
+      return void act({ type: "decideOptional", cardId: id, accept: true, choice: chosen[0]!.id });
+    }
+    if (unless) return void act({ type: "decideOptional", cardId: id, accept: true });
+    if (sacrifice && sacrifice.type === "sacrifice") {
+      const chosen = await ui.chooseTargets(ability.sourceName, id, [
+        { label: `${permanentLabel(sacrifice.filter)} à sacrifier`, permanent: sacrifice.filter, choice: true },
+      ]);
+      if (!chosen) return;
+      return void act({ type: "decideOptional", cardId: id, accept: true, choice: chosen[0]!.id });
+    }
+    // « You may pay {X} » (Well of Lost Dreams) : X au plus égal à la quantité de l'événement.
+    if (trigger?.payMana && /\{X\}/i.test(trigger.payMana)) {
+      const max = ability.eventAmount ?? 0;
+      const value = await ui.ask(`Valeur de X (0 à ${max})`, String(max), "number");
+      if (value === null) return;
+      return void act({ type: "decideOptional", cardId: id, accept: true, x: Math.max(0, Math.min(max, Math.floor(Number(value) || 0))) });
+    }
+    void act({ type: "decideOptional", cardId: id, accept: true });
+  };
+  return (
+    <div className="targeting-banner" role="status">
+      <span>
+        <strong>{ability.sourceName}</strong> :{" "}
+        {unless
+          ? `« ${ability.text} » : payer ${[unless.mana ? `${unless.mana}${unless.xPower ? ` (X = force de ${ability.sourceName})` : ""}` : "", unless.life ? `${unless.life} PV` : "", unless.discard ? "une carte défaussée" : ""].filter(Boolean).join(", ")}${unless.perAge ? " par marqueur d'âge" : ""} pour l'empêcher ?`
+          : ability.text === "Exploit" ? "exploitation, sacrifier une créature ?" : `« ${ability.text} »${trigger?.payMana ? ` (payer ${trigger.payMana})` : ""}${trigger?.payLife ? ` (payer ${trigger.payLife} PV)` : ""}. Tu le fais ?`}
+      </span>
+      <span className="decision-buttons">
+        <button onClick={() => void accept()}>Oui</button>
+        <button onClick={() => void act({ type: "decideOptional", cardId: id, accept: false })}>Non</button>
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Regard (« Scry 2 ») : je range les cartes du dessus de ma bibliothèque,
+ * au-dessus (dans l'ordre choisi) ou au-dessous ; les autres voient que j'y réfléchis.
+ */
+function ScryPanel(props: { view: GameView }) {
+  const { view } = props;
+  const scrying = view.stack.find((c): c is VisibleCardView => !c.hidden && Boolean(c.scry && !c.scry.done));
+  const mine = scrying?.controllerId === view.viewerId;
+  const looked = mine ? view.players[view.viewerId]!.zones.library.slice(0, scrying!.scry!.count) : [];
+  const ids = looked.map((c) => c.instanceId ?? "").join(",");
+  const [top, setTop] = useState<string[]>([]);
+  const [bottom, setBottom] = useState<string[]>([]);
+  useEffect(() => {
+    setTop(ids ? ids.split(",") : []);
+    setBottom([]);
+  }, [ids]);
+  if (!scrying) return null;
+  const name = cardName(view, scrying);
+  if (!mine) {
+    return (
+      <div className="targeting-banner" role="status">
+        <span>
+          {view.players[scrying.controllerId]?.name} range les cartes de son regard (<strong>{name}</strong>).
+        </span>
+      </div>
+    );
+  }
+  const byId = new Map(looked.map((c) => [c.instanceId ?? "", c]));
+  const move = (id: string, to: "top" | "bottom") => {
+    setTop((t) => (to === "top" ? [...t.filter((x) => x !== id), id] : t.filter((x) => x !== id)));
+    setBottom((b) => (to === "bottom" ? [...b.filter((x) => x !== id), id] : b.filter((x) => x !== id)));
+  };
+  const shift = (list: string[], set: (l: string[]) => void, i: number, d: number) => {
+    const j = i + d;
+    if (j < 0 || j >= list.length) return;
+    const next = [...list];
+    [next[i], next[j]] = [next[j]!, next[i]!];
+    set(next);
+  };
+  const row = (list: string[], set: (l: string[]) => void, where: "top" | "bottom") =>
+    list.map((id, i) => {
+      const card = byId.get(id);
+      if (!card) return null;
+      return (
+        <div key={id} className="scry-card">
+          <Card view={view} card={card} size="medium" />
+          <div className="scry-buttons">
+            <button onClick={() => shift(list, set, i, -1)} disabled={i === 0} aria-label="Plus haut">
+              ◀
+            </button>
+            <button onClick={() => move(id, where === "top" ? "bottom" : "top")}>{where === "top" ? "Dessous" : "Dessus"}</button>
+            <button onClick={() => shift(list, set, i, 1)} disabled={i === list.length - 1} aria-label="Plus bas">
+              ▶
+            </button>
+          </div>
+        </div>
+      );
+    });
+  return (
+    <Modal title={`Regard ${scrying.scry!.count} (${name})`} onClose={() => {}} wide>
+      <p className="hint">Range chaque carte au-dessus ou au-dessous de ta bibliothèque. À gauche, la carte la plus haute.</p>
+      <h3>Au-dessus</h3>
+      <div className="zone-grid">{top.length > 0 ? row(top, setTop, "top") : <p className="hint">Aucune carte.</p>}</div>
+      <h3>Au-dessous</h3>
+      <div className="zone-grid">{bottom.length > 0 ? row(bottom, setBottom, "bottom") : <p className="hint">Aucune carte.</p>}</div>
+      <div className="row">
+        <button className="primary" onClick={() => void act({ type: "scry", cardId: scrying.instanceId!, top, bottom })}>
+          Valider
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Un sort ou une capacité modale attend mes modes : une case à cocher par mode. */
+function ModesPanel(props: { view: GameView }) {
+  const { view } = props;
+  const choosing = view.stack.find((c): c is VisibleCardView => !c.hidden && Boolean(c.modes && !c.modes.chosen));
+  const [picked, setPicked] = useState<number[]>([]);
+  const key = choosing?.instanceId ?? "";
+  useEffect(() => setPicked([]), [key]);
+  if (!choosing) return null;
+  const name = cardName(view, choosing);
+  if (choosing.controllerId !== view.viewerId) {
+    return (
+      <div className="targeting-banner" role="status">
+        <span>
+          {view.players[choosing.controllerId]?.name} choisit les modes de <strong>{name}</strong>.
+        </span>
+      </div>
+    );
+  }
+  const data = view.cardData[choosing.cardId];
+  const ability = choosing.ability;
+  const effects = ability
+    ? stackTrigger(data, ability)?.effects
+    : data
+      ? parseSpellEffects(data.faces?.[choosing.faceIndex]?.oracleText ?? data.oracleText, data.faces?.[choosing.faceIndex]?.name ?? data.name)
+      : undefined;
+  const spec = effects?.modes;
+  if (!spec) return null;
+  // Akroma's Will : les deux modes si je contrôle un commandant.
+  const max = modesMax(spec, view.players[view.viewerId]?.zones.battlefield.some((c) => !c.hidden && c.isCommander) ?? false);
+  const min = Math.max(1, spec.min);
+  const ok = picked.length >= min && picked.length <= max;
+  const toggle = (i: number) => setPicked((p) => (p.includes(i) ? p.filter((x) => x !== i) : max === 1 ? [i] : p.length < max ? [...p, i] : p));
+  return (
+    <Modal title={`Modes de ${ability?.sourceName ?? name}`} onClose={() => {}}>
+      <p className="hint">{min === max ? `Choisis ${min} mode${min > 1 ? "s" : ""}.` : `Choisis de ${min} à ${max} modes.`}</p>
+      <div className="modes-list">
+        {spec.list.map((mode, i) => (
+          <label key={i} className="mode-option">
+            <input type={max === 1 ? "radio" : "checkbox"} checked={picked.includes(i)} onChange={() => toggle(i)} />
+            <span>{mode.label}</span>
+          </label>
+        ))}
+      </div>
+      <div className="row">
+        <button className="primary" disabled={!ok} onClick={() => void act({ type: "chooseModes", cardId: choosing.instanceId!, modes: picked })}>
+          Valider
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Les modes d'un sort qu'on lance, avant ses cibles (Ashling's Command). */
+function ModesPrompt() {
+  const { modes } = useUi();
+  const [picked, setPicked] = useState<number[]>([]);
+  useEffect(() => setPicked([]), [modes]);
+  if (!modes) return null;
+  const min = Math.max(1, modes.min);
+  const ok = picked.length >= min && picked.length <= modes.max;
+  const toggle = (i: number) =>
+    setPicked((p) => (p.includes(i) ? p.filter((x) => x !== i) : modes.max === 1 ? [i] : p.length < modes.max ? [...p, i] : p));
+  return (
+    <Modal title={modes.title} onClose={() => ui.closeModes(null)}>
+      <p className="hint">{min === modes.max ? `Choisis ${min} mode${min > 1 ? "s" : ""}.` : `Choisis de ${min} à ${modes.max} modes.`}</p>
+      <div className="modes-list">
+        {modes.labels.map((label, i) => (
+          <label key={i} className="mode-option">
+            <input type={modes.max === 1 ? "radio" : "checkbox"} checked={picked.includes(i)} onChange={() => toggle(i)} />
+            <span>{label}</span>
+          </label>
+        ))}
+      </div>
+      <div className="row">
+        <button onClick={() => ui.closeModes(null)}>Annuler</button>
+        <button className="primary" disabled={!ok} onClick={() => ui.closeModes([...picked].sort((a, b) => a - b))}>
+          Valider
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Bandeau du choix des cibles, avec Annuler (ou Échap). */
+function TargetingBanner() {
+  const { targeting } = useUi();
+  useEffect(() => {
+    if (!targeting) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") ui.cancelTargeting();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [targeting]);
+  if (!targeting) return null;
+  const index = targeting.chosen.length;
+  const spec = targeting.specs[index]!;
+  const where = spec.player ? (spec.permanent ? "une carte ou sur « Cibler » à côté d'un joueur" : "« Cibler » à côté d'un joueur") : spec.spell ? "un sort de la pile" : "une carte";
+  return (
+    <div className="targeting-banner" role="status">
+      <span>
+        <strong>{targeting.sourceName}</strong> : choisis{" "}
+        {spec.choice ? `un(e) ${spec.label}` : spec.label === "n'importe quelle cible" ? "n'importe quelle cible" : `une cible (${spec.label})`}
+        {targeting.specs.length > 1 ? `, cible ${index + 1} sur ${targeting.specs.length}` : ""}. Clique sur {where}.
+      </span>
+      {targeting.specs.slice(index).every((s) => s.upTo) && <button onClick={() => ui.skipTargets()}>Sans cible</button>}
+      <button onClick={() => ui.cancelTargeting()}>Annuler</button>
+    </div>
+  );
+}
+
 function playCard(e: React.MouseEvent, view: GameView, card: CardView) {
   if (card.ownerId !== view.viewerId) return;
   const items = playItems(view, card);
@@ -366,16 +810,36 @@ export function Table() {
   const combatUi = useCombatUi(view, isActive);
   const winners = view.outcome.winners;
   usePrioritySound(view);
+  const { targeting } = useUi();
+  const trigger = useTriggerTargets(view);
 
   return (
-    <div className="table">
+    <div className={`table ${targeting ? "targeting" : ""}`}>
       <div className="table-main">
-        <div className={`opponents opponents-${others.length}`}>
-          {others.map((id) => (
-            <PlayerArea key={id} view={view} playerId={id} compact onOpenZone={setZoneViewer} combat={combatUi} />
-          ))}
+        <TargetingBanner />
+        {!targeting && <DecisionBanner view={view} />}
+        <ScryPanel view={view} />
+        <CardChoicePanel view={view} />
+        <GraveyardTargetPicker view={view} />
+        <ModesPanel view={view} />
+        <ModesPrompt />
+        {trigger.waitingName && !targeting && (
+          <div className="targeting-banner" role="status">
+            <span>
+              La capacité de <strong>{trigger.waitingName}</strong> attend ses cibles : la partie ne peut pas continuer avant.
+            </span>
+            <button onClick={trigger.reopen}>Choisir les cibles</button>
+          </div>
+        )}
+        <div className="board">
+          <div className={`opponents opponents-${others.length}`}>
+            {others.map((id) => (
+              <PlayerArea key={id} view={view} playerId={id} compact onOpenZone={setZoneViewer} combat={combatUi} />
+            ))}
+          </div>
+          <PlayerArea view={view} playerId={me} onOpenZone={setZoneViewer} combat={combatUi} />
+          <CenterStack view={view} />
         </div>
-        <PlayerArea view={view} playerId={me} onOpenZone={setZoneViewer} combat={combatUi} />
         <Hand view={view} />
         <CombatPanel view={view} isActive={isActive} combat={combatUi} />
         <PhaseBar view={view} isActive={isActive} />
@@ -425,11 +889,14 @@ function PlayerArea(props: {
   const priority = hasPriority(view, playerId);
   const eliminated = view.outcome.eliminated[playerId];
   const size = props.compact ? "tiny" : "small";
+  const { targeting } = useUi();
+  const playerTarget = targeting?.specs[targeting.chosen.length]?.player && !p.hasConceded;
 
   const battlefield = p.zones.battlefield.filter((c) => !c.attachedTo);
   const attachmentsOf = (id: string | null) => (id ? p.zones.battlefield.filter((c) => c.attachedTo === id) : []);
-  const lands = battlefield.filter((c) => isLand(view, c));
-  const others = battlefield.filter((c) => !isLand(view, c));
+  const creatures = battlefield.filter((c) => battlefieldRow(view, c) === "creatures");
+  const others = battlefield.filter((c) => battlefieldRow(view, c) === "others");
+  const lands = battlefield.filter((c) => battlefieldRow(view, c) === "lands");
 
   const renderCard = (c: CardView) => (
     <Card
@@ -441,7 +908,7 @@ function PlayerArea(props: {
       attachments={attachmentsOf(c.instanceId)}
       onMenu={(e) => openCardMenu(e, view, c)}
       onDoubleClick={(e) => c.instanceId && tapOrProduce(e, view, c)}
-      {...props.combat.cardProps(c)}
+      {...(targeting ? targetProps(view, targeting, c) : props.combat.cardProps(c))}
     />
   );
 
@@ -451,6 +918,11 @@ function PlayerArea(props: {
     >
       <header className="player-header">
         <strong className="player-name">{p.name}</strong>
+        {playerTarget && (
+          <button className="primary small" onClick={() => ui.pickTarget({ kind: "player", id: playerId })}>
+            Cibler
+          </button>
+        )}
         {active && <span className="badge badge-turn">son tour · {STEP_LABELS[view.turn.step]}</span>}
         {priority && <span className="badge badge-priority">priorité</span>}
         <PlayerTags view={view} playerId={playerId} />
@@ -466,6 +938,13 @@ function PlayerArea(props: {
           value={p.poison}
           onChange={(delta) => void act({ type: "adjustPoison", playerId, delta })}
         />
+        {!isMe && (
+          <span className="hand-count" title={`${p.zones.hand.length} carte(s) en main`}>
+            <span className="hand-count-icon" aria-hidden="true" />
+            {p.zones.hand.length}
+            <small>en main</small>
+          </span>
+        )}
         <ManaPoolView view={view} playerId={playerId} />
         {Object.entries(p.counters).map(([kind, n]) => (
           <Stepper
@@ -514,7 +993,6 @@ function PlayerArea(props: {
               Cartes connues
             </button>
           )}
-          {!isMe && <span className="pile-label">Main {p.zones.hand.length}</span>}
           <Pile
             view={view}
             cards={p.zones.graveyard}
@@ -544,8 +1022,15 @@ function PlayerArea(props: {
         </div>
 
         <div className={`battlefield ${battlefieldDrop.className}`} {...battlefieldDrop.handlers}>
-          <div className="battlefield-row">{others.map(renderCard)}</div>
-          <div className="battlefield-row lands">{lands.map(renderCard)}</div>
+          <div className="battlefield-row creatures" title="Créatures">
+            {creatures.map(renderCard)}
+          </div>
+          <div className="battlefield-row others" title="Artefacts, enchantements, planeswalkers…">
+            {others.map(renderCard)}
+          </div>
+          <div className="battlefield-row lands" title="Terrains">
+            {lands.map(renderCard)}
+          </div>
           {battlefield.length === 0 && <span className="zone-label">Champ de bataille</span>}
         </div>
       </div>
@@ -588,6 +1073,7 @@ function ManaPoolView(props: { view: GameView; playerId: PlayerId }) {
   const { view, playerId } = props;
   const pool = view.players[playerId]!.manaPool;
   if (!pool) return null;
+  const reserved = view.players[playerId]!.restrictedMana ?? [];
   const isMe = playerId === view.viewerId;
   const shown = MANA_TYPES.filter((m) => isMe || pool[m] > 0);
   if (shown.length === 0) return null;
@@ -609,6 +1095,11 @@ function ManaPoolView(props: { view: GameView; playerId: PlayerId }) {
           {pool[m] > 0 && <span className="mana-count">{pool[m]}</span>}
         </button>
       ))}
+      {reserved.length > 0 && (
+        <span className="mana-reserved" title="Mana réservé à certains sorts">
+          {reserved.map((r) => `{${r.mana}}`).join("")} ({[...new Set(reserved.map((r) => r.subtype))].join(", ")})
+        </span>
+      )}
     </span>
   );
 }
@@ -701,22 +1192,26 @@ function Pile(props: {
 function Hand(props: { view: GameView }) {
   const { view } = props;
   const me = view.players[view.viewerId]!;
+  const { targeting } = useUi();
   const drop = useDrop({ zone: "hand", playerId: view.viewerId }, view);
   // Après un mulligan : choisir les cartes à mettre au-dessous de la bibliothèque.
+  // Au nettoyage : choisir les cartes à défausser pour revenir à 7 en main.
   const toBottom = me.mulliganBottom ?? 0;
+  const toDiscard = toBottom > 0 ? 0 : (me.handSizeDiscards ?? 0);
+  const toChoose = toBottom || toDiscard;
   const [chosen, setChosen] = useState<string[]>([]);
-  useEffect(() => setChosen([]), [toBottom, me.mulligans]);
+  useEffect(() => setChosen([]), [toBottom, toDiscard, me.mulligans, view.turn.number]);
   const toggle = (id: string) =>
     setChosen((list) =>
-      list.includes(id) ? list.filter((x) => x !== id) : list.length < toBottom ? [...list, id] : list,
+      list.includes(id) ? list.filter((x) => x !== id) : list.length < toChoose ? [...list, id] : list,
     );
+  const cardsWord = toChoose > 1 ? `les ${toChoose} cartes` : "la carte";
   return (
     <div className={`hand ${drop.className}`} {...drop.handlers}>
       {toBottom > 0 ? (
         <div className="mulligan-bar">
           <span>
-            Mulligan : clique sur {toBottom > 1 ? `les ${toBottom} cartes` : "la carte"} à mettre au-dessous de ta
-            bibliothèque ({chosen.length}/{toBottom}).
+            Mulligan : clique sur {cardsWord} à mettre au-dessous de ta bibliothèque ({chosen.length}/{toBottom}).
           </span>
           <button
             className="primary"
@@ -724,6 +1219,20 @@ function Hand(props: { view: GameView }) {
             onClick={() => void act({ type: "bottomMulligan", cardIds: chosen })}
           >
             Garder cette main
+          </button>
+        </div>
+      ) : toDiscard > 0 ? (
+        <div className="mulligan-bar">
+          <span>
+            Fin du tour : tu as plus de 7 cartes en main. Clique sur {cardsWord} à défausser ({chosen.length}/
+            {toDiscard}).
+          </span>
+          <button
+            className="primary"
+            disabled={chosen.length !== toDiscard}
+            onClick={() => void act({ type: "discardToHandSize", cardIds: chosen })}
+          >
+            Défausser
           </button>
         </div>
       ) : (
@@ -738,9 +1247,11 @@ function Hand(props: { view: GameView }) {
             size="medium"
             draggable={toBottom === 0}
             onMenu={(e) => openCardMenu(e, view, c)}
-            {...(toBottom > 0 && c.instanceId
+            {...(toChoose > 0 && c.instanceId
               ? { selected: chosen.includes(c.instanceId), onSelect: () => toggle(c.instanceId!) }
-              : { onDoubleClick: (e: React.MouseEvent) => playCard(e, view, c) })}
+              : targeting
+                ? targetProps(view, targeting, c)
+                : { onDoubleClick: (e: React.MouseEvent) => playCard(e, view, c) })}
           />
         ))}
       </div>
@@ -964,6 +1475,7 @@ function Preview(props: { view: GameView }) {
 function SharedZones(props: { view: GameView }) {
   const { view } = props;
   const stackDrop = useDrop({ zone: "stack", playerId: view.viewerId }, view);
+  const { targeting } = useUi();
   return (
     <div className="shared-zones">
       {view.plane.length > 0 && (
@@ -979,17 +1491,64 @@ function SharedZones(props: { view: GameView }) {
           Pile {view.stack.length > 0 ? `(${view.stack.length})` : ""}
           {view.priority && ` · priorité : ${view.players[view.priority.playerId]!.name}`}
         </span>
-        <div className="stack-cards">
-          {[...view.stack].reverse().map((c) => (
-            <Card
-              key={c.instanceId}
-              view={view}
-              card={c}
-              size="tiny"
-              draggable
-              onMenu={(e) => openCardMenu(e, view, c)}
-            />
+        {view.stack.length === 0 && <div className="hint stack-hint">Les sorts lancés s'affichent au centre de la table.</div>}
+      </div>
+    </div>
+  );
+}
+
+/** Écart entre deux objets de la pile, réduit quand la pile grandit pour qu'elle reste à l'écran. */
+function stackOffset(count: number): number {
+  return count <= 6 ? 26 : Math.max(10, Math.floor(156 / (count - 1)));
+}
+
+/**
+ * La pile, au centre de la table : chaque sort lancé ou capacité activée y arrive par-dessus
+ * le précédent (le dernier, en haut de la pile, est au premier plan), jusqu'à sa résolution.
+ */
+function CenterStack(props: { view: GameView }) {
+  const { view } = props;
+  const { targeting } = useUi();
+  const stackDrop = useDrop({ zone: "stack", playerId: view.viewerId }, view);
+  if (view.stack.length === 0) return null;
+  const offset = stackOffset(view.stack.length);
+  const top = view.stack.at(-1)!;
+  const topController = top.controllerId ? view.players[top.controllerId]?.name : undefined;
+  const topLabel = top.hidden ? "" : top.ability ? `Capacité de ${cardName(view, top)}` : cardName(view, top);
+  // Pendant un ciblage qui ne vise pas un sort, la pile s'efface pour laisser cliquer les cartes dessous.
+  const spec = targeting?.specs[targeting.chosen.length];
+  const passive = Boolean(targeting && !spec?.spell);
+  return (
+    <div className={`center-stack ${passive ? "passive" : ""}`} aria-label="Pile">
+      <div className={`center-stack-box ${stackDrop.className}`} {...stackDrop.handlers}>
+        <div className="center-stack-title">
+          Pile ({view.stack.length})
+          {view.priority && <> · priorité : {view.players[view.priority.playerId]!.name}</>}
+        </div>
+        <div
+          className="center-stack-cards"
+          style={{ width: 118 + offset * (view.stack.length - 1), height: 165 + offset * (view.stack.length - 1) }}
+        >
+          {view.stack.map((c, i) => (
+            <div
+              key={c.instanceId ?? i}
+              className={`center-stack-item ${c.controllerId === view.viewerId ? "from-me" : "from-other"}`}
+              style={{ left: i * offset, top: i * offset, zIndex: i + 1 }}
+            >
+              <Card
+                view={view}
+                card={c}
+                size="medium"
+                draggable
+                onMenu={(e) => openCardMenu(e, view, c)}
+                {...(targeting ? targetProps(view, targeting, c) : {})}
+              />
+            </div>
           ))}
+        </div>
+        <div className="center-stack-caption">
+          {topLabel}
+          {topController && <span className="center-stack-who"> · {topController}</span>}
         </div>
       </div>
     </div>

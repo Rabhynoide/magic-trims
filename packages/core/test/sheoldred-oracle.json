@@ -1,0 +1,449 @@
+[
+ {
+  "name": "Sheoldred, the Apocalypse",
+  "typeLine": "Legendary Creature — Phyrexian Praetor",
+  "oracleText": "Deathtouch\nWhenever you draw a card, you gain 2 life.\nWhenever an opponent draws a card, they lose 2 life.",
+  "manaCost": "{2}{B}{B}",
+  "power": "4",
+  "toughness": "5"
+ },
+ {
+  "name": "Banehound",
+  "typeLine": "Creature — Nightmare Dog",
+  "oracleText": "Lifelink, haste",
+  "manaCost": "{B}",
+  "power": "1",
+  "toughness": "1"
+ },
+ {
+  "name": "Blood Celebrant",
+  "typeLine": "Creature — Human Cleric",
+  "oracleText": "{B}, Pay 1 life: Add one mana of any color.",
+  "manaCost": "{B}",
+  "power": "1",
+  "toughness": "1"
+ },
+ {
+  "name": "Blood Artist",
+  "typeLine": "Creature — Vampire",
+  "oracleText": "Whenever this creature or another creature dies, target player loses 1 life and you gain 1 life.",
+  "manaCost": "{1}{B}",
+  "power": "0",
+  "toughness": "1"
+ },
+ {
+  "name": "Clattering Augur",
+  "typeLine": "Creature — Skeleton Shaman",
+  "oracleText": "This creature can't block.\nWhen this creature enters, you draw a card and you lose 1 life.\n{2}{B}{B}: Return this card from your graveyard to your hand.",
+  "manaCost": "{1}{B}",
+  "power": "1",
+  "toughness": "1"
+ },
+ {
+  "name": "Creeping Bloodsucker",
+  "typeLine": "Creature — Vampire",
+  "oracleText": "At the beginning of your upkeep, this creature deals 1 damage to each opponent. You gain life equal to the damage dealt this way.",
+  "manaCost": "{1}{B}",
+  "power": "1",
+  "toughness": "2"
+ },
+ {
+  "name": "Knight of Dusk's Shadow",
+  "typeLine": "Creature — Human Knight",
+  "oracleText": "Menace (This creature can't be blocked except by two or more creatures.)\nYour opponents can't gain life.\n{1}{B}: This creature gets +1/+1 until end of turn.",
+  "manaCost": "{1}{B}",
+  "power": "2",
+  "toughness": "2"
+ },
+ {
+  "name": "Bloodthirsty Aerialist",
+  "typeLine": "Creature — Vampire Rogue",
+  "oracleText": "Flying\nWhenever you gain life, put a +1/+1 counter on this creature.",
+  "manaCost": "{1}{B}{B}",
+  "power": "2",
+  "toughness": "3"
+ },
+ {
+  "name": "Fell Stinger",
+  "typeLine": "Creature — Zombie Scorpion",
+  "oracleText": "Deathtouch\nExploit (When this creature enters, you may sacrifice a creature.)\nWhen this creature exploits a creature, target player draws two cards and loses 2 life.",
+  "manaCost": "{2}{B}",
+  "power": "3",
+  "toughness": "2"
+ },
+ {
+  "name": "Gix, Yawgmoth Praetor",
+  "typeLine": "Legendary Creature — Phyrexian Praetor",
+  "oracleText": "Whenever a creature deals combat damage to one of your opponents, its controller may pay 1 life. If they do, they draw a card.\n{4}{B}{B}{B}, Discard X cards: Exile the top X cards of target opponent's library. You may play lands and cast spells from among cards exiled this way without paying their mana costs.",
+  "manaCost": "{1}{B}{B}",
+  "power": "3",
+  "toughness": "3"
+ },
+ {
+  "name": "Howling Golem",
+  "typeLine": "Artifact Creature — Golem",
+  "oracleText": "Whenever this creature attacks or blocks, each player draws a card.",
+  "manaCost": "{3}",
+  "power": "2",
+  "toughness": "3"
+ },
+ {
+  "name": "Marauding Blight-Priest",
+  "typeLine": "Creature — Vampire Cleric",
+  "oracleText": "Whenever you gain life, each opponent loses 1 life.",
+  "manaCost": "{2}{B}",
+  "power": "3",
+  "toughness": "2"
+ },
+ {
+  "name": "Master of the Feast",
+  "typeLine": "Enchantment Creature — Demon",
+  "oracleText": "Flying\nAt the beginning of your upkeep, each opponent draws a card.",
+  "manaCost": "{1}{B}{B}",
+  "power": "5",
+  "toughness": "5"
+ },
+ {
+  "name": "Morbid Opportunist",
+  "typeLine": "Creature — Human Rogue",
+  "oracleText": "Whenever one or more other creatures die, draw a card. This ability triggers only once each turn.",
+  "manaCost": "{2}{B}",
+  "power": "1",
+  "toughness": "3"
+ },
+ {
+  "name": "Vito, Thorn of the Dusk Rose",
+  "typeLine": "Legendary Creature — Vampire Cleric",
+  "oracleText": "Whenever you gain life, target opponent loses that much life.\n{3}{B}{B}: Creatures you control gain lifelink until end of turn.",
+  "manaCost": "{2}{B}",
+  "power": "1",
+  "toughness": "3"
+ },
+ {
+  "name": "Fate Unraveler",
+  "typeLine": "Enchantment Creature — Hag",
+  "oracleText": "Whenever an opponent draws a card, this creature deals 1 damage to that player.",
+  "manaCost": "{3}{B}",
+  "power": "3",
+  "toughness": "4"
+ },
+ {
+  "name": "Gixian Puppeteer",
+  "typeLine": "Creature — Phyrexian Warlock",
+  "oracleText": "Whenever you draw your second card each turn, each opponent loses 2 life and you gain 2 life.\nWhen this creature dies, return another target creature card with mana value 3 or less from your graveyard to the battlefield.",
+  "manaCost": "{3}{B}",
+  "power": "4",
+  "toughness": "3"
+ },
+ {
+  "name": "Epicure of Blood",
+  "typeLine": "Creature — Vampire",
+  "oracleText": "Whenever you gain life, each opponent loses 1 life.",
+  "manaCost": "{4}{B}",
+  "power": "4",
+  "toughness": "4"
+ },
+ {
+  "name": "Gray Merchant of Asphodel",
+  "typeLine": "Creature — Zombie",
+  "oracleText": "When this creature enters, each opponent loses X life, where X is your devotion to black. You gain life equal to the life lost this way. (Each {B} in the mana costs of permanents you control counts toward your devotion to black.)",
+  "manaCost": "{3}{B}{B}",
+  "power": "2",
+  "toughness": "4"
+ },
+ {
+  "name": "Psychosis Crawler",
+  "typeLine": "Artifact Creature — Phyrexian Horror",
+  "oracleText": "Psychosis Crawler's power and toughness are each equal to the number of cards in your hand.\nWhenever you draw a card, each opponent loses 1 life.",
+  "manaCost": "{5}",
+  "power": "*",
+  "toughness": "*"
+ },
+ {
+  "name": "Seizan, Perverter of Truth",
+  "typeLine": "Legendary Creature — Demon Spirit",
+  "oracleText": "At the beginning of each player's upkeep, that player loses 2 life and draws two cards.",
+  "manaCost": "{3}{B}{B}",
+  "power": "6",
+  "toughness": "5"
+ },
+ {
+  "name": "Cut Down",
+  "typeLine": "Instant",
+  "oracleText": "Destroy target creature with total power and toughness 5 or less.",
+  "manaCost": "{B}"
+ },
+ {
+  "name": "Dark Ritual",
+  "typeLine": "Instant",
+  "oracleText": "Add {B}{B}{B}.",
+  "manaCost": "{B}"
+ },
+ {
+  "name": "Malakir Rebirth // Malakir Mire",
+  "typeLine": "Instant // Land",
+  "oracleText": "Choose target creature. You lose 2 life. Until end of turn, that creature gains \"When this creature dies, return it to the battlefield tapped under its owner's control.\"\n//\nThis land enters tapped.\n{T}: Add {B}.",
+  "manaCost": "{B}",
+  "faces": [
+   {
+    "name": "Malakir Rebirth",
+    "typeLine": "Instant",
+    "oracleText": "Choose target creature. You lose 2 life. Until end of turn, that creature gains \"When this creature dies, return it to the battlefield tapped under its owner's control.\"",
+    "manaCost": "{B}"
+   },
+   {
+    "name": "Malakir Mire",
+    "typeLine": "Land",
+    "oracleText": "This land enters tapped.\n{T}: Add {B}.",
+    "manaCost": ""
+   }
+  ]
+ },
+ {
+  "name": "Village Rites",
+  "typeLine": "Instant",
+  "oracleText": "As an additional cost to cast this spell, sacrifice a creature.\nDraw two cards.",
+  "manaCost": "{B}"
+ },
+ {
+  "name": "Go for the Throat",
+  "typeLine": "Instant",
+  "oracleText": "Destroy target nonartifact creature.",
+  "manaCost": "{1}{B}"
+ },
+ {
+  "name": "Merciless Resolve",
+  "typeLine": "Instant",
+  "oracleText": "As an additional cost to cast this spell, sacrifice a creature or land.\nDraw two cards.",
+  "manaCost": "{2}{B}"
+ },
+ {
+  "name": "Baleful Mastery",
+  "typeLine": "Instant",
+  "oracleText": "You may pay {1}{B} rather than pay this spell's mana cost.\nIf the {1}{B} cost was paid, an opponent draws a card.\nExile target creature or planeswalker.",
+  "manaCost": "{3}{B}"
+ },
+ {
+  "name": "Feed the Serpent",
+  "typeLine": "Instant",
+  "oracleText": "Exile target creature or planeswalker.",
+  "manaCost": "{2}{B}{B}"
+ },
+ {
+  "name": "Bubbling Muck",
+  "typeLine": "Sorcery",
+  "oracleText": "Until end of turn, whenever a player taps a Swamp for mana, that player adds an additional {B}.",
+  "manaCost": "{B}"
+ },
+ {
+  "name": "Damnable Pact",
+  "typeLine": "Sorcery",
+  "oracleText": "Target player draws X cards and loses X life.",
+  "manaCost": "{X}{B}{B}"
+ },
+ {
+  "name": "Feed the Swarm",
+  "typeLine": "Sorcery",
+  "oracleText": "Destroy target creature or enchantment an opponent controls. You lose life equal to that permanent's mana value.",
+  "manaCost": "{1}{B}"
+ },
+ {
+  "name": "Night's Whisper",
+  "typeLine": "Sorcery",
+  "oracleText": "You draw two cards and lose 2 life.",
+  "manaCost": "{1}{B}"
+ },
+ {
+  "name": "Sign in Blood",
+  "typeLine": "Sorcery",
+  "oracleText": "Target player draws two cards and loses 2 life.",
+  "manaCost": "{B}{B}"
+ },
+ {
+  "name": "Skulltap",
+  "typeLine": "Sorcery",
+  "oracleText": "As an additional cost to cast this spell, sacrifice a creature.\nDraw two cards.",
+  "manaCost": "{1}{B}"
+ },
+ {
+  "name": "Painful Lesson",
+  "typeLine": "Sorcery",
+  "oracleText": "Target player draws two cards and loses 2 life.",
+  "manaCost": "{2}{B}"
+ },
+ {
+  "name": "Read the Bones",
+  "typeLine": "Sorcery",
+  "oracleText": "Scry 2, then draw two cards. You lose 2 life. (To scry 2, look at the top two cards of your library, then put any number of them on the bottom and the rest on top in any order.)",
+  "manaCost": "{2}{B}"
+ },
+ {
+  "name": "Ambition's Cost",
+  "typeLine": "Sorcery",
+  "oracleText": "You draw three cards and lose 3 life.",
+  "manaCost": "{3}{B}"
+ },
+ {
+  "name": "Ancient Craving",
+  "typeLine": "Sorcery",
+  "oracleText": "You draw three cards and you lose 3 life.",
+  "manaCost": "{3}{B}"
+ },
+ {
+  "name": "Peer into the Abyss",
+  "typeLine": "Sorcery",
+  "oracleText": "Target player draws cards equal to half the number of cards in their library and loses half their life. Round up each time.",
+  "manaCost": "{4}{B}{B}{B}"
+ },
+ {
+  "name": "Expedition Map",
+  "typeLine": "Artifact",
+  "oracleText": "{2}, {T}, Sacrifice this artifact: Search your library for a land card, reveal it, put it into your hand, then shuffle.",
+  "manaCost": "{1}"
+ },
+ {
+  "name": "Sol Ring",
+  "typeLine": "Artifact",
+  "oracleText": "{T}: Add {C}{C}.",
+  "manaCost": "{1}"
+ },
+ {
+  "name": "Howling Mine",
+  "typeLine": "Artifact",
+  "oracleText": "At the beginning of each player's draw step, if this artifact is untapped, that player draws an additional card.",
+  "manaCost": "{2}"
+ },
+ {
+  "name": "Jet Medallion",
+  "typeLine": "Artifact",
+  "oracleText": "Black spells you cast cost {1} less to cast.",
+  "manaCost": "{2}"
+ },
+ {
+  "name": "Lightning Greaves",
+  "typeLine": "Artifact — Equipment",
+  "oracleText": "Equipped creature has haste and shroud. (It can't be the target of spells or abilities.)\nEquip {0}",
+  "manaCost": "{2}"
+ },
+ {
+  "name": "Thought Vessel",
+  "typeLine": "Artifact",
+  "oracleText": "You have no maximum hand size.\n{T}: Add {C}.",
+  "manaCost": "{2}"
+ },
+ {
+  "name": "Bontu's Monument",
+  "typeLine": "Legendary Artifact",
+  "oracleText": "Black creature spells you cast cost {1} less to cast.\nWhenever you cast a creature spell, each opponent loses 1 life and you gain 1 life.",
+  "manaCost": "{3}"
+ },
+ {
+  "name": "Darksteel Plate",
+  "typeLine": "Artifact — Equipment",
+  "oracleText": "Indestructible\nEquipped creature has indestructible.\nEquip {2}",
+  "manaCost": "{3}"
+ },
+ {
+  "name": "Decanter of Endless Water",
+  "typeLine": "Artifact",
+  "oracleText": "You have no maximum hand size.\n{T}: Add one mana of any color.",
+  "manaCost": "{3}"
+ },
+ {
+  "name": "Horn of Greed",
+  "typeLine": "Artifact",
+  "oracleText": "Whenever a player plays a land, that player draws a card.",
+  "manaCost": "{3}"
+ },
+ {
+  "name": "Temple Bell",
+  "typeLine": "Artifact",
+  "oracleText": "{T}: Each player draws a card.",
+  "manaCost": "{3}"
+ },
+ {
+  "name": "Font of Mythos",
+  "typeLine": "Artifact",
+  "oracleText": "At the beginning of each player's draw step, that player draws two additional cards.",
+  "manaCost": "{4}"
+ },
+ {
+  "name": "Teferi's Puzzle Box",
+  "typeLine": "Artifact",
+  "oracleText": "At the beginning of each player's draw step, that player puts the cards in their hand on the bottom of their library in any order, then draws that many cards.",
+  "manaCost": "{4}"
+ },
+ {
+  "name": "Well of Lost Dreams",
+  "typeLine": "Artifact",
+  "oracleText": "Whenever you gain life, you may pay {X}, where X is less than or equal to the amount of life you gained. If you do, draw X cards.",
+  "manaCost": "{4}"
+ },
+ {
+  "name": "Venser's Journal",
+  "typeLine": "Artifact — Book",
+  "oracleText": "You have no maximum hand size.\nAt the beginning of your upkeep, you gain 1 life for each card in your hand.",
+  "manaCost": "{5}"
+ },
+ {
+  "name": "Kaya's Ghostform",
+  "typeLine": "Enchantment — Aura",
+  "oracleText": "Enchant creature or planeswalker you control\nWhen enchanted permanent dies or is put into exile, return that card to the battlefield under your control.",
+  "manaCost": "{B}"
+ },
+ {
+  "name": "Black Market Connections",
+  "typeLine": "Enchantment",
+  "oracleText": "At the beginning of your first main phase, choose one or more —\n• Sell Contraband — Create a Treasure token. You lose 1 life.\n• Buy Information — Draw a card. You lose 2 life.\n• Hire a Mercenary — Create a 3/2 colorless Shapeshifter creature token with changeling. You lose 3 life. (It is every creature type.)",
+  "manaCost": "{2}{B}"
+ },
+ {
+  "name": "Phyrexian Arena",
+  "typeLine": "Enchantment",
+  "oracleText": "At the beginning of your upkeep, you draw a card and lose 1 life.",
+  "manaCost": "{1}{B}{B}"
+ },
+ {
+  "name": "Underworld Dreams",
+  "typeLine": "Enchantment",
+  "oracleText": "Whenever an opponent draws a card, this enchantment deals 1 damage to that player.",
+  "manaCost": "{B}{B}{B}"
+ },
+ {
+  "name": "Exquisite Blood",
+  "typeLine": "Enchantment",
+  "oracleText": "Whenever an opponent loses life, you gain that much life.",
+  "manaCost": "{4}{B}"
+ },
+ {
+  "name": "Sanguine Bond",
+  "typeLine": "Enchantment",
+  "oracleText": "Whenever you gain life, target opponent loses that much life.",
+  "manaCost": "{3}{B}{B}"
+ },
+ {
+  "name": "The Cruelty of Gix",
+  "typeLine": "Enchantment — Saga",
+  "oracleText": "Read ahead (Choose a chapter and start with that many lore counters. Add one after your draw step. Skipped chapters don't trigger. Sacrifice after III.)\nI — Target opponent reveals their hand. You choose a creature or planeswalker card from it. That player discards that card.\nII — Search your library for a card, put that card into your hand, then shuffle. You lose 3 life.\nIII — Put target creature card from a graveyard onto the battlefield under your control.",
+  "manaCost": "{3}{B}{B}"
+ },
+ {
+  "name": "Wound Reflection",
+  "typeLine": "Enchantment",
+  "oracleText": "At the beginning of each end step, each opponent loses life equal to the life they lost this turn. (Damage causes loss of life.)",
+  "manaCost": "{5}{B}"
+ },
+ {
+  "name": "Ob Nixilis, the Hate-Twisted",
+  "typeLine": "Legendary Planeswalker — Nixilis",
+  "oracleText": "Whenever an opponent draws a card, Ob Nixilis deals 1 damage to that player.\n−2: Destroy target creature. Its controller draws two cards.",
+  "manaCost": "{3}{B}{B}",
+  "loyalty": "5"
+ },
+ {
+  "name": "Reliquary Tower",
+  "typeLine": "Land",
+  "oracleText": "You have no maximum hand size.\n{T}: Add {C}.",
+  "manaCost": ""
+ }
+]

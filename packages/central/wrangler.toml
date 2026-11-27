@@ -1,0 +1,14 @@
+# Serveur central Magic Trims sur Cloudflare Workers (offre gratuite).
+# Déploiement : npm run central:deploy (voir docs/serveur-central.md).
+name = "magic-trims-central"
+main = "src/worker.ts"
+compatibility_date = "2025-10-01"
+
+[[durable_objects.bindings]]
+name = "CENTRAL"
+class_name = "CentralObject"
+
+# Durable Object avec stockage SQLite (seul type disponible sur l'offre gratuite).
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CentralObject"]

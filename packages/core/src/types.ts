@@ -6,7 +6,9 @@
  */
 
 import type { CombatState } from "./combat.js";
-import type { ManaPool } from "./mana.js";
+import type { Target } from "./effects.js";
+import type { TriggerEvent } from "./triggers.js";
+import type { ManaPool, ManaType } from "./mana.js";
 import type { TurnStep } from "./turn.js";
 
 /** Données d'une carte, issues de Scryfall (sous-ensemble utile au jeu). */
@@ -42,6 +44,19 @@ export interface CardData {
    * jamais envoyée par l'hôte). Les champs anglais restent la référence.
    */
   localized?: LocalizedCard;
+}
+
+/** Ce qu'on retient d'un sort lancé, pour les déclencheurs « Whenever you cast a … spell ». */
+export interface CastRecord {
+  /** L'objet sur la pile. */
+  cardId: CardInstanceId;
+  typeLine: string;
+  /** Couleurs du sort (de la face lancée). */
+  colors: string[];
+  manaValue: number;
+  fromHand: boolean;
+  /** « with {X} in its mana cost ». */
+  hasX: boolean;
 }
 
 export interface CardFace {
@@ -154,6 +169,10 @@ export interface CardInstance {
   isCommander: boolean;
   /** Carte à laquelle celle-ci est attachée (aura, équipement). */
   attachedTo?: CardInstanceId;
+  /** Aura qui enchante un joueur (Paradox Haze). */
+  attachedPlayer?: PlayerId;
+  /** Carte d'origine quand une aura la transforme (Darksteel Mutation, Witness Protection). */
+  originalCardId?: string;
   /** Joueurs qui ont vu cette carte alors qu'elle était cachée (révélée). */
   revealedTo: PlayerId[];
   /** Arrivée (ou changée de contrôleur) depuis le début du dernier tour de son contrôleur : mal d'invocation. */
@@ -166,6 +185,109 @@ export interface CardInstance {
   hasLoyalty?: boolean;
   /** Bonus de force et d'endurance jusqu'à la fin du tour (+3/+3 d'une Croissance gigantesque…). */
   ptBoost?: { power: number; toughness: number };
+  /** Mots-clés gagnés jusqu'à la fin du tour (en minuscules : « lifelink »…). */
+  grants?: string[];
+  /** Mots-clés gagnés « until your next turn » : ils durent jusqu'au début du prochain tour de `playerId`. */
+  grantsUntil?: { playerId: PlayerId; keywords: string[] }[];
+  /** Capacités activées « une fois par tour » déjà utilisées (loyauté comprise) : le tour et leurs index. */
+  usedAbilities?: { turn: number; indices: number[] };
+  /** Capacités déclenchées données jusqu'à la fin du tour (texte « When ~ dies, … »). */
+  grantedTriggers?: string[];
+  /** Choix de cartes en attente à la résolution (recherche, main révélée) : effet n° `index`. */
+  /** `perPlayer` : une carte au plus par joueur (contrôleur) — The Eternal Wanderer. */
+  cardChoice?: { index: number; options: CardInstanceId[]; min: number; max: number; label: string; playerId?: PlayerId; perPlayer?: boolean };
+  /** Cartes choisies pour chaque effet (par son index). */
+  choices?: Record<number, CardInstanceId[]>;
+  /** Sort ou capacité modale sur la pile : les modes choisis (absents tant que le contrôleur n'a pas choisi). */
+  modes?: { chosen?: number[] };
+  /** Saga avec lecture anticipée : le chapitre de départ choisi en la lançant. */
+  chapter?: number;
+  /** Sort lancé pour son coût alternatif (Baleful Mastery). */
+  alternative?: boolean;
+  /** Lancé depuis la main (Approach of the Second Sun). */
+  castFromHand?: boolean;
+  /**
+   * Peut être lancée depuis l'exil (rebond, cascade) : sans payer son coût si `free`,
+   * pendant ce tour (et cette étape si `step`), ou tant que le sort `whileOnStack` est sur la pile.
+   */
+  castPermission?: {
+    free: boolean;
+    turn: number;
+    step?: TurnStep;
+    ignoreTiming?: boolean;
+    whileOnStack?: CardInstanceId;
+    reason: string;
+    /** Présage : à lancer pour ce coût à un tour ultérieur à `turn` (sans limite de durée). */
+    foretell?: string;
+  };
+  /** Lancé depuis l'exil après avoir été présagé (« If this spell was foretold »). */
+  foretold?: boolean;
+  /** Provoquée par ces joueurs (jusqu'à leur prochain tour) : doit attaquer, et un autre joueur si possible. */
+  goadedBy?: PlayerId[];
+  /** Cavalier of Gales : la pioche qui précède le choix des cartes à remettre est faite. */
+  drewFirst?: boolean;
+  /** Rebond : exilée en se résolvant, lançable gratuitement à l'entretien suivant de ce joueur. */
+  rebound?: PlayerId;
+  /** Lancé pour son coût d'évocation : sacrifié en arrivant. */
+  evoked?: boolean;
+  /** Type choisi en arrivant (« As ~ enters, choose a creature type »). */
+  chosenType?: string;
+  /** Sort ou capacité sur la pile qui commence par un regard : `done` une fois les cartes rangées. */
+  scry?: { count: number; done?: boolean };
+  /**
+   * Sort lancé par le moteur (et non posé à la main sur la pile) : ses cibles,
+   * dans l'ordre des cibles du texte. Ses effets s'appliquent à la résolution.
+   */
+  targets?: Target[];
+  /** Valeur de X choisie au lancement. */
+  xValue?: number;
+  /**
+   * Capacité déclenchée sur la pile (et non une carte) : elle montre l'image
+   * de sa source et disparaît quand elle se résout ou quitte la pile.
+   */
+  ability?: StackAbility;
+}
+
+export interface StackAbility {
+  sourceId: CardInstanceId;
+  sourceName: string;
+  /** Texte de la capacité. */
+  text: string;
+  /** Index de la capacité parmi celles de la source (pour retrouver ses effets). */
+  index: number;
+  /** Face de la source (pour retrouver ses effets). */
+  faceIndex: number;
+  /** Joueur et quantité de l'événement (« that player », « that much »). */
+  eventPlayerId?: PlayerId;
+  /** Carte de l'événement (« return that card »), et la zone où elle est allée. */
+  eventCardId?: CardInstanceId;
+  /** Données de la carte de l'événement (Ashling copie l'Élémental sacrifié). */
+  eventDataId?: string;
+  eventFaceIndex?: number;
+  eventZone?: Zone;
+  /** Capacité donnée à la source (« that creature gains "When this creature dies, …" ») : son texte. */
+  grantedText?: string;
+  eventAmount?: number;
+  /** Le contrôleur doit encore choisir les cibles. */
+  needsTargets?: boolean;
+  /** Capacité activée (et non déclenchée) : `index` désigne alors une capacité activée de la source. */
+  activated?: boolean;
+  /** Capacité facultative (« you may ») : le contrôleur doit dire oui ou non avant qu'elle se résolve. */
+  awaitingDecision?: boolean;
+  /** Qui doit répondre, si ce n'est pas le contrôleur (« unless that player pays {1} »). */
+  decider?: PlayerId;
+  /** Le payeur a payé pour empêcher l'effet (`false` : il a refusé). */
+  unlessPaid?: boolean;
+  /** Entretien cumulatif : le marqueur d'âge est posé. */
+  aged?: boolean;
+  /** Réponse du contrôleur à une capacité facultative. */
+  accepted?: boolean;
+  /** Permanent choisi à la résolution (le sacrifice d'Exploit…). */
+  choice?: CardInstanceId;
+  /** « One or more creatures … deal combat damage » : les créatures de l'événement groupé. */
+  batch?: CardInstanceId[];
+  /** Couleur choisie pour « Add one mana of any color ». */
+  color?: ManaType;
 }
 
 export interface PlayerState {
@@ -191,10 +313,22 @@ export interface PlayerState {
    * après ses mulligans (règle 103.5) : la partie n'avance pas avant.
    */
   mulliganBottom: number;
+  /** Points de vie perdus ce tour (Wound Reflection). */
+  lifeLost?: { turn: number; amount: number };
+  /** Cartes piochées ce tour (Gixian Puppeteer). */
+  drawsThisTurn?: { turn: number; count: number };
+  /** Sorts lancés ce tour (Moderation…). */
+  spellsCast?: { turn: number; count: number };
+  /** Sorts lancés ce tour, dans l'ordre (« your first noncreature spell each turn », Esper Sentinel). */
+  castHistory?: { turn: number; spells: CastRecord[] };
+  /** Noms des sorts lancés pendant la partie (Approach of the Second Sun). */
+  castNames?: string[];
   /** Terrains joués ce tour (un seul par tour, règle 305.2). */
   landsPlayed: number;
   /** Réserve de mana ; elle se vide à la fin de chaque étape (règle 500.4). */
   manaPool: ManaPool;
+  /** Mana qui ne sert qu'à certains sorts (Primal Beyond : les Élémentaux) ; vidé avec la réserve. */
+  restrictedMana?: { mana: ManaType; subtype: string; abilities: boolean }[];
   /** Arrêts pour répondre pendant le tour des autres (toutes les étapes clés par défaut). */
   priorityStops?: PriorityStops;
   hasConceded: boolean;
@@ -229,8 +363,8 @@ export interface GameSettings {
   planechase: boolean;
   /**
    * Le moteur fait les actions obligatoires du tour : dégager les permanents
-   * au début du tour, piocher à l'étape de pioche, rappeler la taille maximale
-   * de main au nettoyage.
+   * au début du tour, piocher à l'étape de pioche, faire défausser jusqu'à la
+   * taille maximale de main au nettoyage.
    */
   autoTurnActions: boolean;
   /**
@@ -275,6 +409,12 @@ export interface GameState {
   cards: Record<CardInstanceId, CardInstance>;
   /** Données Scryfall des cartes présentes, indexées par `CardData.id`. */
   cardData: Record<string, CardData>;
+  /** Mana en plus quand on engage un terrain de ce type, jusqu'à la fin du tour (Bubbling Muck). */
+  manaBonuses?: { turn: number; subtype: string; mana: ManaType }[];
+  /** Cartes exilées à rendre au début de la prochaine étape de fin d'un joueur (The Eternal Wanderer). */
+  delayedReturns?: { cardId: CardInstanceId; playerId: PlayerId }[];
+  /** Myriade : les jetons exilés à la fin du combat. */
+  endOfCombatExile?: CardInstanceId[];
   /**
    * Équipes. En chacun pour soi, chaque joueur est seul dans son équipe.
    * L'ordre des joueurs à l'intérieur d'une équipe suit l'ordre du tour.
@@ -288,6 +428,8 @@ export interface GameState {
    * Priorité, tant que la pile n'est pas vide (`null` sinon : le joueur actif
    * avance alors librement dans le tour).
    */
+  /** Événements de l'action en cours, en attente de déclencher des capacités (vidé après chaque action). */
+  events?: TriggerEvent[];
   priority: PriorityState | null;
   /** Combat en cours (de l'étape de début de combat à la fin du combat). */
   combat: CombatState | null;
@@ -301,6 +443,9 @@ export interface GameState {
     step: TurnStep;
     /** Jets de dé planaire déjà faits ce tour (le suivant coûte autant de mana générique). */
     planarDieRolls: number;
+    /** Étapes d'entretien supplémentaires à venir (Paradox Haze), et entretiens déjà commencés ce tour. */
+    extraUpkeeps?: number;
+    upkeeps?: number;
   };
   /** État du générateur aléatoire (mélanges), pour des parties rejouables. */
   rngState: number;

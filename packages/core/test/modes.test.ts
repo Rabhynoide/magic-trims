@@ -5,7 +5,7 @@ import { applyAction } from "../src/reducer.js";
 import { createGame, type NewGameOptions } from "../src/setup.js";
 import type { GameModeType, GameState } from "../src/types.js";
 import { viewFor } from "../src/view.js";
-import { fakeCard, fakeDeck } from "./helpers.js";
+import { fakeCard, fakeDeck, endTurn } from "./helpers.js";
 
 const NAMES = ["Alice", "Bruno", "Chloé", "David", "Emma"];
 
@@ -97,10 +97,10 @@ describe("Géant à deux têtes", () => {
 
   it("fait jouer les coéquipiers ensemble", () => {
     let g = game("twoHeadedGiant", 4);
-    g = act(g, "p2", { type: "passTurn" });
+    g = endTurn(g, "p2");
     expect(g.turn.activePlayerId).toBe("p3");
     expect(refuse(g, "p1", { type: "passTurn" })).toMatch(/pas ton tour/);
-    g = act(g, "p4", { type: "passTurn" });
+    g = endTurn(g, "p4");
     expect(g.turn.activePlayerId).toBe("p1");
     expect(g.log.map((l) => l.message)).toContain("Tour 3 : c'est à Alice et Bruno.");
   });
@@ -156,9 +156,9 @@ describe("Archenemy", () => {
     expect(g.log.at(-1)!.message).toMatch(/met en marche la machination Scheme \d+/);
     expect(refuse(g, "p1", { type: "setSchemeInMotion" })).toMatch(/archenemy/);
 
-    g = act(g, "p3", { type: "passTurn" });
+    g = endTurn(g, "p3");
     expect(g.turn.activePlayerId).toBe("p1");
-    g = act(g, "p4", { type: "passTurn" });
+    g = endTurn(g, "p4");
     expect(g.turn.activePlayerId).toBe("p3");
 
     // La pioche de machinations reste cachée, même pour l'archenemy.
@@ -196,7 +196,7 @@ describe("Planechase", () => {
     }
     expect(results).toEqual(new Set(["planeswalk", "chaos", "rien"]));
     expect(g.log.some((l) => l.message.includes("(coût : {29})"))).toBe(true);
-    g = act(g, "p1", { type: "passTurn" });
+    g = endTurn(g, "p1");
     expect(g.turn.planarDieRolls).toBe(0);
   });
 

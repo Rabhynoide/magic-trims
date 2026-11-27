@@ -45,9 +45,23 @@ const BASIC_LAND_TYPES: Record<string, ManaType> = {
  * [[C], [R], [G]] ; Command Tower → les cinq couleurs.
  */
 export function manaOptions(typeLine: string, oracleText: string): ManaType[][] {
-  const options: ManaType[][] = [];
+  return manaOptionsDetailed(typeLine, oracleText).map((o) => o.mana);
+}
+
+/** Restriction d'un mana : seulement pour les sorts (et capacités) d'un type de créature, ou du type choisi. */
+export interface ManaRestriction {
+  /** Un type de créature, ou « chosen » : le type choisi en arrivant. */
+  subtype: string;
+  /** Aussi pour activer les capacités de ces sources. */
+  abilities: boolean;
+}
+
+/** Les choix de mana d'une carte, avec leur restriction (Primal Beyond, Smokebraider, Secluded Courtyard). */
+export function manaOptionsDetailed(typeLine: string, oracleText: string): { mana: ManaType[]; only?: ManaRestriction }[] {
+  const options: { mana: ManaType[]; only?: ManaRestriction }[] = [];
+  let only: ManaRestriction | undefined;
   const add = (mana: ManaType[]) => {
-    if (mana.length > 0 && !options.some((o) => o.join() === mana.join())) options.push(mana);
+    if (mana.length > 0 && !options.some((o) => o.mana.join() === mana.join() && !!o.only === !!only)) options.push({ mana, ...(only ? { only } : {}) });
   };
 
   // Types de terrain de base : capacité intrinsèque (règle 305.6).
@@ -62,8 +76,21 @@ export function manaOptions(typeLine: string, oracleText: string): ManaType[][] 
     const match = /^\{T\}: Add ([^.]+)\./.exec(line);
     if (!match) continue;
     const effect = match[1]!.trim();
+    only = manaRestriction(line);
+    if (/^two mana in any combination of colors$/i.test(effect)) {
+      const colors = ["W", "U", "B", "R", "G"] as const;
+      colors.forEach((a, i) => colors.slice(i).forEach((b) => add([a, b])));
+      continue;
+    }
     if (/^one mana of any color\b/i.test(effect)) {
       for (const m of ["W", "U", "B", "R", "G"] as const) add([m]);
+      continue;
+    }
+    // « three mana of any one color » (Somberwald Sage) : n fois la même couleur.
+    const same = /^(two|three|four|five) mana of any one color$/i.exec(effect);
+    if (same) {
+      const n = NUMBER_WORDS[same[1]!.toLowerCase()]!;
+      for (const m of ["W", "U", "B", "R", "G"] as const) add(Array<ManaType>(n).fill(m));
       continue;
     }
     // « {R} or {G} », « {W}, {U}, or {B} » : un choix par groupe de symboles.
@@ -73,6 +100,80 @@ export function manaOptions(typeLine: string, oracleText: string): ManaType[][] 
     }
   }
   return options;
+}
+
+const NUMBER_WORDS: Record<string, number> = { two: 2, three: 3, four: 4, five: 5 };
+
+/**
+ * Capacité de mana donnée à d'autres permanents : « Lands you control have
+ * "{T}: Add one mana of any color." » (Chromatic Lantern), « Enchanted land
+ * has "…" » (Abundant Growth), « Creatures you control have "…" ».
+ */
+export interface GrantedManaAbility {
+  /** « enchanted » : le permanent enchanté ; sinon un type de carte (Land, Creature…) parmi les permanents du contrôleur. */
+  to: "enchanted" | "Land" | "Creature" | "Artifact" | "permanent";
+  /** La capacité donnée, telle quelle (« {T}: Add one mana of any color. »). */
+  ability: string;
+}
+
+export function grantedManaAbility(line: string): GrantedManaAbility | null {
+  const m =
+    /^(Lands|Creatures|Artifacts|Permanents) you control have "(\{T\}: Add [^"]+)"\.?$/i.exec(line.trim()) ??
+    /^(Enchanted) (?:land|creature|artifact|permanent) has "(\{T\}: Add [^"]+)"\.?$/i.exec(line.trim());
+  if (!m) return null;
+  const ability = m[2]!;
+  if (manaOptions("", ability).length === 0) return null;
+  const word = m[1]!.toLowerCase();
+  const to = word === "enchanted" ? "enchanted" : word === "permanents" ? "permanent" : ((word.charAt(0).toUpperCase() + word.slice(1, -1)) as "Land" | "Creature" | "Artifact");
+  return { to, ability };
+}
+
+/**
+ * Ce qui se passe quand on engage un permanent pour du mana (capacités de
+ * mana déclenchées et remplacements, règle 605.1b et 106.12) :
+ * - Mirari's Wake, Zendikar Resurgent : « Whenever you tap a land for mana,
+ *   add one mana of any type that land produced. » ;
+ * - Mana Flare, Heartbeat of Spring : « Whenever a player taps a land for
+ *   mana, that player adds one mana of any type that land produced. » ;
+ * - Crypt Ghast : « Whenever you tap a Swamp for mana, add an additional {B}. » ;
+ * - Mana Reflection, Nyxbloom Ancient : « If you tap a permanent for mana, it
+ *   produces twice (three times) as much of that mana instead. »
+ */
+export interface ManaTapEffect {
+  /** « you » : seulement le contrôleur de la carte ; « player » : tout joueur. */
+  who: "you" | "player";
+  /** Ce qui est engagé : un type de carte (Land, Creature), « permanent », ou un sous-type (Swamp). */
+  source: string;
+  /** Mana en plus : un du type produit, un mana donné, ou le total multiplié. */
+  add: { kind: "sameType" } | { kind: "mana"; mana: ManaType } | { kind: "multiply"; factor: number };
+}
+
+export function manaTapEffect(line: string): ManaTapEffect | null {
+  const text = line.trim();
+  const source = (word: string) => {
+    const w = word.toLowerCase();
+    return w === "land" || w === "creature" || w === "artifact" ? w.charAt(0).toUpperCase() + w.slice(1) : w === "permanent" ? "permanent" : word;
+  };
+  let m = /^Whenever (you|a player) taps? an? (\w+) for mana, (?:that player )?adds? (?:one|an additional one) (?:additional )?mana of any type that \w+ produced\.$/i.exec(text);
+  if (m) return { who: m[1]!.toLowerCase() === "you" ? "you" : "player", source: source(m[2]!), add: { kind: "sameType" } };
+  m = /^Whenever (you|a player) taps? an? (\w+) for mana, (?:that player )?adds? (?:an|one) additional \{([WUBRGC])\}\.$/i.exec(text);
+  if (m) return { who: m[1]!.toLowerCase() === "you" ? "you" : "player", source: source(m[2]!), add: { kind: "mana", mana: m[3] as ManaType } };
+  m = /^If you tap an? (\w+) for mana, it produces (twice|three times) as much of that mana instead\.$/i.exec(text);
+  if (m) return { who: "you", source: source(m[1]!), add: { kind: "multiply", factor: m[2]!.toLowerCase() === "twice" ? 2 : 3 } };
+  return null;
+}
+
+/** Le permanent engagé (sa ligne de type) est-il concerné par cet effet ? */
+export function manaTapSourceFits(effect: ManaTapEffect, typeLine: string): boolean {
+  if (effect.source === "permanent") return true;
+  return new RegExp(`\\b${effect.source}\\b`, "i").test(typeLine);
+}
+
+/** « Spend this mana only to cast an Elemental spell or activate an ability of an Elemental. » */
+function manaRestriction(line: string): ManaRestriction | undefined {
+  const m = /Spend this mana only to cast (?:an? )?(?:creature spells? of the chosen type|(\w+) spells?)( or activate (?:an )?abilit(?:y|ies) of)?/i.exec(line);
+  if (!m) return undefined;
+  return { subtype: m[1] ? m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase() : "chosen", abilities: !!m[2] };
 }
 
 /** Un symbole d'un coût de mana. */

@@ -1,5 +1,6 @@
 import type { ManaType } from "./mana.js";
 import type { TurnStep } from "./turn.js";
+import type { Target } from "./effects.js";
 import type { CardData, CardInstanceId, PlayerId, PriorityStops, Zone } from "./types.js";
 
 /**
@@ -17,6 +18,8 @@ export type GameAction =
   | { type: "mulligan" }
   /** Après un mulligan : met les cartes choisies de la main au-dessous de la bibliothèque (dans cet ordre). */
   | { type: "bottomMulligan"; cardIds: CardInstanceId[] }
+  /** Étape de nettoyage : défausse les cartes choisies pour revenir à la taille maximale de main (règle 514.1). */
+  | { type: "discardToHandSize"; cardIds: CardInstanceId[] }
   /** Déplace les N cartes du dessus de la bibliothèque (meule, exil…). */
   | { type: "moveTopOfLibrary"; count: number; to: Zone; faceDown?: boolean }
   /** Regarde les N cartes du dessus (regard, surveillance…). */
@@ -57,14 +60,63 @@ export type GameAction =
    * Joue un terrain depuis la main (un par tour, pendant sa phase principale,
    * pile vide). `face` : 1 pour jouer le verso d'une carte modale.
    */
-  | { type: "playLand"; cardId: CardInstanceId; face?: number }
+  /** `chosenType` : « As ~ enters, choose a creature type » (Secluded Courtyard). */
+  /** `untap` : révéler la carte ou payer les PV demandés pour que le terrain arrive dégagé. */
+  | { type: "playLand"; cardId: CardInstanceId; face?: number; chosenType?: string; untap?: boolean }
   /**
    * Lance un sort depuis la main (ou son commandant depuis la zone de
    * commandement) en payant son coût avec la réserve ; les terrains qui
    * manquent sont engagés automatiquement. `face` : la moitié lancée (cartes
    * scindées ou modales), `x` : la valeur de X.
    */
-  | { type: "castSpell"; cardId: CardInstanceId; face?: number; x?: number }
+  | {
+      type: "castSpell";
+      cardId: CardInstanceId;
+      face?: number;
+      x?: number;
+      targets?: Target[];
+      /** Le permanent sacrifié pour un coût supplémentaire (« As an additional cost… sacrifice a creature »). */
+      sacrifice?: CardInstanceId;
+      /** Saga avec lecture anticipée (« Read ahead ») : le chapitre de départ. */
+      chapter?: number;
+      /** Payer le coût alternatif du sort (« You may pay {1}{B} rather than pay this spell's mana cost »). */
+      alternative?: boolean;
+      /** Lancer pour son coût d'évocation : `true` celui de la carte, `"granted"` celui donné par un permanent (Ashling). */
+      evoke?: boolean | "granted";
+      /** Évocation « Exile a green card from your hand » : la carte exilée. */
+      evokeExile?: CardInstanceId;
+      /** « As ~ enters, choose a creature type » : le type choisi (Herald's Horn, Morophon). */
+      chosenType?: string;
+      /** Sort modal dont des modes ont des cibles : les modes choisis (les cibles suivent dans `targets`). */
+      modes?: number[];
+    }
+  /** Présage : payer {2} pendant son tour pour exiler la carte de sa main face cachée. */
+  | { type: "foretell"; cardId: CardInstanceId }
+  /**
+   * Active la capacité n° `index` (parmi les capacités activées reconnues de
+   * la face visible) d'un permanent, ou d'une carte de son cimetière.
+   */
+  | {
+      type: "activateAbility";
+      cardId: CardInstanceId;
+      index: number;
+      targets?: Target[];
+      /** Le permanent sacrifié pour le coût (« Sacrifice a creature »). */
+      sacrifice?: CardInstanceId;
+      /** La couleur pour « Add one mana of any color ». */
+      color?: ManaType;
+    }
+  /** Répond à une capacité facultative (« you may ») sur la pile ; `choice` : le permanent choisi (sacrifice). */
+  /** `x` : la valeur payée pour « you may pay {X} » (Well of Lost Dreams). */
+  | { type: "decideOptional"; cardId: CardInstanceId; accept: boolean; choice?: CardInstanceId; x?: number }
+  /** Les cartes choisies dans la fenêtre de choix (recherche, main révélée). */
+  | { type: "chooseCards"; cardId: CardInstanceId; cardIds: CardInstanceId[] }
+  /** Les modes choisis d'un sort ou d'une capacité modale (index dans l'ordre imprimé). */
+  | { type: "chooseModes"; cardId: CardInstanceId; modes: number[] }
+  /** Regard : les cartes gardées au-dessus (dans l'ordre, la première en haut) et celles mises au-dessous. */
+  | { type: "scry"; cardId: CardInstanceId; top: CardInstanceId[]; bottom: CardInstanceId[] }
+  /** Choisit les cibles d'une capacité déclenchée qu'on contrôle, sur la pile. */
+  | { type: "chooseTargets"; cardId: CardInstanceId; targets: Target[] }
   /** Déclare les attaquants (étape des attaquants), chacun vers un joueur adverse. Une liste vide : pas d'attaque. */
   | { type: "declareAttackers"; attackers: { cardId: CardInstanceId; defender: PlayerId }[] }
   /** Déclare ses bloqueurs (étape des bloqueurs), chacun contre un attaquant. Une liste vide : pas de blocage. */

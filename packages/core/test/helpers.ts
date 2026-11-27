@@ -1,5 +1,6 @@
 import type { CardData } from "../src/types.js";
 import type { ResolvedDeck } from "../src/deck/resolve.js";
+import { applyAction, handSizeDiscards } from "../src/reducer.js";
 import { createGame, type NewGamePlayer } from "../src/setup.js";
 import type { GameState } from "../src/types.js";
 
@@ -42,4 +43,29 @@ export function newTestGame(playerCount = 4, seed = 42, stops = false): GameStat
     ...(stops ? {} : { priorityStops: [] }),
   }));
   return createGame({ id: "test", players, seed, randomTurnOrder: false });
+}
+
+/**
+ * Passe le tour du joueur ; s'il a trop de cartes en main au nettoyage, il
+ * défausse les dernières cartes de sa main, comme il le choisirait.
+ */
+export function endTurn(g: GameState, actorId: string): GameState {
+  const run = (state: GameState, id: string, action: Parameters<typeof applyAction>[1]["action"]): GameState => {
+    const r = applyAction(state, { actorId: id, action });
+    if (!r.ok) throw new Error(r.error);
+    return r.state;
+  };
+  g = run(g, actorId, { type: "passTurn" });
+  return discardDownToHandSize(g, run);
+}
+
+function discardDownToHandSize(
+  g: GameState,
+  run: (state: GameState, id: string, action: Parameters<typeof applyAction>[1]["action"]) => GameState,
+): GameState {
+  for (const id of g.turnOrder) {
+    const count = handSizeDiscards(g, id);
+    if (count > 0) g = run(g, id, { type: "discardToHandSize", cardIds: g.players[id]!.zones.hand.slice(-count) });
+  }
+  return g;
 }

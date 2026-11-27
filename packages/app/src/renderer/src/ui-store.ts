@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { CardView } from "@magic-trims/core";
+import type { CardView, Target, TargetSpec } from "@magic-trims/core";
 
 /** État d'interface local (aperçu de carte, menus, invites). */
 
@@ -17,6 +17,24 @@ export interface PromptRequest {
   resolve: (value: string | null) => void;
 }
 
+/** Choix des cibles d'un sort qu'on lance : on clique sur des cartes ou des joueurs. */
+export interface Targeting {
+  sourceName: string;
+  sourceId: string;
+  specs: TargetSpec[];
+  chosen: Target[];
+  resolve: (targets: Target[] | null) => void;
+}
+
+/** Choix des modes d'un sort qu'on lance (« Choose two — » avec des cibles). */
+export interface ModesRequest {
+  title: string;
+  labels: string[];
+  min: number;
+  max: number;
+  resolve: (modes: number[] | null) => void;
+}
+
 /** Carte agrandie près du curseur, avec la position de la carte survolée. */
 export interface Zoom {
   card: CardView;
@@ -31,9 +49,11 @@ interface UiState {
   zoom: Zoom | null;
   menu: { x: number; y: number; items: MenuItem[] } | null;
   prompt: PromptRequest | null;
+  targeting: Targeting | null;
+  modes: ModesRequest | null;
 }
 
-let state: UiState = { preview: null, zoom: null, menu: null, prompt: null };
+let state: UiState = { preview: null, zoom: null, menu: null, prompt: null, targeting: null, modes: null };
 let zoomTimer: ReturnType<typeof setTimeout> | null = null;
 const listeners = new Set<() => void>();
 
@@ -76,6 +96,40 @@ export const ui = {
   closePrompt: (value: string | null) => {
     state.prompt?.resolve(value);
     set({ prompt: null });
+  },
+  /** Demande les modes d'un sort modal. `null` si le joueur annule. */
+  chooseModes(title: string, labels: string[], min: number, max: number): Promise<number[] | null> {
+    state.modes?.resolve(null);
+    return new Promise((resolve) => set({ modes: { title, labels, min, max, resolve } }));
+  },
+  closeModes(modes: number[] | null) {
+    state.modes?.resolve(modes);
+    set({ modes: null });
+  },
+  /** Demande les cibles d'un sort, une par une. `null` si le joueur annule. */
+  chooseTargets(sourceName: string, sourceId: string, specs: TargetSpec[]): Promise<Target[] | null> {
+    state.targeting?.resolve(null);
+    return new Promise((resolve) => set({ targeting: { sourceName, sourceId, specs, chosen: [], resolve } }));
+  },
+  pickTarget(target: Target) {
+    const t = state.targeting;
+    if (!t) return;
+    const chosen = [...t.chosen, target];
+    if (chosen.length >= t.specs.length) {
+      set({ targeting: null });
+      t.resolve(chosen);
+    } else set({ targeting: { ...t, chosen } });
+  },
+  /** « up to one target » : ne pas choisir les cibles restantes. */
+  skipTargets() {
+    const t = state.targeting;
+    if (!t) return;
+    set({ targeting: null });
+    t.resolve(t.chosen);
+  },
+  cancelTargeting() {
+    state.targeting?.resolve(null);
+    set({ targeting: null });
   },
 };
 

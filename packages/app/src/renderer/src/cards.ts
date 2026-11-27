@@ -1,7 +1,28 @@
-import { creatureStats, isCreature, manaOptions, type GameState, type CardData, type CardView, type GameView, type ManaType, type VisibleCardView } from "@magic-trims/core";
+import { cardSupport, creatureStats, stateFromView, isCreature, manaOptions, permanentManaOptions, type CardSupport, type CardData, type CardView, type GameView, type ManaType, type VisibleCardView } from "@magic-trims/core";
 
 export function cardData(view: GameView, card: CardView): CardData | undefined {
   return card.hidden ? undefined : view.cardData[card.cardId];
+}
+
+const supportCache = new Map<string, CardSupport>();
+
+/** Ce que le moteur gère de la carte (mis en cache par carte). */
+export function supportOf(data: CardData): CardSupport {
+  let support = supportCache.get(data.id);
+  if (!support) {
+    support = cardSupport(data);
+    supportCache.set(data.id, support);
+  }
+  return support;
+}
+
+/** Texte d'aide d'une carte que le moteur ne gère pas entièrement. */
+export function supportHint(support: CardSupport): string {
+  const head =
+    support.level === "manual"
+      ? "Le moteur ne gère pas cette carte : applique ses effets à la main."
+      : "Le moteur gère une partie de cette carte. À faire à la main :";
+  return support.level === "manual" ? head : `${head}\n• ${support.unknown.join("\n• ")}`;
 }
 
 /** Image de la face visible d'une carte. */
@@ -47,10 +68,30 @@ export function isLand(view: GameView, card: CardView): boolean {
   return /\bLand\b/.test(type);
 }
 
+/**
+ * Rangée du champ de bataille où ranger la carte : créatures, autres
+ * permanents (artefacts, enchantements, planeswalkers…) ou terrains.
+ * On lit le type de la face visible ; une carte face cachée est une créature 2/2.
+ */
+export function battlefieldRow(view: GameView, card: CardView): "creatures" | "others" | "lands" {
+  const data = cardData(view, card);
+  if (!data || card.hidden || (card as VisibleCardView).faceDown) return "creatures";
+  const type = data.faces?.[(card as VisibleCardView).faceIndex]?.typeLine ?? data.typeLine;
+  if (/\bCreature\b/.test(type)) return "creatures";
+  if (/\bLand\b/.test(type)) return "lands";
+  return "others";
+}
+
 /** Mana que la carte peut produire en s'engageant (texte anglais, celui que lit le moteur). */
 export function cardManaOptions(view: GameView, card: CardView): ManaType[][] {
   const data = cardData(view, card);
   if (!data || card.hidden) return [];
+  // Sur le champ de bataille, le moteur tient compte des capacités données (Chromatic Lantern, Abundant Growth…).
+  if (card.zone === "battlefield" && card.instanceId) {
+    const g = stateFromView(view);
+    const instance = g.cards[card.instanceId];
+    if (instance) return permanentManaOptions(g, instance);
+  }
   const face = data.faces?.[(card as VisibleCardView).faceIndex];
   return manaOptions(face?.typeLine ?? data.typeLine, face?.oracleText ?? data.oracleText);
 }
@@ -61,16 +102,20 @@ export function manaSymbolUrl(mana: string): string {
 }
 
 /** Force et endurance actuelles d'une créature sur le champ de bataille (null sinon). */
-export function creaturePT(view: GameView, card: CardView): { power: number; toughness: number; base: boolean } | null {
+export function creaturePT(
+  view: GameView,
+  card: CardView,
+): { power: number; toughness: number; base: boolean; printed?: { power: string; toughness: string } } | null {
   if (card.hidden || card.zone !== "battlefield") return null;
-  // Les fonctions du moteur ne lisent que les données des cartes, que la vue contient.
-  const g = view as unknown as GameState;
+  const g = stateFromView(view);
   const c = card as VisibleCardView;
   if (!isCreature(g, c)) return null;
   const stats = creatureStats(g, c);
   const data = cardData(view, card);
   const face = data?.faces?.[c.faceIndex];
-  const base =
-    String(stats.power) === (face?.power ?? data?.power) && String(stats.toughness) === (face?.toughness ?? data?.toughness);
-  return { ...stats, base };
+  const power = face?.power ?? data?.power;
+  const toughness = face?.toughness ?? data?.toughness;
+  const base = String(stats.power) === power && String(stats.toughness) === toughness;
+  const printed = power !== undefined && toughness !== undefined ? { power, toughness } : undefined;
+  return { ...stats, base, printed };
 }
