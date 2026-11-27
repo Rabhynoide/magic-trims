@@ -3,7 +3,7 @@ import { applyAction } from "../src/reducer.js";
 import type { GameAction } from "../src/actions.js";
 import { parseManaCost, payFromPool, emptyPool } from "../src/mana.js";
 import type { CardData, GameState } from "../src/types.js";
-import { fakeCard, newTestGame } from "./helpers.js";
+import { fakeCard, newTestGame, endTurn } from "./helpers.js";
 
 function act(g: GameState, actorId: string, action: GameAction): GameState {
   const r = applyAction(g, { actorId, action });
@@ -77,9 +77,9 @@ describe("Jouer un terrain", () => {
     g = act(g, "p1", { type: "playLand", cardId: a });
     expect(g.players.p1!.zones.battlefield).toContain(a);
     expect(refuse(g, "p1", { type: "playLand", cardId: b })).toMatch(/déjà joué un terrain/);
-    g = act(g, "p1", { type: "passTurn" });
-    g = act(g, "p2", { type: "passTurn" });
-    g = act(g, "p3", { type: "passTurn" });
+    g = endTurn(g, "p1");
+    g = endTurn(g, "p2");
+    g = endTurn(g, "p3");
     g = act(g, "p1", { type: "nextStep", to: "main1" });
     g = act(g, "p1", { type: "playLand", cardId: b });
   });

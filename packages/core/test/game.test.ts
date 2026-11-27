@@ -3,7 +3,7 @@ import { applyAction, type ActionResult } from "../src/reducer.js";
 import type { GameAction } from "../src/actions.js";
 import { createGame } from "../src/setup.js";
 import type { GameState } from "../src/types.js";
-import { fakeCard, fakeDeck, newTestGame } from "./helpers.js";
+import { fakeCard, fakeDeck, newTestGame, endTurn } from "./helpers.js";
 
 function act(state: GameState, actorId: string, action: GameAction): GameState {
   const result: ActionResult = applyAction(state, { actorId, action });
@@ -221,7 +221,7 @@ describe("actions", () => {
     let g = newTestGame(3);
     expect(refuse(g, "p2", { type: "passTurn" })).toMatch(/pas ton tour/);
     g = act(g, "p2", { type: "concede" });
-    g = act(g, "p1", { type: "passTurn" });
+    g = endTurn(g, "p1");
     expect(g.turn).toMatchObject({ number: 2, activePlayerId: "p3" });
     expect(refuse(g, "p2", { type: "draw", count: 1 })).toMatch(/abandonné/);
   });

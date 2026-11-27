@@ -5,7 +5,7 @@ import { creatureStats, hasKeyword } from "../src/combat.js";
 import { cardSupport } from "../src/effects.js";
 import { applyAction } from "../src/reducer.js";
 import type { CardData, GameState } from "../src/types.js";
-import { fakeCard, newTestGame } from "./helpers.js";
+import { fakeCard, newTestGame, endTurn } from "./helpers.js";
 import deck from "./zedruu-oracle.json" with { type: "json" };
 
 function act(g: GameState, actorId: string, action: GameAction): GameState {
@@ -81,8 +81,8 @@ describe("Deck Zedruu : dons et échanges de contrôle", () => {
     g = resolveAll(g);
     expect(g.cards[ring]!.controllerId).toBe("p2");
     expect(g.players.p2!.zones.battlefield).toContain(ring);
-    g = act(g, "p1", { type: "passTurn" });
-    g = act(g, "p2", { type: "passTurn" });
+    g = endTurn(g, "p1");
+    g = endTurn(g, "p2");
     const hand = g.players.p1!.zones.hand.length;
     g = resolveAll(g);
     expect(g.players.p1!.life).toBe(41);
@@ -168,8 +168,8 @@ describe("Deck Zedruu : prison et restrictions", () => {
     g = act(g, "p1", { type: "castSpell", cardId: s1 });
     g = resolveAll(g);
     expect(refuse(g, "p1", { type: "castSpell", cardId: s2 })).toMatch(/un seul sort/);
-    g = act(g, "p1", { type: "passTurn" });
-    g = act(g, "p2", { type: "passTurn" });
+    g = endTurn(g, "p1");
+    g = endTurn(g, "p2");
     g = resolveAll(g);
     g = act(g, "p1", { type: "nextStep", to: "main1" });
     [g] = put(g, "p1", real("Aggressive Mining"), 4);
@@ -186,8 +186,8 @@ describe("Deck Zedruu : prison et restrictions", () => {
     // +10 en arrivant, −10 en partant.
     expect(g.players.p1!.life).toBe(40);
     [g] = put(g, "p1", real("Felidar Sovereign"), 1);
-    g = act(g, "p1", { type: "passTurn" });
-    g = act(g, "p2", { type: "passTurn" });
+    g = endTurn(g, "p1");
+    g = endTurn(g, "p2");
     g = resolveAll(g);
     expect(g.players.p2!.hasConceded).toBe(true);
     expect(g.players.p2!.lostReason).toMatch(/Felidar Sovereign/);

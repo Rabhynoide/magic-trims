@@ -304,8 +304,8 @@ export interface GameSettings {
   planechase: boolean;
   /**
    * Le moteur fait les actions obligatoires du tour : dégager les permanents
-   * au début du tour, piocher à l'étape de pioche, rappeler la taille maximale
-   * de main au nettoyage.
+   * au début du tour, piocher à l'étape de pioche, faire défausser jusqu'à la
+   * taille maximale de main au nettoyage.
    */
   autoTurnActions: boolean;
   /**

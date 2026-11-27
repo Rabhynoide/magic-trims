@@ -3,6 +3,7 @@ import { session, useSession } from "../session";
 import { storage, type SavedDeck } from "../storage";
 import { CardLanguageSelect } from "../components/CardLanguage";
 import { DeckImport } from "./DeckImport";
+import { DeckBrowser } from "../components/DeckBrowser";
 
 export function Home() {
   const s = useSession();
@@ -93,28 +94,19 @@ export function Home() {
             <h2>Mes decks</h2>
             <button onClick={() => setImporting("new")}>Importer un deck</button>
           </div>
-          {decks.length === 0 && (
-            <p className="hint">Aucun deck pour l'instant. Importe une liste depuis Moxfield ou deckstats.net.</p>
-          )}
-          <ul className="deck-list">
-            {decks.map((d) => (
-              <li key={d.id}>
-                {d.deck.commanders[0]?.image && (
-                  <img src={d.deck.commanders[0].image.artCrop ?? d.deck.commanders[0].image.small} alt="" />
-                )}
-                <div className="deck-list-text">
-                  <strong>{d.name}</strong>
-                  <span>{d.deck.commanders.map((c) => c.name).join(" & ")}</span>
-                </div>
+          <DeckBrowser
+            decks={decks}
+            actions={(d) => (
+              <>
                 <button className="link" onClick={() => setImporting(d)}>
                   Modifier
                 </button>
                 <button className="link danger" onClick={() => removeDeck(d)}>
                   Supprimer
                 </button>
-              </li>
-            ))}
-          </ul>
+              </>
+            )}
+          />
         </section>
       </div>
 

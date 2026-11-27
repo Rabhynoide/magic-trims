@@ -243,7 +243,7 @@ textarea:focus {
   height: 100%;
   overflow: auto;
   padding: 32px;
-  max-width: 1100px;
+  max-width: 1400px;
   margin: 0 auto;
 }
 .home-header {
@@ -255,7 +255,8 @@ textarea:focus {
 }
 .home-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 320px minmax(0, 1fr);
+  align-items: start;
   gap: 20px;
 }
 .play-block {
@@ -1481,6 +1482,150 @@ textarea:focus {
   gap: 4px;
 }
 
+/* Liste des decks en tableau (accueil et choix du deck dans le salon). */
+.chosen-deck {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.deck-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+.deck-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--text-dim);
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.deck-tab:hover {
+  color: var(--text);
+}
+.deck-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.deck-tab.soon {
+  opacity: 0.7;
+}
+.deck-tab-count,
+.deck-tab-soon {
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--border);
+}
+.deck-tab-soon {
+  font-style: italic;
+}
+.deck-empty {
+  padding: 16px 4px;
+}
+.deck-table-wrap {
+  overflow-x: auto;
+}
+.deck-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.deck-table th {
+  text-align: left;
+  font-weight: 600;
+  padding: 10px 8px;
+  border-bottom: 2px solid var(--border);
+  white-space: nowrap;
+}
+.deck-table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.deck-table tr.selectable {
+  cursor: pointer;
+}
+.deck-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.deck-table tr.selected {
+  background: rgba(200, 150, 62, 0.12);
+}
+.deck-name {
+  min-width: 160px;
+}
+.deck-name strong {
+  display: block;
+  color: var(--accent-strong);
+}
+.deck-name span {
+  display: block;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.deck-colors {
+  white-space: nowrap;
+}
+.deck-colors .mana-symbol {
+  width: 18px;
+  height: 18px;
+}
+.deck-format {
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.deck-format .badge {
+  margin-left: 6px;
+}
+.deck-table th.deck-mode-col {
+  text-align: center;
+  white-space: normal;
+  line-height: 1.2;
+  min-width: 56px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.deck-table td.deck-mode-col {
+  text-align: center;
+}
+.deck-mode-col.current {
+  background: rgba(79, 143, 216, 0.12);
+}
+.deck-table th.deck-mode-col.current {
+  color: var(--text);
+}
+.legal-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: help;
+}
+.legal-mark.ok {
+  background: #234a31;
+  color: #a6e0b8;
+}
+.legal-mark.ko {
+  background: #4d2420;
+  color: #f0a39b;
+}
+.deck-actions {
+  white-space: nowrap;
+  text-align: right;
+}
 .modes-list {
   display: flex;
   flex-direction: column;

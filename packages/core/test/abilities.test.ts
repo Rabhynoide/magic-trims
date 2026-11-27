@@ -5,7 +5,7 @@ import { creatureStats, hasKeyword } from "../src/combat.js";
 import { cardSupport } from "../src/effects.js";
 import { applyAction } from "../src/reducer.js";
 import type { CardData, GameState } from "../src/types.js";
-import { fakeCard, newTestGame } from "./helpers.js";
+import { fakeCard, newTestGame, endTurn } from "./helpers.js";
 import deck from "./sheoldred-oracle.json" with { type: "json" };
 
 function act(g: GameState, actorId: string, action: GameAction): GameState {
@@ -90,7 +90,7 @@ describe("Capacités activées", () => {
     g = resolveAll(g);
     expect(g.players.p2!.life).toBe(40);
     expect(g.log.some((l) => /ne peut pas gagner de points de vie/.test(l.message))).toBe(true);
-    g = act(g, "p1", { type: "passTurn" });
+    g = endTurn(g, "p1");
     expect(creatureStats(g, g.cards[knight]!)).toEqual({ power: 2, toughness: 2 });
   });
 
@@ -179,7 +179,7 @@ describe("Capacités activées", () => {
     g = act(g, "p1", { type: "activateAbility", cardId: vito, index: 0 });
     g = resolveAll(g);
     expect(hasKeyword(g, g.cards[bearId]!, "Lifelink")).toBe(true);
-    g = act(g, "p1", { type: "passTurn" });
+    g = endTurn(g, "p1");
     expect(hasKeyword(g, g.cards[bearId]!, "Lifelink")).toBe(false);
   });
 });
@@ -278,9 +278,9 @@ describe("Effets statiques", () => {
     g = act(g, "p1", { type: "declareAttackers", attackers: [{ cardId: golem, defender: "p2" }] });
     g = resolveAll(g);
     expect(["p1", "p2", "p3"].map((p) => g.players[p]!.zones.hand.length)).toEqual(hands.map((n) => n + 1));
-    g = act(g, "p1", { type: "passTurn" });
-    g = act(g, "p2", { type: "passTurn" });
-    g = act(g, "p3", { type: "passTurn" });
+    g = endTurn(g, "p1");
+    g = endTurn(g, "p2");
+    g = endTurn(g, "p3");
     // Entretien d'Alice : 1 blessure à chaque adversaire, puis autant de PV gagnés.
     const life = g.players.p1!.life;
     g = resolveAll(g);
@@ -341,7 +341,7 @@ describe("Cartes Sheoldred restantes", () => {
     g = act(g, "p2", { type: "moveCard", cardId: b, to: "graveyard" });
     g = resolveAll(g);
     expect(g.players.p1!.zones.hand.length).toBe(hand + 1);
-    g = act(g, "p1", { type: "passTurn" });
+    g = endTurn(g, "p1");
     g = act(g, "p2", { type: "moveCard", cardId: c, to: "graveyard" });
     g = resolveAll(g);
     expect(g.players.p1!.zones.hand.length).toBe(hand + 2);
@@ -415,7 +415,7 @@ describe("Regard, Wound Reflection, Teferi's Puzzle Box", () => {
   it("Teferi's Puzzle Box : à sa pioche, le joueur remplace sa main", () => {
     let g = toMain(newTestGame(2));
     [g] = put(g, "p1", real("Teferi's Puzzle Box"));
-    g = act(g, "p1", { type: "passTurn" });
+    g = endTurn(g, "p1");
     g = resolveAll(g);
     const before = [...g.players.p2!.zones.hand];
     if (g.turn.step !== "draw") g = act(g, "p2", { type: "nextStep", to: "draw" });

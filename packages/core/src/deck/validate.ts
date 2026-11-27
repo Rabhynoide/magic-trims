@@ -108,3 +108,23 @@ function hasPairingAbility(card: CardData): boolean {
 function allowsMultipleCopies(card: CardData): boolean {
   return /\bbasic\b/i.test(card.typeLine) || /a deck can have (any number|up to)/i.test(card.oracleText);
 }
+
+/** Légalité d'un deck pour chacun des modes de jeu proposés. */
+export function deckLegalityByMode(deck: ResolvedDeck, modes: readonly GameModeType[]): Record<string, DeckIssue[]> {
+  const byFormat = new Map<DeckFormat, DeckIssue[]>();
+  const result: Record<string, DeckIssue[]> = {};
+  for (const mode of modes) {
+    const format = formatForMode(mode);
+    if (!byFormat.has(format)) byFormat.set(format, validateCommanderDeck(deck, format));
+    result[mode] = byFormat.get(format)!;
+  }
+  return result;
+}
+
+const COLOR_ORDER = ["W", "U", "B", "R", "G"];
+
+/** Identité couleur du deck (celle de ses commandants), dans l'ordre WUBRG. */
+export function deckColorIdentity(deck: ResolvedDeck): string[] {
+  const colors = new Set(deck.commanders.flatMap((c) => c.colorIdentity));
+  return COLOR_ORDER.filter((c) => colors.has(c));
+}

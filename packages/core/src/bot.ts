@@ -12,7 +12,7 @@ import { canAttack, cantBlock, creatureStats, hasKeyword, isCreature } from "./c
 import { isLegalTarget, spellEffectsOf, type Target } from "./effects.js";
 import { abilitiesOf, stackTrigger } from "./triggers.js";
 import { areTeammates, isActivePlayer, teamOf } from "./modes.js";
-import { applyAction } from "./reducer.js";
+import { applyAction, handSizeDiscards } from "./reducer.js";
 import { MAX_HAND_SIZE } from "./turn.js";
 import { hasNoMaxHandSize } from "./statics.js";
 import type { CardInstance, CardInstanceId, GameState, PlayerId } from "./types.js";
@@ -100,9 +100,14 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
       }
       return { type: "nextStep" };
     case "cleanup": {
-      const excess = me.zones.hand.length - MAX_HAND_SIZE;
-      if (excess > 0 && !hasNoMaxHandSize(g, botId)) {
+      const excess = handSizeDiscards(g, botId);
+      if (excess > 0) {
         // Défausse : d'abord les cartes les plus chères.
+        const worst = [...me.zones.hand].sort((a, b) => manaValue(g, b) - manaValue(g, a)).slice(0, excess);
+        return { type: "discardToHandSize", cardIds: worst };
+      }
+      // Actions du tour manuelles : le bot se défausse quand même.
+      if (me.zones.hand.length > MAX_HAND_SIZE && !hasNoMaxHandSize(g, botId)) {
         const worst = [...me.zones.hand].sort((a, b) => manaValue(g, b) - manaValue(g, a))[0]!;
         return { type: "moveCard", cardId: worst, to: "graveyard" };
       }
