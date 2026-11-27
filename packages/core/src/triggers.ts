@@ -31,6 +31,8 @@ export type TriggerEvent =
   | { type: "attacks"; cardId: CardInstanceId }
   | { type: "blocks"; cardId: CardInstanceId }
   | { type: "exploits"; cardId: CardInstanceId }
+  /** Un permanent engagé se dégage. */
+  | { type: "untapped"; cardId: CardInstanceId }
   /** Un permanent subit des blessures (Body of Knowledge). */
   | { type: "damaged"; cardId: CardInstanceId; amount: number }
   /** Une créature inflige des blessures de combat à un joueur. */
@@ -64,6 +66,8 @@ export type TriggerCondition =
   | { on: "combat"; attacks: boolean; blocks: boolean }
   /** « When ~ exploits a creature ». */
   | { on: "exploits" }
+  /** « Whenever ~ becomes untapped ». */
+  | { on: "untapped" }
   /** « Whenever a creature deals combat damage to one of your opponents », « Whenever ~ deals combat damage to a player ». */
   | { on: "combatDamage"; self: boolean; creature: Whose; player: Whose }
   /** « Whenever ~ is dealt damage ». */
@@ -160,6 +164,7 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
     return { on: "combat", attacks: what.includes("attacks"), blocks: what.includes("blocks") };
   }
   if (/^~ exploits a creature$/i.test(t)) return { on: "exploits" };
+  if (/^~ becomes untapped$/i.test(t)) return { on: "untapped" };
   if (/^~ is dealt damage$/i.test(t)) return { on: "damaged" };
   if ((m = /^(~|a creature|a creature you control|a creature an opponent controls) deals combat damage to (a player|an opponent|one of your opponents|you)$/i.exec(t))) {
     const who = m[1]!.toLowerCase();
@@ -247,7 +252,10 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
   for (const raw of joinModes(oracleText).split("\n")) {
     const line = raw.replace(/\([^)]*\)/g, "").trim();
     if (!line) continue;
-    const tilde = selfToTilde(line, cardName).trim();
+    let tilde = selfToTilde(line, cardName).trim();
+    // Mot de capacité (« Inspired — … », « Landfall — … ») : sans effet de jeu.
+    const abilityWord = /^\s*[A-Z][a-z]+(?: [a-z]+)* — (?=(?:When|Whenever|At)\b)/.exec(tilde);
+    if (abilityWord) tilde = tilde.slice(abilityWord[0].length);
     if (/^exploit$/i.test(line)) {
       result.triggers.push(EXPLOIT);
       continue;
@@ -404,6 +412,8 @@ export function conditionMatches(
       return c.on === "combat" && (event.type === "attacks" ? c.attacks : c.blocks) && event.cardId === source.instanceId;
     case "exploits":
       return c.on === "exploits" && event.cardId === source.instanceId;
+    case "untapped":
+      return c.on === "untapped" && event.cardId === source.instanceId;
     case "damaged":
       return c.on === "damaged" && event.cardId === source.instanceId;
     case "combatDamage":

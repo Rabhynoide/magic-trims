@@ -81,6 +81,9 @@ export interface PermanentFilter {
   maxTotalPT?: number;
 }
 
+/** Condition entre les deux permanents échangés, vérifiée à la résolution. */
+export type ExchangeRelation = "differentPlayers" | "sharePermanentType" | "shareCardType" | "lesserManaValue";
+
 export interface SpellFilter {
   types: string[];
   notTypes: string[];
@@ -126,7 +129,9 @@ export type Effect =
   /** « Target opponent gains control of target permanent you control » ; `permanent` : une cible, ou la source. */
   | { type: "gainControl"; permanent: number | "self"; player: number }
   /** « Exchange control of target land you control and target land an opponent controls. » */
-  | { type: "exchangeControl"; a: number; b: number }
+  | { type: "exchangeControl"; a: number; b: number; relation?: ExchangeRelation }
+  /** Modify Memory : « If you control neither creature, draw three cards. » */
+  | { type: "drawIfNeither"; a: number; b: number; count: number }
   /** « If you have 40 or more life, you win the game. » */
   | { type: "winIf"; life?: number; handExactly?: number }
   | { type: "loseGame" }
@@ -257,7 +262,7 @@ function parsePermanentFilter(text: string): PermanentFilter | null {
     if (parts.length > 2) return null;
     if (parts.length === 2) {
       const [mod, base] = parts as [string, string];
-      if (!mod.startsWith("non") || !CARD_TYPES.includes(mod.slice(3))) return null;
+      if (!mod.startsWith("non") || ![...CARD_TYPES, "legendary"].includes(mod.slice(3))) return null;
       filter.notTypes.push(mod.slice(3));
       w = base;
     }
@@ -285,6 +290,7 @@ export function permanentLabel(f: PermanentFilter): string {
     enchantment: "enchantement",
     land: "terrain",
     planeswalker: "planeswalker",
+    legendary: "légendaire",
   };
   let label = f.types.length > 0 ? f.types.map((t) => labels[t]).join(" ou ") : "permanent";
   if (f.notTypes.length > 0) label += ` non-${f.notTypes.map((t) => labels[t]).join(", non-")}`;
@@ -387,13 +393,27 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
     if (!filter) return null;
     return [{ type: "gainControl", permanent: target({ label: permanentLabel(filter), permanent: filter }), player }];
   }
-  if ((m = /^exchange control of target (.+?) and target (.+)$/i.exec(s))) {
+  if ((m = /^exchange control of two target (.+?)( controlled by different players| that share a permanent type)?$/i.exec(s))) {
+    const f = parsePermanentFilter(m[1]!);
+    if (!f) return null;
+    const relation: ExchangeRelation | undefined = !m[2] ? undefined : /different/i.test(m[2]) ? "differentPlayers" : "sharePermanentType";
+    const a = target({ label: permanentLabel(f), permanent: f });
+    const b = target({ label: permanentLabel(f), permanent: f });
+    return [{ type: "exchangeControl", a, b, ...(relation ? { relation } : {}) }];
+  }
+  if ((m = /^exchange control of target (.+?) and target (.+?)( that shares a card type with it| with equal or lesser mana value)?$/i.exec(s))) {
     const fa = parsePermanentFilter(m[1]!);
     const fb = parsePermanentFilter(m[2]!);
     if (!fa || !fb) return null;
+    const relation: ExchangeRelation | undefined = !m[3] ? undefined : /card type/i.test(m[3]) ? "shareCardType" : "lesserManaValue";
     const a = target({ label: permanentLabel(fa), permanent: fa });
     const b = target({ label: permanentLabel(fb), permanent: fb });
-    return [{ type: "exchangeControl", a, b }];
+    return [{ type: "exchangeControl", a, b, ...(relation ? { relation } : {}) }];
+  }
+  if ((m = new RegExp(`^if you control neither creature, draw ${NUM} cards?$`, "i").exec(s))) {
+    const b = lastTarget();
+    if (b < 1) return null;
+    return [{ type: "drawIfNeither", a: b - 1, b, count: amount(m[1]!) as number }];
   }
   if ((m = /^if you have (\d+) or more life, you win the game$/i.exec(s))) return [{ type: "winIf", life: parseInt(m[1]!, 10) }];
   if ((m = new RegExp(`^if you have exactly (${NUM.slice(1, -1)}|thirteen) cards in your hand, you win the game$`, "i").exec(s))) {

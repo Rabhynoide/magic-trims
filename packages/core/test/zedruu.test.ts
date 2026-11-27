@@ -195,7 +195,7 @@ describe("Deck Zedruu : prison et restrictions", () => {
 
   it("Ghostly Prison, Propaganda et la plupart des cartes du deck sont gérées", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "" })).level);
-    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(63);
+    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(67);
   });
 });
 
@@ -413,6 +413,104 @@ describe("Deck Zedruu : « à moins qu'il paie », entretien cumulatif, Path to 
 
   it("les cartes sont reconnues en entier", () => {
     for (const name of ["Rhystic Study", "Smothering Tithe", "Solitary Confinement", "Glacial Chasm", "Path to Exile"]) {
+      expect(cardSupport(real(name)).level, name).toBe("full");
+    }
+  });
+});
+
+describe("Deck Zedruu : échanges de contrôle sous condition", () => {
+  it("Modify Memory : échange deux créatures de joueurs différents, et pioche si on n'en contrôle aucune", () => {
+    let g = toMain(newTestGame(3));
+    let a: string, b: string, spell: string;
+    [g, a] = put(g, "p2", bear("A"));
+    [g, b] = put(g, "p3", bear("B"));
+    [g, spell] = inHand(g, "p1", real("Modify Memory"));
+    g = mana(g, "p1", "UCCCC");
+    const hand = g.players.p1!.zones.hand.length;
+    g = act(g, "p1", { type: "castSpell", cardId: spell, targets: [{ kind: "card", id: a }, { kind: "card", id: b }] });
+    g = resolveAll(g);
+    expect(g.cards[a]!.controllerId).toBe("p3");
+    expect(g.cards[b]!.controllerId).toBe("p2");
+    expect(g.players.p1!.zones.hand.length).toBe(hand - 1 + 3);
+  });
+
+  it("Role Reversal n'échange que deux permanents qui partagent un type", () => {
+    let g = toMain(newTestGame(2));
+    let mine: string, theirs: string, land: string, spell: string;
+    [g, mine] = put(g, "p1", bear("A"));
+    [g, theirs] = put(g, "p2", bear("B"));
+    [g, land] = put(g, "p2", real("Plateau"), 1);
+    [g, spell] = inHand(g, "p1", real("Role Reversal"), 1);
+    g = mana(g, "p1", "UURC");
+    g = act(g, "p1", { type: "castSpell", cardId: spell, targets: [{ kind: "card", id: mine }, { kind: "card", id: land }] });
+    g = resolveAll(g);
+    expect(g.cards[mine]!.controllerId).toBe("p1");
+    expect(g.cards[land]!.controllerId).toBe("p2");
+    [g, spell] = inHand(g, "p1", real("Role Reversal"), 1);
+    g = mana(g, "p1", "UURC");
+    g = act(g, "p1", { type: "castSpell", cardId: spell, targets: [{ kind: "card", id: mine }, { kind: "card", id: theirs }] });
+    g = resolveAll(g);
+    expect(g.cards[mine]!.controllerId).toBe("p2");
+    expect(g.cards[theirs]!.controllerId).toBe("p1");
+  });
+
+  it("Djinn of Infinite Deceits : créatures non légendaires, jamais pendant le combat", () => {
+    let g = toMain(newTestGame(2));
+    let djinn: string, mine: string, theirs: string, legend: string;
+    [g, djinn] = put(g, "p1", real("Djinn of Infinite Deceits"));
+    [g, mine] = put(g, "p1", bear("A"));
+    [g, theirs] = put(g, "p2", bear("B"));
+    [g, legend] = put(g, "p2", fakeCard("Légende", { typeLine: "Legendary Creature — Human", power: "1", toughness: "1" }), 1);
+    expect(refuse(g, "p1", { type: "activateAbility", cardId: djinn, index: 0, targets: [{ kind: "card", id: mine }, { kind: "card", id: legend }] })).toBeTruthy();
+    const combat = act(g, "p1", { type: "nextStep", to: "beginCombat" });
+    expect(refuse(combat, "p1", { type: "activateAbility", cardId: djinn, index: 0, targets: [{ kind: "card", id: mine }, { kind: "card", id: theirs }] })).toMatch(/combat/);
+    g = act(g, "p1", { type: "activateAbility", cardId: djinn, index: 0, targets: [{ kind: "card", id: mine }, { kind: "card", id: theirs }] });
+    g = resolveAll(g);
+    expect(g.cards[mine]!.controllerId).toBe("p2");
+    expect(g.cards[theirs]!.controllerId).toBe("p1");
+  });
+
+  it("Daring Thief se déclenche en se dégageant (mot de capacité « Inspired »)", () => {
+    let g = toMain(newTestGame(2));
+    let thief: string;
+    let theirs: string;
+    [g, thief] = put(g, "p1", real("Daring Thief"));
+    [g, theirs] = put(g, "p2", bear("B"));
+    g = act(g, "p1", { type: "setTapped", cardIds: [thief], tapped: true });
+    g = act(g, "p1", { type: "setTapped", cardIds: [thief], tapped: false });
+    const trigger = g.stack.at(-1);
+    expect(trigger && g.cards[trigger]!.ability?.sourceId).toBe(thief);
+    if (g.cards[trigger!]!.ability?.needsTargets) {
+      g = act(g, "p1", { type: "chooseTargets", cardId: trigger!, targets: [{ kind: "card", id: thief }, { kind: "card", id: theirs }] });
+    }
+    g = resolveAll(g);
+    if (g.cards[trigger!]?.ability?.awaitingDecision) g = act(g, "p1", { type: "decideOptional", cardId: trigger!, accept: true });
+    g = resolveAll(g);
+    expect(g.cards[thief]!.controllerId).toBe("p2");
+    expect(g.cards[theirs]!.controllerId).toBe("p1");
+  });
+
+  it("Puca's Mischief : l'autre permanent doit avoir une valeur de mana inférieure ou égale", () => {
+    let g = toMain(newTestGame(2));
+    let ring: string, big: string;
+    [g, , ] = put(g, "p1", real("Puca's Mischief"));
+    [g, ring] = put(g, "p1", real("Sol Ring"));
+    [g, big] = put(g, "p2", fakeCard("Gros", { typeLine: "Artifact", manaCost: "{5}", manaValue: 5 }));
+    g = act(g, "p1", { type: "passTurn" });
+    g = act(g, "p2", { type: "passTurn" });
+    g = resolveAll(g);
+    let trigger = g.stack.at(-1)!;
+    if (g.cards[trigger]!.ability?.needsTargets) {
+      g = act(g, "p1", { type: "chooseTargets", cardId: trigger, targets: [{ kind: "card", id: ring }, { kind: "card", id: big }] });
+      g = resolveAll(g);
+    }
+    trigger = g.stack.at(-1)!;
+    if (g.cards[trigger]?.ability?.awaitingDecision) g = act(g, "p1", { type: "decideOptional", cardId: trigger, accept: true });
+    g = resolveAll(g);
+    expect(g.cards[ring]!.controllerId).toBe("p1");
+    expect(g.cards[big]!.controllerId).toBe("p2");
+    expect(g.log.some((l) => /n'a pas lieu/.test(l.message))).toBe(true);
+    for (const name of ["Daring Thief", "Djinn of Infinite Deceits", "Modify Memory", "Role Reversal", "Puca's Mischief"]) {
       expect(cardSupport(real(name)).level, name).toBe("full");
     }
   });

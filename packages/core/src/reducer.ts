@@ -22,6 +22,7 @@ import {
   auraTarget,
   permanentLabel,
   type Effect,
+  type ExchangeRelation,
   type SpellEffects,
   type Target,
   type Who,
@@ -205,7 +206,8 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       const card = getCard(g, id);
       assertCanHandle(g, actor, card);
       if (card.zone !== "battlefield") throw new ActionError("Seuls les permanents s'engagent.");
-      card.tapped = tapped;
+      if (tapped) card.tapped = true;
+      else untap(g, card);
       names.push(cardName(g, card));
     }
     log(g, actor.id, `${actor.name} ${tapped ? "engage" : "dégage"} ${names.join(", ")}.`);
@@ -479,7 +481,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
   },
 
   untapAll(g, actor) {
-    for (const id of actor.zones.battlefield) g.cards[id]!.tapped = false;
+    for (const id of actor.zones.battlefield) untap(g, g.cards[id]!);
     log(g, actor.id, `${actor.name} dégage ses permanents.`);
   },
 
@@ -1803,7 +1805,7 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
           .map((id) => g.cards[id]!)
           .filter((c) => c.tapped && /\bLand\b/.test(currentTypeLine(g, c)))
           .slice(0, effect.count);
-        for (const c of lands) c.tapped = false;
+        for (const c of lands) untap(g, c);
         if (lands.length > 0) log(g, null, `${caster.name} dégage ${lands.map((c) => cardName(g, c)).join(", ")}.`);
         break;
       }
@@ -1861,6 +1863,13 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         if (!c || c.zone !== "battlefield") break;
         c.grantedTriggers = [...(c.grantedTriggers ?? []), effect.text];
         log(g, null, `${cardName(g, c)} gagne « ${effect.text} » jusqu'à la fin du tour.`);
+        break;
+      }
+      case "drawIfNeither": {
+        const a = card(effect.a);
+        const b = card(effect.b);
+        if (a?.controllerId === caster.id || b?.controllerId === caster.id) break;
+        drawCards(g, caster, effect.count);
         break;
       }
       case "loseLifeManaValue": {
@@ -1985,6 +1994,10 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         const a = card(effect.a);
         const b = card(effect.b);
         if (!a || !b || a.controllerId === b.controllerId) break;
+        if (effect.relation && !exchangeRelationHolds(g, a, b, effect.relation)) {
+          log(g, null, `L'échange de contrôle n'a pas lieu : les deux permanents ne remplissent plus la condition.`);
+          break;
+        }
         const [ca, cb] = [a.controllerId, b.controllerId];
         setController(g, a, cb);
         setController(g, b, ca);
@@ -2211,6 +2224,38 @@ function payLife(g: GameState, actor: PlayerState, amount: number): void {
  * le moment et les cibles, paie le coût, puis met la capacité sur la pile
  * (ou l'applique tout de suite pour une capacité de mana).
  */
+/** Dégage un permanent ; « Whenever ~ becomes untapped » (Daring Thief) se déclenche s'il était engagé. */
+function untap(g: GameState, card: CardInstance): void {
+  if (!card.tapped) return;
+  card.tapped = false;
+  emit(g, { type: "untapped", cardId: card.instanceId });
+}
+
+const COMBAT_STEPS: TurnStep[] = ["beginCombat", "declareAttackers", "declareBlockers", "combatDamage", "endCombat"];
+
+const PERMANENT_TYPES = ["artifact", "battle", "creature", "enchantment", "land", "planeswalker"];
+const CARD_TYPE_WORDS = [...PERMANENT_TYPES, "instant", "sorcery", "kindred", "tribal"];
+
+/** Condition entre deux permanents échangés (Role Reversal, Daring Thief, Puca's Mischief, Modify Memory). */
+function exchangeRelationHolds(g: GameState, a: CardInstance, b: CardInstance, relation: ExchangeRelation): boolean {
+  const typesOf = (c: CardInstance, list: string[]) => {
+    const data = g.cardData[c.cardId];
+    const line = (data?.faces?.[c.faceIndex]?.typeLine ?? data?.typeLine ?? "").toLowerCase().split("—")[0]!;
+    return list.filter((t) => new RegExp(`\\b${t}\\b`).test(line));
+  };
+  const shares = (list: string[]) => typesOf(a, list).some((t) => typesOf(b, list).includes(t));
+  switch (relation) {
+    case "differentPlayers":
+      return a.controllerId !== b.controllerId;
+    case "sharePermanentType":
+      return shares(PERMANENT_TYPES);
+    case "shareCardType":
+      return shares(CARD_TYPE_WORDS);
+    case "lesserManaValue":
+      return (g.cardData[b.cardId]?.manaValue ?? 0) <= (g.cardData[a.cardId]?.manaValue ?? 0);
+  }
+}
+
 function activateAbility(
   g: GameState,
   actor: PlayerState,
@@ -2232,6 +2277,7 @@ function activateAbility(
   }
   // Moment : vitesse de rituel, ou dès qu'on a la priorité (les capacités de mana, à tout moment).
   if (ability.ownTurn && !isActivePlayer(g, actor.id)) throw new ActionError("Cette capacité ne s'active que pendant ton tour.");
+  if (ability.notInCombat && COMBAT_STEPS.includes(g.turn.step)) throw new ActionError("Cette capacité ne s'active pas pendant le combat.");
   if (!ability.mana) {
     if (ability.sorcery) assertSorceryTiming(g, actor, "activer cette capacité");
     else if (g.priority && !samePriorityUnit(g, g.priority.playerId, actor.id)) {
@@ -2944,7 +2990,7 @@ function enterStep(g: GameState, step: TurnStep): void {
   switch (step) {
     case "untap":
       for (const p of players) {
-        for (const id of p.zones.battlefield) g.cards[id]!.tapped = false;
+        for (const id of p.zones.battlefield) untap(g, g.cards[id]!);
       }
       if (players.length > 0) log(g, null, `${names(players)} ${players.length > 1 ? "dégagent leurs" : "dégage ses"} permanents.`);
       break;
