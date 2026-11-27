@@ -36,6 +36,23 @@ function setup(playerCount: number) {
 }
 
 describe("salon", () => {
+  it("montre la version de l'appli de chaque joueur", () => {
+    const host = new GameHost({ hostKey: "secret", seed: 3 });
+    const a = new Conn(host, "a");
+    const b = new Conn(host, "b");
+    const c = new Conn(host, "c");
+    a.hello("Alice", { hostKey: "secret", app: { version: "0.1.40", commit: "abcdef1234" } });
+    b.hello("Bruno", { app: { version: "0.1.39" } });
+    // Version mal formée (ou appli ancienne) : on ne garde rien.
+    c.hello("Chloé", { app: { version: "<script>" } as never });
+    const players = c.last("lobby").lobby.players;
+    expect(players.map((p) => p.app)).toEqual([
+      { version: "0.1.40", commit: "abcdef1234" },
+      { version: "0.1.39" },
+      undefined,
+    ]);
+  });
+
   it("accueille les joueurs et reconnaît l'hôte", () => {
     const { conns, welcomes } = setup(3);
     expect(welcomes.map((w) => w.isHost)).toEqual([true, false, false]);
