@@ -12,7 +12,7 @@ import { grantedManaAbility, manaOptions, manaTapEffect } from "./mana.js";
 import { parsePermanentAbilities } from "./triggers.js";
 import { areTeammates } from "./modes.js";
 import { joinModes, keywordList, selfToTilde } from "./text.js";
-import { playerHasShroud, printedEvoke, typeLineHasCreatureType } from "./statics.js";
+import { playerHasHexproof, playerHasShroud, printedEvoke, typeLineHasCreatureType } from "./statics.js";
 
 export { selfToTilde };
 import type { CardData, CardInstance, GameState, PlayerId } from "./types.js";
@@ -1211,6 +1211,7 @@ export function isLegalTarget(g: GameState, spec: TargetSpec, target: Target, ca
     const p = g.players[target.id];
     if (!spec.player || !p || p.hasConceded) return false;
     if (!spec.choice && playerHasShroud(g, p.id)) return false;
+    if (!spec.choice && playerHasHexproof(g, p.id) && p.id !== casterId && !areTeammates(g, p.id, casterId)) return false;
     if (spec.notOwner && sourceId) {
       const src = g.cards[sourceId];
       const perm = src?.ability ? g.cards[src.ability.sourceId] : src;
