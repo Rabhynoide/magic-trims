@@ -119,8 +119,11 @@ function useCombatUi(view: GameView, isActive: boolean): CombatUi {
       props.onSelect = () =>
         setAttackPlan((plan) => {
           const next = { ...plan };
-          if (next[id]) delete next[id];
+          // Un clic sur une créature déjà prévue contre la cible courante l'annule ;
+          // sinon elle part (ou repart) vers la cible courante.
+          if (next[id] && next[id] === currentTarget) delete next[id];
           else if (currentTarget) next[id] = currentTarget;
+          else delete next[id];
           return next;
         });
     }
@@ -136,7 +139,8 @@ function useCombatUi(view: GameView, isActive: boolean): CombatUi {
             });
           } else setBlocker((b) => (b === id ? null : id));
         };
-      } else if (combat?.attackers[id] && pendingBlockers(view).includes(me)) {
+      } else if (combat?.attackers[id] && sameSide(view, combat.attackers[id], me)) {
+        // Seuls les attaquants qui visent mon camp peuvent être bloqués par moi.
         props.onSelect = () => {
           if (!blocker) return session.toast("Choisis d'abord une de tes créatures, puis l'attaquant à bloquer.", "info");
           setBlockPlan((plan) => ({ ...plan, [blocker]: id }));
@@ -177,17 +181,28 @@ function CombatPanel(props: { view: GameView; isActive: boolean; combat: CombatU
     return (
       <div className="combat-panel">
         <span className="combat-title">Attaque</span>
-        <label>
-          Cible{" "}
-          <select value={ui.target ?? ""} onChange={(e) => ui.setTarget(e.target.value)}>
-            {opponents(view).map((id) => (
-              <option key={id} value={id}>
+        <span className="attack-targets" role="radiogroup" aria-label="Joueur attaqué">
+          {opponents(view).map((id) => {
+            const count = planned.filter(([, d]) => d === id).length;
+            return (
+              <button
+                key={id}
+                role="radio"
+                aria-checked={ui.target === id}
+                className={`attack-target${ui.target === id ? " active" : ""}`}
+                onClick={() => ui.setTarget(id)}
+              >
                 {view.players[id]!.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <span className="hint">Clique sur tes créatures pour les faire attaquer la cible choisie.</span>
+                {count > 0 && <span className="attack-target-count">{count}</span>}
+              </button>
+            );
+          })}
+        </span>
+        <span className="hint">
+          {opponents(view).length > 1
+            ? `Clique sur tes créatures pour qu'elles attaquent ${ui.target ? view.players[ui.target]!.name : "le joueur choisi"}. Change de joueur pour envoyer les suivantes ailleurs.`
+            : "Clique sur tes créatures pour les faire attaquer."}
+        </span>
         <button
           className="primary"
           disabled={planned.length === 0}
