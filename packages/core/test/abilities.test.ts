@@ -680,6 +680,31 @@ describe("Fenêtre de choix : cimetière, bibliothèque, main révélée, saga",
   });
 });
 
+describe("Blessures de combat", () => {
+  it("Gix : une créature qui blesse un adversaire permet de payer 1 PV pour piocher", () => {
+    let g = newTestGame(2);
+    let attacker: string;
+    [g] = put(g, "p1", real("Gix, Yawgmoth Praetor"));
+    [g, attacker] = put(g, "p1", bear("Ours"), 1);
+    g = act(g, "p1", { type: "nextStep", to: "declareAttackers" });
+    g = act(g, "p1", { type: "declareAttackers", attackers: [{ cardId: attacker, defender: "p2" }] });
+    for (let i = 0; i < 6 && !g.stack.length; i++) {
+      if (g.turn.step === "combatDamage" || g.turn.step === "endCombat") break;
+      g = act(g, g.priority?.playerId ?? "p1", g.priority ? { type: "passPriority" } : { type: "nextStep" });
+    }
+    if (!g.stack.length) g = act(g, "p1", { type: "nextStep", to: "combatDamage" });
+    g = resolveAll(g);
+    const decide = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.awaitingDecision);
+    expect(decide).toBeDefined();
+    const hand = g.players.p1!.zones.hand.length;
+    g = act(g, "p1", { type: "decideOptional", cardId: decide!.instanceId, accept: true });
+    g = resolveAll(g);
+    expect(g.players.p2!.life).toBe(38);
+    expect(g.players.p1!.life).toBe(39);
+    expect(g.players.p1!.zones.hand.length).toBe(hand + 1);
+  });
+});
+
 describe("Deck Sheoldred", () => {
   it("la plupart des cartes sont gérées en entier", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "" })).level);

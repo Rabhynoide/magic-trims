@@ -674,6 +674,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
         }
         ability.choice = chosen.instanceId;
       }
+      if (trigger.payLife) payLife(g, actor, trigger.payLife);
       if (trigger.payMana) {
         let xValue = 0;
         if (/\{X\}/i.test(trigger.payMana)) {
@@ -2492,6 +2493,7 @@ function applyCombatHit(
       }
     }
     if (!infect && sharers.length > 0) emit(g, { type: "lifeLoss", playerId: hit.player, amount: hit.amount });
+    if (sharers.length > 0) emit(g, { type: "combatDamage", cardId: source.instanceId, controllerId: source.controllerId, playerId: hit.player, amount: hit.amount });
     const what = infect ? plural(hit.amount, "marqueur poison", "marqueurs poison") : plural(hit.amount, "blessure");
     log(g, null, `${sourceName} inflige ${what} à ${names(sharers)}${infect ? "" : ` (${sharers[0]?.life ?? 0} PV)`}.`);
   }

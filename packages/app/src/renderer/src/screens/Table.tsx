@@ -542,7 +542,7 @@ function DecisionBanner(props: { view: GameView }) {
     <div className="targeting-banner" role="status">
       <span>
         <strong>{ability.sourceName}</strong> :{" "}
-        {ability.text === "Exploit" ? "exploitation, sacrifier une créature ?" : `« ${ability.text} »${trigger?.payMana ? ` (payer ${trigger.payMana})` : ""}. Tu le fais ?`}
+        {ability.text === "Exploit" ? "exploitation, sacrifier une créature ?" : `« ${ability.text} »${trigger?.payMana ? ` (payer ${trigger.payMana})` : ""}${trigger?.payLife ? ` (payer ${trigger.payLife} PV)` : ""}. Tu le fais ?`}
       </span>
       <span className="decision-buttons">
         <button onClick={() => void accept()}>Oui</button>
