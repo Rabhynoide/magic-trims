@@ -11,7 +11,8 @@ import {
   exilePermissionHolds,
   foretellCost,
   flattenModes,
-  modesTargeted,
+  modesAtCast,
+  modesMax,
   mostCommonCreatureType,
   stateFromView,
   sagaChapters,
@@ -390,10 +391,11 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
             if (value === null) return;
             x = Math.max(0, Math.floor(Number(value) || 0));
           }
-          // Modes avec des cibles (Ashling's Command) : choisis d'abord, leurs cibles suivent.
+          // Modes avec des cibles (Ashling's Command), un coût (Spree) ou un commandant (Akroma's Will) : choisis d'abord, leurs cibles suivent.
           let modes: number[] | undefined;
-          if (parsed?.modes && modesTargeted(parsed)) {
-            const picked = await ui.chooseModes(`Modes de ${f.name}`, parsed.modes.list.map((m) => m.label), parsed.modes.min, parsed.modes.max);
+          if (parsed?.modes && modesAtCast(parsed)) {
+            const withCommander = view.players[view.viewerId]?.zones.battlefield.some((c) => !c.hidden && c.isCommander) ?? false;
+            const picked = await ui.chooseModes(`Modes de ${f.name}`, parsed.modes.list.map((m) => m.label), parsed.modes.min, modesMax(parsed.modes, withCommander));
             if (!picked) return;
             modes = picked;
           }

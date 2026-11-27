@@ -200,6 +200,8 @@ export interface CardInstance {
   choices?: Record<number, CardInstanceId[]>;
   /** Sort ou capacité modale sur la pile : les modes choisis (absents tant que le contrôleur n'a pas choisi). */
   modes?: { chosen?: number[] };
+  /** Akroma's Will : son lanceur contrôlait un commandant en le lançant. */
+  castWithCommander?: boolean;
   /** Saga avec lecture anticipée : le chapitre de départ choisi en la lançant. */
   chapter?: number;
   /** Sort lancé pour son coût alternatif (Baleful Mastery). */

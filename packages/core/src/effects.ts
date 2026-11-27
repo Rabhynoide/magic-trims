@@ -342,7 +342,8 @@ export interface SpellEffects {
    * si un mode a des cibles (`targets`, numérotées dans le mode), ils sont choisis en lançant le sort.
    */
   /** `maxWithCommander` : le maximum si le lanceur contrôle un commandant (Akroma's Will). */
-  modes?: { min: number; max: number; maxWithCommander?: number; list: { label: string; effects: Effect[]; targets?: TargetSpec[] }[] };
+  /** `cost` : le coût supplémentaire d'un mode de Spree (« + {2} — … »), payé en lançant le sort. */
+  modes?: { min: number; max: number; maxWithCommander?: number; list: { label: string; effects: Effect[]; targets?: TargetSpec[]; cost?: string }[] };
   effects: Effect[];
   /** Phrases que le moteur ne sait pas appliquer. */
   unknown: string[];
@@ -848,6 +849,30 @@ function parseToken(text: string): TokenSpec | null {
 
 /** Lit les effets d'un éphémère ou d'un rituel. */
 export function parseSpellEffects(oracleText: string, cardName: string, options: { alternative?: boolean } = {}): SpellEffects {
+  // Spree (Trash the Town) : « Spree » puis une ligne par mode, « + {2} — effet ». Au moins un mode, chacun ajoute son coût.
+  const lines = oracleText.replace(/\([^)]*\)/g, "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const spreeAt = lines.findIndex((l) => /^spree$/i.test(l));
+  if (spreeAt >= 0) {
+    const rest = lines.slice(0, spreeAt);
+    const list: NonNullable<SpellEffects["modes"]>["list"] = [];
+    const unknownModes: string[] = [];
+    for (const line of lines.slice(spreeAt + 1)) {
+      const m = /^\+\s*((?:\{[^}]+\})+)\s*—\s*(.+)$/.exec(line);
+      if (!m) {
+        rest.push(line);
+        continue;
+      }
+      const parsed = parseSpellEffects(m[2]!, cardName, options);
+      if (parsed.unknown.length > 0 || parsed.effects.length === 0) unknownModes.push(line);
+      list.push({ label: line, cost: m[1]!, effects: parsed.effects, ...(parsed.targets.length > 0 ? { targets: parsed.targets } : {}) });
+    }
+    if (list.length > 0) {
+      const result: SpellEffects = rest.length > 0 ? parseSpellEffects(rest.join("\n"), cardName, options) : { targets: [], effects: [], unknown: [] };
+      result.unknown.push(...unknownModes);
+      result.modes = { min: 1, max: list.length, list };
+      return result;
+    }
+  }
   // « Choose one or more — • Sell Contraband — Create a Treasure token. … • … »
   // Akroma's Will : « Choose one. If you control a commander as you cast this spell, you may choose both instead. • … »
   const modal = /^(.*?)\bchoose (one|two|three|one or more|any number)(?: ?(?:—|-)|(\. if you control a commander as you cast (?:this spell|~), you may choose both instead\.))\s*(•.+)$/is.exec(
@@ -1020,7 +1045,7 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       result.effects.push({ type: "pumpTarget", target: t, power: 0, toughness: 0, keywords: keywordList(m[1]!) }, { type: "grantTrigger", target: t, text: `${m[2]!}.` });
       continue;
     }
-    if ((m = /^until end of turn, (that creature|target creature) gains "(When .+?)\.?"\.?$/i.exec(sentence.trim()))) {
+    if ((m = /^until end of turn, (that creature|target creature) gains "(When(?:ever)? .+?)\.?"\.?$/i.exec(sentence.trim()))) {
       const t = /^target/i.test(m[1]!) ? target({ label: "créature", permanent: { types: ["creature"], notTypes: [] } }) : result.targets.length - 1;
       if (t >= 0) {
         result.effects.push({ type: "grantTrigger", target: t, text: `${m[2]!}.` });
@@ -1504,6 +1529,20 @@ export function modesTargeted(effects: SpellEffects | null | undefined): boolean
   return !!effects?.modes?.list.some((m) => (m.targets?.length ?? 0) > 0);
 }
 
+/**
+ * Les modes d'un sort se choisissent-ils en le lançant ? Oui s'ils ont des cibles,
+ * un coût (Spree), ou dépendent d'un commandant contrôlé « as you cast » (Akroma's Will).
+ */
+export function modesAtCast(effects: SpellEffects | null | undefined): boolean {
+  const modes = effects?.modes;
+  return !!modes && (modesTargeted(effects) || modes.maxWithCommander !== undefined || modes.list.some((m) => m.cost));
+}
+
+/** Le coût supplémentaire des modes choisis (Spree), « {2}{1} ». */
+export function modesCost(effects: SpellEffects | null | undefined, chosen: number[] | undefined): string {
+  return (chosen ?? []).map((i) => effects?.modes?.list[i]?.cost ?? "").join("");
+}
+
 const TARGET_KEYS = ["target", "player", "permanent", "a", "b", "controllerOf"];
 
 /** Décale les numéros de cible d'un effet (les cibles d'un mode passent après celles du sort). */
@@ -1721,6 +1760,7 @@ export const KEYWORD_HELP: Record<string, { name: string; help: string }> = {
   hexproof: { name: "Défense talismanique", help: "Les adversaires ne peuvent pas la cibler." },
   shroud: { name: "Linceul", help: "Personne ne peut la cibler." },
   "protection from each color": { name: "Protection contre chaque couleur", help: "Ni ciblée, ni bloquée, ni blessée par une source de couleur." },
+  spree: { name: "Spree", help: "En lançant le sort, tu choisis un ou plusieurs modes et paies le coût en plus de chacun." },
   "read ahead": { name: "Lecture anticipée", help: "En lançant la saga, tu choisis le chapitre de départ ; les chapitres sautés ne se déclenchent pas." },
   exploit: { name: "Exploitation", help: "En arrivant, tu peux sacrifier une créature (le moteur te le demande)." },
   flash: { name: "Flash", help: "Peut se lancer à tout moment où l'on a la priorité." },
@@ -1765,6 +1805,17 @@ export function abilityReport(data: CardData, faceIndex = 0): AbilityReportItem[
               : { title: part.charAt(0).toUpperCase() + part.slice(1), text: "Mot-clé que le moteur n'applique pas encore.", status: "manual" },
         );
       }
+      continue;
+    }
+    if (spell && /^spree$/i.test(line)) {
+      items.push({ title: KEYWORD_HELP.spree!.name, text: KEYWORD_HELP.spree!.help, status: "auto" });
+      continue;
+    }
+    const spreeMode = spell ? /^\+\s*((?:\{[^}]+\})+)\s*—\s*(.+)$/.exec(line) : null;
+    if (spreeMode) {
+      const parsed = parseSpellEffects(spreeMode[2]!, name, { alternative: true });
+      const status = parsed.effects.length === 0 ? "manual" : parsed.unknown.length === 0 ? "auto" : "partial";
+      items.push({ title: `Mode (+ ${spreeMode[1]!})`, text: spreeMode[2]!, status, ...(status === "partial" ? { manual: parsed.unknown } : {}) });
       continue;
     }
     if (spell) {
