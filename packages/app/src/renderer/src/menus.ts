@@ -243,6 +243,7 @@ function costLabel(cost: ActivationCost): string {
     cost.life > 0 ? `${cost.life} PV` : "",
     cost.sacrificeSelf ? "la sacrifier" : "",
     cost.exileSelf ? "l'exiler" : "",
+    cost.discardSelf ? "la défausser" : "",
     cost.sacrifice ? `sacrifier un(e) ${permanentLabel(cost.sacrifice).replace(/ que tu contrôles$/, "")}` : "",
   ].filter(Boolean);
   return parts.join(", ") || "gratuit";
@@ -279,7 +280,7 @@ export function abilityItems(view: GameView, card: CardView): MenuItem[] {
     const short = effect.slice(effect.indexOf(":") + 1).trim();
     const cost = costLabel(ability.cost);
     const label = ability.equip
-      ? `Équiper ${ability.cost.mana || "{0}"}`
+      ? `Équiper${ability.effects.targets[0]?.permanent?.anySubtype || ability.effects.targets[0]?.permanent?.subtype || ability.effects.targets[0]?.permanent?.legendary ? ` (${ability.effects.targets[0]!.label.replace(/ que tu contrôles$/, "")})` : ""} ${ability.cost.mana || "{0}"}`
       : `Activer (${cost}) : ${short.length > 60 ? `${short.slice(0, 57)}…` : short}`;
     const activate = async (color?: ManaType) => {
       let sacrifice: string | undefined;
