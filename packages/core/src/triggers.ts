@@ -307,6 +307,19 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
       result.triggers.push(EXPLOIT);
       continue;
     }
+    // Cascade (une fois par mot) : se déclenche quand on lance le sort.
+    if (/^cascade(?:, cascade)*$/i.test(line)) {
+      for (const _ of line.split(",")) {
+        result.triggers.push({
+          text: "Cascade",
+          condition: { on: "cast", whose: "you", types: [], notTypes: [], self: true },
+          effects: { targets: [], effects: [{ type: "cascade" }], unknown: [] },
+          ifUntapped: false,
+          optional: false,
+        });
+      }
+      continue;
+    }
     // Annihilateur N : le joueur défenseur sacrifie N permanents.
     const annihilator = /^Annihilator (\d+)$/i.exec(line);
     if (annihilator) {

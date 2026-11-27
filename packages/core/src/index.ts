@@ -4,6 +4,7 @@ export {
   applyAction,
   ActionError,
   canSee,
+  exilePermissionHolds,
   priorityStopsOf,
   RESPONSE_STEPS,
   wantsToRespond,

@@ -134,6 +134,10 @@ type EffectBase =
   | { type: "returnSelf" }
   /** « ~ gets +1/+1 until end of turn. » */
   | { type: "pumpSelf"; power: number; toughness: number }
+  /** Encore : un jeton copie par adversaire, avec la célérité, sacrifié à la fin du tour. */
+  | { type: "encore" }
+  /** Cascade : exiler jusqu'à une carte non-terrain de plus petite valeur de mana, lançable gratuitement. */
+  | { type: "cascade" }
   /** Annihilateur : le joueur que la créature attaque sacrifie des permanents de son choix. */
   | { type: "defenderSacrifices"; count: number }
   /** Risen Reef : la carte du dessus, sur le champ de bataille engagée si c'est un terrain (au choix), sinon en main. */
@@ -270,7 +274,7 @@ const COLORS: Record<string, string> = { white: "W", blue: "U", black: "B", red:
 const CARD_TYPES = ["artifact", "battle", "creature", "enchantment", "land", "planeswalker"];
 
 /** Phrases sans effet de jeu à appliquer (rappels, précisions). */
-const HARMLESS = [/^(it|they) can't be regenerated\.?$/i, /^~ can't be countered\.?$/i, /^round up each time\.?$/i];
+const HARMLESS = [/^rebound\.?$/i, /^cascade(?:, cascade)*\.?$/i, /^(it|they) can't be regenerated\.?$/i, /^~ can't be countered\.?$/i, /^round up each time\.?$/i];
 
 
 /**
@@ -1140,7 +1144,7 @@ export interface CardSupport {
   unknown: string[];
 }
 
-const HANDLED_KEYWORDS = new Set([...COMBAT_KEYWORDS, "Flash", "Exploit", "Read ahead", "Evoke", "Changeling"].map((k) => k.toLowerCase()));
+const HANDLED_KEYWORDS = new Set([...COMBAT_KEYWORDS, "Flash", "Exploit", "Read ahead", "Evoke", "Changeling", "Rebound", "Cascade"].map((k) => k.toLowerCase()));
 
 /** Ce que le moteur fait d'une ligne de texte d'un permanent. */
 interface LineStatus {
@@ -1260,6 +1264,9 @@ export const KEYWORD_HELP: Record<string, { name: string; help: string }> = {
   exploit: { name: "Exploitation", help: "En arrivant, tu peux sacrifier une créature (le moteur te le demande)." },
   flash: { name: "Flash", help: "Peut se lancer à tout moment où l'on a la priorité." },
   fear: { name: "Peur", help: "Ne peut être bloquée que par des créatures-artefacts et/ou noires." },
+  cascade: { name: "Cascade", help: "Quand tu la lances, exile des cartes jusqu'à une carte non-terrain de plus petite valeur de mana : tu peux la lancer gratuitement." },
+  encore: { name: "Encore", help: "Depuis le cimetière, en l'exilant : un jeton copie par adversaire, qui l'attaque, avec la célérité, sacrifié à la fin du tour." },
+  rebound: { name: "Rebond", help: "Lancé depuis la main, il est exilé en se résolvant ; tu peux le relancer gratuitement à ton prochain entretien." },
   annihilator: { name: "Annihilateur", help: "Quand elle attaque, le joueur défenseur sacrifie autant de permanents." },
   evoke: { name: "Évocation", help: "Peut se lancer pour son coût d'évocation ; elle est alors sacrifiée en arrivant." },
   changeling: { name: "Changelin", help: "Cette carte a tous les types de créature." },

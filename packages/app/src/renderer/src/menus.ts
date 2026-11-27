@@ -8,6 +8,7 @@ import {
   evokeOptions,
   chooseTypeOf,
   entersUntappedChoice,
+  exilePermissionHolds,
   mostCommonCreatureType,
   stateFromView,
   sagaChapters,
@@ -145,6 +146,17 @@ export function cardMenu(view: GameView, card: CardView): MenuItem[] {
   if ((zone === "hand" || (zone === "command" && (card as VisibleCardView).isCommander)) && card.ownerId === me) {
     const play = playItems(view, card);
     if (play.length > 0) items.push(...play, { separator: true, label: "" });
+  }
+
+  // Rebond, cascade : un sort exilé qu'on peut lancer sans payer son coût.
+  if (zone === "exile" && card.ownerId === me && !card.hidden) {
+    const state = stateFromView(view);
+    const instance = id ? state.cards[id] : undefined;
+    if (instance && exilePermissionHolds(state, instance)) {
+      const reason = instance.castPermission!.reason;
+      const play = playItems(view, card).map((item) => (item.separator ? item : { ...item, label: `${item.label} (${reason}, gratuit)` }));
+      if (play.length > 0) items.push(play[0]!, { separator: true, label: "" });
+    }
   }
 
   if (zone === "hand" && card.ownerId === me) {

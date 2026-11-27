@@ -18,6 +18,8 @@ export interface ActivationCost {
   sacrificeSelf: boolean;
   /** Défausser la carte (recyclage). */
   discardSelf?: boolean;
+  /** Exiler la carte de son cimetière (encore). */
+  exileSelf?: boolean;
   /** Un autre permanent à sacrifier (« Sacrifice a creature »), choisi à l'activation. */
   sacrifice?: PermanentFilter;
   /** Loyauté ajoutée (+1) ou retirée (−2) d'un planeswalker. */
@@ -87,6 +89,21 @@ export function parseActivatedLine(line: string, isPlaneswalker: boolean): Activ
       effects: { targets: [], effects: [{ type: "draw", who: "you", count: 1 }], unknown: [] },
       zone: "hand",
       sorcery: false,
+      oncePerTurn: false,
+      mana: false,
+      equip: false,
+    };
+  }
+  // « Encore {6}{B}{B} » : depuis le cimetière, une copie par adversaire.
+  const encore = /^Encore ((?:\{[^}]+\})+)$/i.exec(line);
+  if (encore) {
+    return {
+      text: line,
+      costText: encore[1]!,
+      cost: { mana: encore[1]!, tap: false, life: 0, sacrificeSelf: false, exileSelf: true },
+      effects: { targets: [], effects: [{ type: "encore" }], unknown: [] },
+      zone: "graveyard",
+      sorcery: true,
       oncePerTurn: false,
       mana: false,
       equip: false,

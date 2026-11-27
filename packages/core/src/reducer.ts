@@ -411,9 +411,12 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
   castSpell(g, actor, { cardId, face, x, targets, sacrifice, alternative, chapter, evoke, evokeExile, chosenType }) {
     const card = getCard(g, cardId);
     const fromCommand = card.zone === "command" && card.isCommander;
-    if (card.ownerId !== actor.id || (card.zone !== "hand" && !fromCommand)) {
+    // Rebond, cascade : lancée depuis l'exil, avec la permission notée sur la carte.
+    const permission = card.zone === "exile" && card.ownerId === actor.id && exilePermissionHolds(g, card) ? card.castPermission : undefined;
+    if (card.ownerId !== actor.id || (card.zone !== "hand" && !fromCommand && !permission)) {
       throw new ActionError("Lance un sort de ta main ou ton commandant depuis la zone de commandement.");
     }
+    if (permission && (evoke || alternative)) throw new ActionError("Ce sort se lance sans payer son coût : pas d'évocation ni de coût alternatif.");
     const faceIndex = face ?? 0;
     const data = g.cardData[card.cardId]!;
     const faceData = data.faces?.[faceIndex];
@@ -421,14 +424,14 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const typeLine = faceData?.typeLine ?? data.typeLine;
     if (/\bLand\b/.test(typeLine)) throw new ActionError("Un terrain se joue, il ne se lance pas.");
     const fast = /\bInstant\b/.test(typeLine) || data.keywords.includes("Flash");
-    if (fast) {
+    if (fast || permission?.ignoreTiming) {
       if (g.priority && !samePriorityUnit(g, g.priority.playerId, actor.id)) {
         throw new ActionError(`Attends d'avoir la priorité (c'est à ${g.players[g.priority.playerId]!.name}).`);
       }
     } else {
       assertSorceryTiming(g, actor, "lancer ce sort");
     }
-    const xValue = x ?? 0;
+    const xValue = permission?.free ? 0 : (x ?? 0);
     if (!Number.isInteger(xValue) || xValue < 0 || xValue > 100) throw new ActionError("Valeur de X invalide.");
     const castThisTurn = actor.spellsCast?.turn === g.turn.number ? actor.spellsCast.count : 0;
     if (g.settings.enforceRules) {
@@ -470,7 +473,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
         throw new ActionError(`Choisis une carte ${colorName} de ta main à exiler.`);
       }
     }
-    const costText = evokeCost ? evokeCost.mana : alternative ? effects!.alternativeCost! : faceData?.manaCost || data.manaCost;
+    const costText = permission?.free ? "" : evokeCost ? evokeCost.mana : alternative ? effects!.alternativeCost! : faceData?.manaCost || data.manaCost;
     const tax = fromCommand ? 2 * (actor.commanderCasts[card.instanceId] ?? 0) : 0;
     const name = cardName(g, card);
     // Coût supplémentaire : sacrifier un permanent (Village Rites…).
@@ -486,7 +489,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const reductions = g.settings.enforceRules
       ? costReductions(g, actor.id, { typeLine, colors: data.colors, oracleText: faceData?.oracleText ?? data.oracleText })
       : { generic: 0, colored: [] as string[] };
-    const reduction = reductions.generic;
+    const reduction = permission?.free ? 0 : reductions.generic;
     // Morophon : retire du coût le mana coloré indiqué (une fois chaque symbole).
     let paidCost = costText;
     for (const c of reductions.colored) paidCost = paidCost.replace(`{${c}}`, "");
@@ -532,6 +535,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       x !== undefined ? `X = ${xValue}` : "",
       alternative ? "coût alternatif" : "",
       evokeCost ? "évocation" : "",
+      permission ? `${permission.reason}${permission.free ? ", sans payer son coût" : ""}` : "",
       tax > 0 ? `taxe de commandant {${tax}}` : "",
       reduction > 0 ? `réduction de {${reduction}}` : "",
     ]
@@ -1162,6 +1166,18 @@ export function moveCardTo(
     delete card.castFromHand;
     if (to !== "battlefield") delete card.evoked;
   }
+  if (from === "exile" && to !== "exile") {
+    delete card.castPermission;
+    delete card.rebound;
+  }
+  // Cascade : la carte non lancée va au-dessous de la bibliothèque quand le sort quitte la pile.
+  if (from === "stack" && to !== "stack") {
+    for (const pid of g.turnOrder) {
+      for (const id of [...g.players[pid]!.zones.exile]) {
+        if (g.cards[id]?.castPermission?.whileOnStack === cardId) moveCardTo(g, id, "library", "bottom");
+      }
+    }
+  }
   card.controllerId = to === "battlefield" || to === "stack" ? (options.controllerId ?? card.controllerId) : card.ownerId;
   if (from === "battlefield" && to !== "battlefield") card.controllerId = card.ownerId;
   card.zone = to;
@@ -1779,6 +1795,8 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
       .map((id) => g.cards[id]!)
       .filter((c) => matchesPermanent(g, c, filter, caster.id));
 
+  // Ephemerate : « Exile target creature you control, then return it… » (la carte exilée par ce sort).
+  let lastExiled: { id: CardInstanceId; zone: Zone } | undefined;
   for (const effect of effects) {
     if (effect.ifControls && controlledMatching(effect.ifControls.filter).length < effect.ifControls.atLeast) continue;
     switch (effect.type) {
@@ -1799,6 +1817,7 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         if (!c) break;
         const name = cardName(g, c);
         const moved = moveCardTo(g, c.instanceId, effect.type === "exile" ? "exile" : "hand", "top");
+        if (effect.type === "exile") lastExiled = { id: moved.instanceId, zone: "exile" };
         if (effect.type === "exile" && effect.returnAtEnd && !moved.isToken) {
           (g.delayedReturns ??= []).push({ cardId: moved.instanceId, playerId: moved.ownerId });
           log(g, null, `${name} reviendra au début de la prochaine étape de fin de ${g.players[moved.ownerId]!.name}.`);
@@ -1859,10 +1878,10 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         // Déjà fait avant la résolution (voir startScry).
         break;
       case "returnEventCard": {
-        const id = ability?.eventCardId;
+        const id = ability?.eventCardId ?? lastExiled?.id;
         const back = id ? g.cards[id] : undefined;
         // La carte doit être restée là où l'événement l'a mise (sinon c'est un nouvel objet, règle 400.7).
-        if (!back || back.zone !== ability?.eventZone || back.ability) break;
+        if (!back || back.zone !== (ability?.eventCardId ? ability.eventZone : lastExiled?.zone) || back.ability) break;
         const controllerId = effect.owner ? back.ownerId : caster.id;
         moveCardTo(g, back.instanceId, "battlefield", "top", { controllerId, tapped: effect.tapped });
         log(g, null, `${cardName(g, back)} revient sur le champ de bataille${effect.tapped ? " engagé(e)" : ""} sous le contrôle de ${g.players[controllerId]!.name}.`);
@@ -2128,6 +2147,43 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
           const loss = Math.ceil(Math.max(0, p.life) / 2);
           if (loss > 0) changeLife(g, p.id, -loss);
         }
+        break;
+      }
+      case "encore": {
+        const dataId = source.cardId;
+        for (const opponent of opponentsOf(g, caster.id)) {
+          const instance = newInstance(g, dataId, caster.id, "battlefield");
+          instance.faceIndex = source.faceIndex;
+          instance.isToken = true;
+          instance.summoningSick = true;
+          instance.grants = ["haste"];
+          instance.grantedTriggers = ["At the beginning of your end step, sacrifice this permanent."];
+          caster.zones.battlefield.push(instance.instanceId);
+          emitEnters(g, instance);
+          log(g, null, `${caster.name} crée un jeton copie de ${cardName(g, instance)} qui doit attaquer ${opponent.name} ce tour-ci.`);
+        }
+        break;
+      }
+      case "cascade": {
+        const spell = ability ? g.cards[ability.sourceId] : undefined;
+        const mv = spell ? (g.cardData[spell.cardId]?.manaValue ?? 0) : 0;
+        const exiled: CardInstanceId[] = [];
+        let hit: CardInstance | undefined;
+        while (caster.zones.library.length > 0) {
+          const c = moveCardTo(g, caster.zones.library[0]!, "exile", "top");
+          const d = g.cardData[c.cardId];
+          if (d && !/\bLand\b/.test(d.faces?.[0]?.typeLine ?? d.typeLine) && d.manaValue < mv) {
+            hit = c;
+            break;
+          }
+          exiled.push(c.instanceId);
+        }
+        g.rngState = shuffleInPlace(exiled, g.rngState);
+        for (const id of exiled) moveCardTo(g, id, "library", "bottom");
+        if (hit) {
+          hit.castPermission = { free: true, turn: g.turn.number, ignoreTiming: true, reason: "cascade", ...(spell ? { whileOnStack: spell.instanceId } : {}) };
+          log(g, null, `Cascade : ${caster.name} exile ${cardName(g, hit)} (et ${plural(exiled.length, "autre carte", "autres cartes")} mises dessous) et peut la lancer sans payer son coût.`);
+        } else log(g, null, `Cascade : aucune carte trouvée.`);
         break;
       }
       case "defenderSacrifices": {
@@ -2529,6 +2585,30 @@ function withModes(effects: SpellEffects, card: CardInstance): Effect[] {
   return [...effects.effects, ...chosen.flatMap((i) => effects.modes!.list[i]?.effects ?? [])];
 }
 
+/** La carte exilée peut-elle encore être lancée (rebond, cascade) ? */
+export function exilePermissionHolds(g: GameState, card: CardInstance): boolean {
+  const p = card.castPermission;
+  if (!p || card.zone !== "exile") return false;
+  if (p.turn !== g.turn.number) return false;
+  if (p.step && g.turn.step !== p.step) return false;
+  if (p.whileOnStack && !g.stack.includes(p.whileOnStack)) return false;
+  return true;
+}
+
+/** Un éphémère ou un rituel résolu va au cimetière, ou en exil avec le rebond. */
+function finishSpell(g: GameState, card: CardInstance): void {
+  const data = g.cardData[card.cardId];
+  if (card.castFromHand && g.settings.enforceRules && /^Rebound\b/m.test(data?.faces?.[card.faceIndex]?.oracleText ?? data?.oracleText ?? "")) {
+    const owner = card.ownerId;
+    const name = cardName(g, card);
+    const exiled = moveCardTo(g, card.instanceId, "exile", "top");
+    exiled.rebound = owner;
+    log(g, null, `${name} est exilé (rebond) : ${g.players[owner]!.name} pourra le relancer gratuitement à son prochain entretien.`);
+    return;
+  }
+  moveCardTo(g, card.instanceId, "graveyard", "top");
+}
+
 function resolveTop(g: GameState, stackId?: CardInstanceId): void {
   const id = stackId ?? g.stack.at(-1)!;
   const card = g.cards[id]!;
@@ -2553,7 +2633,7 @@ function resolveTop(g: GameState, stackId?: CardInstanceId): void {
     if (startModes(g, card, effects) || startScry(g, card, effects) || startCardChoice(g, card, withModes(effects, card), targets, legal)) return;
     log(g, null, `${name} se résout.`);
     applySpellEffects(g, card, withModes(effects, card), targets, legal);
-    if (g.cards[id]?.zone === "stack") moveCardTo(g, id, "graveyard", "top");
+    if (g.cards[id]?.zone === "stack") finishSpell(g, g.cards[id]!);
     if (effects.unknown.length > 0) {
       log(g, null, `À appliquer à la main pour ${name} : « ${effects.unknown.join(" ")} »`);
     }
@@ -2874,6 +2954,10 @@ function activateAbility(
   if (cost.discardSelf) {
     moveCardTo(g, card.instanceId, "graveyard", "top");
     costParts.push("en le défaussant");
+  }
+  if (cost.exileSelf) {
+    moveCardTo(g, card.instanceId, "exile", "top");
+    costParts.push("en l'exilant de son cimetière");
   }
   const instance = newInstance(g, card.cardId, actor.id, "stack");
   instance.faceIndex = card.faceIndex;
@@ -3559,6 +3643,19 @@ function enterStep(g: GameState, step: TurnStep): void {
   }
   if (step === "upkeep" || step === "draw" || step === "main1" || step === "end") {
     for (const p of activePlayers(g)) emit(g, { type: "step", step, playerId: p.id });
+  }
+  // Rebond : les sorts exilés se relancent gratuitement pendant cet entretien.
+  if (step === "upkeep" && (g.turn.upkeeps ?? 1) <= 1) {
+    for (const p of activePlayers(g)) {
+      for (const id of p.zones.exile) {
+        const c = g.cards[id]!;
+        if (c.rebound !== p.id) continue;
+        delete c.rebound;
+        // Le moteur ne s'arrête pas forcément à l'entretien : la permission dure le tour.
+        c.castPermission = { free: true, turn: g.turn.number, ignoreTiming: true, reason: "rebond" };
+        log(g, null, `${p.name} peut relancer ${cardName(g, c)} depuis l'exil sans payer son coût (rebond).`);
+      }
+    }
   }
   // Herald's Horn : la carte du dessus va en main si c'est une créature du type choisi.
   if (step === "upkeep" && g.settings.enforceRules) {

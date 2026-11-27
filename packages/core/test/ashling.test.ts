@@ -213,7 +213,7 @@ describe("Deck Ashling : recherches de terrains", () => {
 describe("Deck Ashling : bilan", () => {
   it("compte les cartes entièrement gérées", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "", manaCost: c.manaCost ?? "" })).level);
-    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(73);
+    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(76);
   });
 });
 
@@ -639,5 +639,79 @@ describe("Deck Ashling : mots-clés", () => {
     g = resolveAll(g);
     expect(g.cards[land]!.zone).toBe("graveyard");
     for (const name of ["Shriekmaw", "Nulldrifter", "Animar, Soul of Elements"]) expect(cardSupport(real(name)).level, name).toBe("full");
+  });
+});
+
+describe("Deck Ashling : rebond, cascade, encore", () => {
+  const creature = (name: string, mv: number, extra: Partial<CardData> = {}) =>
+    fakeCard(name, { typeLine: "Creature — Beast", power: "2", toughness: "2", manaCost: `{${mv}}`, manaValue: mv, ...extra });
+
+  it("Ephemerate : rebond, relancé gratuitement au tour suivant", () => {
+    let g = toMain(newTestGame(2));
+    let bear: string, spell: string;
+    [g, bear] = put(g, "p1", creature("Ours", 2));
+    [g, spell] = inHand(g, "p1", real("Ephemerate", { colors: ["W"] }));
+    g = mana(g, "p1", "W");
+    g = act(g, "p1", { type: "castSpell", cardId: spell, targets: [{ kind: "card", id: bear }] });
+    g = resolveAll(g);
+    expect(g.cards[spell]!.zone).toBe("exile");
+    expect(g.cards[spell]!.rebound).toBe("p1");
+    // Pas avant le prochain entretien.
+    expect(() => act(g, "p1", { type: "castSpell", cardId: spell, targets: [{ kind: "card", id: g.players.p1!.zones.battlefield.at(-1)! }] })).toThrow();
+    g = endTurn(g, "p1");
+    g = endTurn(g, "p2");
+    expect(g.turn.activePlayerId).toBe("p1");
+    const target = g.players.p1!.zones.battlefield.find((id) => g.cardData[g.cards[id]!.cardId]?.name === "Ours")!;
+    g = act(g, "p1", { type: "castSpell", cardId: spell, targets: [{ kind: "card", id: target }] });
+    g = resolveAll(g);
+    // Relancé depuis l'exil : il va au cimetière cette fois.
+    expect(g.cards[spell]!.zone).toBe("graveyard");
+  });
+
+  it("Maelstrom Wanderer : deux cascades, gratuites", () => {
+    let g = toMain(newTestGame(2));
+    let wanderer: string;
+    // La bibliothèque : un terrain, puis une créature à 3, une à 9 (trop chère), une à 2.
+    const lib = g.players.p1!.zones.library;
+    const set = (i: number, data: CardData) => (g.cardData[g.cards[lib[i]!]!.cardId] = { ...data, id: g.cards[lib[i]!]!.cardId });
+    set(0, basic("Forest"));
+    set(1, creature("Trois", 3));
+    set(2, creature("Neuf", 9));
+    set(3, creature("Deux", 2));
+    [g, wanderer] = inHand(g, "p1", real("Maelstrom Wanderer", { colors: ["U", "R", "G"], manaValue: 8 }));
+    g = mana(g, "p1", "UURRGGCC");
+    const libSize = g.players.p1!.zones.library.length;
+    g = act(g, "p1", { type: "castSpell", cardId: wanderer });
+    // Deux déclencheurs de cascade sur la pile.
+    expect(g.stack).toHaveLength(3);
+    g = act(g, "p1", { type: "passPriority" });
+    g = act(g, "p2", { type: "passPriority" });
+    const three = g.players.p1!.zones.exile.find((id) => g.cardData[g.cards[id]!.cardId]?.name === "Trois")!;
+    expect(g.cards[three]!.castPermission?.reason).toBe("cascade");
+    g = act(g, "p1", { type: "castSpell", cardId: three });
+    g = resolveAll(g);
+    expect(g.cards[three]!.zone).toBe("battlefield");
+    // Seconde cascade : « Deux » (le 9 passe dessous) ; on ne la lance pas.
+    const two = g.players.p1!.zones.exile.find((id) => g.cardData[g.cards[id]!.cardId]?.name === "Deux");
+    expect(two).toBeUndefined();
+    expect(g.cards[wanderer]!.zone).toBe("battlefield");
+    // Les cartes non lancées sont dessous : la bibliothèque a perdu seulement « Trois ».
+    expect(g.players.p1!.zones.library).toHaveLength(libSize - 1);
+  });
+
+  it("Lamentation : encore depuis le cimetière", () => {
+    let g = newTestGame(3);
+    g = toMain(g);
+    let lam: string;
+    [g, lam] = inHand(g, "p1", real("Lamentation", { colors: ["B"] }));
+    g = act(g, "p1", { type: "moveCard", cardId: lam, to: "graveyard", force: true });
+    g = mana(g, "p1", "BBCCCCCC");
+    g = act(g, "p1", { type: "activateAbility", cardId: lam, index: 0 });
+    g = resolveAll(g);
+    expect(g.cards[lam]!.zone).toBe("exile");
+    const tokens = g.players.p1!.zones.battlefield.filter((id) => g.cards[id]!.isToken);
+    expect(tokens).toHaveLength(2);
+    for (const id of tokens) expect(hasKeyword(g, g.cards[id]!, "Haste")).toBe(true);
+    for (const name of ["Ephemerate", "Maelstrom Wanderer", "Lamentation"]) expect(cardSupport(real(name)).level, name).toBe("full");
   });
 });

@@ -191,6 +191,13 @@ export interface CardInstance {
   alternative?: boolean;
   /** Lancé depuis la main (Approach of the Second Sun). */
   castFromHand?: boolean;
+  /**
+   * Peut être lancée depuis l'exil (rebond, cascade) : sans payer son coût si `free`,
+   * pendant ce tour (et cette étape si `step`), ou tant que le sort `whileOnStack` est sur la pile.
+   */
+  castPermission?: { free: boolean; turn: number; step?: TurnStep; ignoreTiming?: boolean; whileOnStack?: CardInstanceId; reason: string };
+  /** Rebond : exilée en se résolvant, lançable gratuitement à l'entretien suivant de ce joueur. */
+  rebound?: PlayerId;
   /** Lancé pour son coût d'évocation : sacrifié en arrivant. */
   evoked?: boolean;
   /** Type choisi en arrivant (« As ~ enters, choose a creature type »). */
