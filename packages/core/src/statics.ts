@@ -37,6 +37,8 @@ export type StaticAbility =
   | { kind: "ptEqualsHand" }
   /** Faeburrow Elder : « gets +1/+1 for each color among permanents you control ». */
   | { kind: "ptPerColor" }
+  /** Yarok (`entering`), Twinflame Travelers (`subtype`) : les capacités déclenchées se déclenchent une fois de plus. */
+  | { kind: "triggerDoubler"; entering?: boolean; subtype?: string }
   /** « Players have no maximum hand size. » */
   | { kind: "noMaxHandSizeAll" }
   /** « This land enters tapped. » */
@@ -162,6 +164,12 @@ export function parseStaticLine(line: string): StaticAbility | null {
   if (/^~ can't (attack|block)( or (attack|block))?$/i.test(l)) return { kind: "restriction" };
   if (/^~'s power and toughness are each equal to the number of cards in your hand$/i.test(l)) return { kind: "ptEqualsHand" };
   if (/^~ gets \+1\/\+1 for each color among permanents you control$/i.test(l)) return { kind: "ptPerColor" };
+  if ((m = /^if a triggered ability of another (\w+) you control triggers, it triggers an additional time$/i.exec(l))) {
+    return { kind: "triggerDoubler", subtype: m[1]!.charAt(0).toUpperCase() + m[1]!.slice(1).toLowerCase() };
+  }
+  if (/^if a permanent entering causes a triggered ability of a permanent you control to trigger, that ability triggers an additional time$/i.test(l)) {
+    return { kind: "triggerDoubler", entering: true };
+  }
   if (/^as ~ enters, choose a creature type$/i.test(l)) return { kind: "chooseType", what: "creature" };
   if (/^as ~ enters, choose artifact, creature, enchantment, instant, or sorcery$/i.test(l)) return { kind: "chooseType", what: "card" };
   if (/^as ~ enters, choose a color$/i.test(l)) return { kind: "chooseType", what: "color" };

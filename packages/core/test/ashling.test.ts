@@ -213,7 +213,7 @@ describe("Deck Ashling : recherches de terrains", () => {
 describe("Deck Ashling : bilan", () => {
   it("compte les cartes entièrement gérées", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "", manaCost: c.manaCost ?? "" })).level);
-    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(64);
+    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(66);
   });
 });
 
@@ -465,5 +465,29 @@ describe("Deck Ashling : atterrissage", () => {
     for (const name of ["Avenger of Zendikar", "Omnath, Locus of Rage", "Omnath, Locus of the Roil"]) {
       expect(cardSupport(real(name)).level, name).toBe("full");
     }
+  });
+});
+
+describe("Deck Ashling : doubleurs de déclencheurs", () => {
+  const tokens = (g: GameState) => g.players.p1!.zones.battlefield.filter((id) => g.cards[id]!.isToken).length;
+  const landfall = (g: GameState, extra: string[]) => {
+    let forest: string;
+    [g] = put(g, "p1", real("Omnath, Locus of Rage"));
+    for (const name of extra) [g] = put(g, "p1", real(name));
+    [g, forest] = inHand(g, "p1", basic("Forest"));
+    g = act(g, "p1", { type: "playLand", cardId: forest });
+    return resolveAll(g);
+  };
+
+  it("Yarok : un terrain qui arrive déclenche Omnath deux fois", () => {
+    expect(tokens(landfall(toMain(newTestGame(2)), ["Yarok, the Desecrated"]))).toBe(2);
+  });
+
+  it("Twinflame Travelers : les capacités des autres Élémentaux se déclenchent deux fois", () => {
+    expect(tokens(landfall(toMain(newTestGame(2)), ["Twinflame Travelers"]))).toBe(2);
+    expect(tokens(landfall(toMain(newTestGame(2)), ["Twinflame Travelers", "Yarok, the Desecrated"]))).toBe(3);
+    // Sans doubleur : un seul jeton.
+    expect(tokens(landfall(toMain(newTestGame(2)), []))).toBe(1);
+    for (const name of ["Yarok, the Desecrated", "Twinflame Travelers"]) expect(cardSupport(real(name)).level, name).toBe("full");
   });
 });

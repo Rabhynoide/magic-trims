@@ -1432,6 +1432,24 @@ const MAX_TRIGGERS_PER_ACTION = 50;
  * l'ordre du tour à partir du joueur actif (règle 603.3b). Retourne vrai si
  * au moins une capacité a été ajoutée.
  */
+/** Yarok, Twinflame Travelers : combien de fois de plus la capacité se déclenche. */
+function extraTriggers(g: GameState, permanents: CardInstance[], source: CardInstance, dataId: string, faceIndex: number, event: TriggerEvent): number {
+  let extra = 0;
+  for (const doubler of permanents) {
+    if (doubler.controllerId !== source.controllerId) continue;
+    for (const st of staticsOf(g, doubler)) {
+      if (st.kind !== "triggerDoubler") continue;
+      if (st.entering && event.type === "enters") extra++;
+      if (st.subtype && doubler.instanceId !== source.instanceId) {
+        const data = g.cardData[dataId];
+        const face = data?.faces?.[faceIndex];
+        if (typeLineHasCreatureType(face?.typeLine ?? data?.typeLine ?? "", face?.oracleText ?? data?.oracleText ?? "", st.subtype)) extra++;
+      }
+    }
+  }
+  return extra;
+}
+
 function flushTriggers(g: GameState): boolean {
   const events = g.events ?? [];
   delete g.events;
@@ -1497,7 +1515,8 @@ function flushTriggers(g: GameState): boolean {
           if (used.includes(TRIGGER_KEY + index)) return;
           if (live) live.usedAbilities = { turn: g.turn.number, indices: [...used, TRIGGER_KEY + index] };
         }
-        pending.push({ source: card, dataId, faceIndex, index, controllerId: card.controllerId, event, trigger, ...(grantedText ? { grantedText } : {}) });
+        const copies = 1 + extraTriggers(g, permanents, card, dataId, faceIndex, event);
+        for (let i = 0; i < copies; i++) pending.push({ source: card, dataId, faceIndex, index, controllerId: card.controllerId, event, trigger, ...(grantedText ? { grantedText } : {}) });
       });
     }
   }
