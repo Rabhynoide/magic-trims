@@ -8,7 +8,7 @@
  * encore) : il lance donc surtout des permanents.
  */
 import type { GameAction } from "./actions.js";
-import { canAttack, cantBlock, creatureStats, hasKeyword, isCreature } from "./combat.js";
+import { canAttack, canBlock as canBlockAttacker, cantBlock, creatureStats, hasKeyword, isCreature } from "./combat.js";
 import { isLegalTarget, spellEffectsOf, type Target } from "./effects.js";
 import { abilitiesOf, stackTrigger } from "./triggers.js";
 import { areTeammates, isActivePlayer, teamOf } from "./modes.js";
@@ -161,6 +161,20 @@ function isPermanentSpell(type: string): boolean {
 function chooseAttacks(g: GameState, botId: PlayerId): { cardId: CardInstanceId; defender: PlayerId }[] {
   const foes = g.turnOrder.filter((id) => !g.players[id]!.hasConceded && !isActivePlayer(g, id));
   if (foes.length === 0) return [];
+  const chosen = chooseFreeAttacks(g, botId, foes);
+  // Les créatures provoquées attaquent forcément, un autre joueur que celui qui les a provoquées si possible.
+  for (const card of attackersOf(g, botId)) {
+    if (!card.goadedBy?.length) continue;
+    const defender = foes.find((f) => !card.goadedBy!.includes(f)) ?? foes[0]!;
+    const existing = chosen.find((a) => a.cardId === card.instanceId);
+    if (existing) {
+      if (card.goadedBy.includes(existing.defender) && !card.goadedBy.includes(defender)) existing.defender = defender;
+    } else chosen.push({ cardId: card.instanceId, defender });
+  }
+  return chosen;
+}
+
+function chooseFreeAttacks(g: GameState, botId: PlayerId, foes: PlayerId[]): { cardId: CardInstanceId; defender: PlayerId }[] {
   const defender = [...foes].sort((a, b) => g.players[a]!.life - g.players[b]!.life)[0]!;
   const blockers = untappedCreatures(g, defender);
   const ready = attackersOf(g, botId);
@@ -169,8 +183,7 @@ function chooseAttacks(g: GameState, botId: PlayerId): { cardId: CardInstanceId;
       const { power, toughness } = creatureStats(g, card);
       if (power <= 0) return false;
       if (blockers.length === 0) return true;
-      const flying = hasKeyword(g, card, "Flying");
-      const able = blockers.filter((b) => !flying || hasKeyword(g, b, "Flying") || hasKeyword(g, b, "Reach"));
+      const able = blockers.filter((b) => canBlockAttacker(g, b, card));
       // Un bloqueur capable de tuer l'attaquant en survivant rend l'attaque risquée.
       return !able.some((b) => {
         const s = creatureStats(g, b);
@@ -227,8 +240,7 @@ function chooseBlocks(g: GameState, botId: PlayerId): { cardId: CardInstanceId; 
     .sort((a, b) => creatureStats(g, b).power - creatureStats(g, a).power);
   const available = untappedCreatures(g, botId).filter((c) => !cantBlock(g, c));
   const blocks: { cardId: CardInstanceId; attackerId: CardInstanceId }[] = [];
-  const canBlock = (blocker: CardInstance, attacker: CardInstance) =>
-    !hasKeyword(g, attacker, "Flying") || hasKeyword(g, blocker, "Flying") || hasKeyword(g, blocker, "Reach");
+  const canBlock = (blocker: CardInstance, attacker: CardInstance) => canBlockAttacker(g, blocker, attacker);
   const take = (blocker: CardInstance, attacker: CardInstance) => {
     blocks.push({ cardId: blocker.instanceId, attackerId: attacker.instanceId });
     available.splice(available.indexOf(blocker), 1);

@@ -7,6 +7,11 @@ import {
   auraTarget,
   evokeOptions,
   chooseTypeOf,
+  entersUntappedChoice,
+  exilePermissionHolds,
+  foretellCost,
+  flattenModes,
+  modesTargeted,
   mostCommonCreatureType,
   stateFromView,
   sagaChapters,
@@ -144,6 +149,26 @@ export function cardMenu(view: GameView, card: CardView): MenuItem[] {
   if ((zone === "hand" || (zone === "command" && (card as VisibleCardView).isCommander)) && card.ownerId === me) {
     const play = playItems(view, card);
     if (play.length > 0) items.push(...play, { separator: true, label: "" });
+  }
+
+  // Rebond, cascade : un sort exilé qu'on peut lancer sans payer son coût.
+  if ((zone === "exile" || zone === "graveyard") && card.ownerId === me && !card.hidden) {
+    const state = stateFromView(view);
+    const instance = id ? state.cards[id] : undefined;
+    if (instance && exilePermissionHolds(state, instance)) {
+      const permission = instance.castPermission!;
+      const how = permission.free ? "gratuit" : permission.foretell ? `pour ${permission.foretell}` : "";
+      const play = playItems(view, card).map((item) =>
+        item.separator ? item : { ...item, label: permission.foretell ? `Lancer ${cardName(view, card)} présagé ${permission.foretell}` : `${item.label} (${permission.reason}${how ? `, ${how}` : ""})` },
+      );
+      if (play.length > 0) items.push(play[0]!, { separator: true, label: "" });
+    }
+  }
+
+  // Présage : {2} pendant son tour, la carte part en exil face cachée.
+  const foretell = zone === "hand" && card.ownerId === me && view.settings.enforceRules ? foretellCost(cardData(view, card)) : null;
+  if (foretell) {
+    items.push({ label: `Présager pour {2} (à lancer plus tard pour ${foretell})`, onClick: () => void act({ type: "foretell", cardId: id }) }, { separator: true, label: "" });
   }
 
   if (zone === "hand" && card.ownerId === me) {
@@ -321,20 +346,28 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
       const askType = async (): Promise<string | null | undefined> => {
         const what = view.settings.enforceRules ? chooseTypeOf(data, f.face ?? 0) : null;
         if (!what) return undefined;
+        if (what === "color") return ui.ask("Couleur choisie (W, U, B, R ou G)", "G", "text");
         if (what === "card") return ui.ask("Type choisi (artifact, creature, enchantment, instant ou sorcery)", "creature", "text");
         return ui.ask("Type de créature choisi (en anglais : Elemental, Elf…)", mostCommonCreatureType(stateFromView(view), view.viewerId), "text");
       };
       if (/\bLand\b/.test(f.typeLine)) {
-        return [
-          {
-            label: `Jouer ${f.name}`,
-            onClick: async () => {
-              const chosenType = await askType();
-              if (chosenType === null) return;
-              void act({ type: "playLand", cardId: id, ...face, ...(chosenType ? { chosenType } : {}) });
-            },
-          },
-        ];
+        const play = (untap: boolean) => async () => {
+          const chosenType = await askType();
+          if (chosenType === null) return;
+          void act({ type: "playLand", cardId: id, ...face, ...(chosenType ? { chosenType } : {}), ...(untap ? { untap } : {}) });
+        };
+        // « You may reveal an Elemental card / pay 2 life. If you don't, it enters tapped. »
+        const state = view.settings.enforceRules ? stateFromView(view) : null;
+        const instance = state?.cards[id];
+        const offer = state && instance ? entersUntappedChoice(state, view.viewerId, instance, f.face ?? 0) : null;
+        if (offer) {
+          const how = offer.life ? `payer ${offer.life} PV` : `révéler une carte ${offer.reveal}`;
+          return [
+            { label: `Jouer ${f.name} dégagé (${how})`, disabled: !offer.possible, onClick: play(true) },
+            { label: `Jouer ${f.name} engagé`, onClick: play(false) },
+          ];
+        }
+        return [{ label: `Jouer ${f.name}`, onClick: play(false) }];
       }
       const cast = (alternative: boolean, evoke?: true | "granted", exileColor?: string) => async () => {
           let x: number | undefined;
@@ -345,10 +378,18 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
           }
           // Les cibles des effets que le moteur applique (quand l'hôte fait respecter les règles).
           const faceData = faces ? faces[f.face ?? 0] : data;
-          const effects =
+          const parsed =
             view.settings.enforceRules && /\b(Instant|Sorcery)\b/.test(f.typeLine)
               ? parseSpellEffects(faceData?.oracleText ?? data.oracleText, f.name, { alternative })
               : null;
+          // Modes avec des cibles (Ashling's Command) : choisis d'abord, leurs cibles suivent.
+          let modes: number[] | undefined;
+          if (parsed?.modes && modesTargeted(parsed)) {
+            const picked = await ui.chooseModes(`Modes de ${f.name}`, parsed.modes.list.map((m) => m.label), parsed.modes.min, parsed.modes.max);
+            if (!picked) return;
+            modes = picked;
+          }
+          const effects = parsed && modes ? flattenModes(parsed, modes) : parsed;
           // Coût supplémentaire : la créature à sacrifier (Village Rites…).
           let sacrifice: string | undefined;
           if (effects?.sacrifice) {
@@ -398,6 +439,7 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
             ...(evoke ? { evoke } : {}),
             ...(evokeExile ? { evokeExile } : {}),
             ...(chosenType ? { chosenType } : {}),
+            ...(modes ? { modes } : {}),
           });
       };
       const items: MenuItem[] = [{ label: `Lancer ${f.name}${f.manaCost ? ` ${f.manaCost}` : ""}`, onClick: cast(false) }];

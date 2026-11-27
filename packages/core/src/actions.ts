@@ -61,7 +61,8 @@ export type GameAction =
    * pile vide). `face` : 1 pour jouer le verso d'une carte modale.
    */
   /** `chosenType` : « As ~ enters, choose a creature type » (Secluded Courtyard). */
-  | { type: "playLand"; cardId: CardInstanceId; face?: number; chosenType?: string }
+  /** `untap` : révéler la carte ou payer les PV demandés pour que le terrain arrive dégagé. */
+  | { type: "playLand"; cardId: CardInstanceId; face?: number; chosenType?: string; untap?: boolean }
   /**
    * Lance un sort depuis la main (ou son commandant depuis la zone de
    * commandement) en payant son coût avec la réserve ; les terrains qui
@@ -86,7 +87,11 @@ export type GameAction =
       evokeExile?: CardInstanceId;
       /** « As ~ enters, choose a creature type » : le type choisi (Herald's Horn, Morophon). */
       chosenType?: string;
+      /** Sort modal dont des modes ont des cibles : les modes choisis (les cibles suivent dans `targets`). */
+      modes?: number[];
     }
+  /** Présage : payer {2} pendant son tour pour exiler la carte de sa main face cachée. */
+  | { type: "foretell"; cardId: CardInstanceId }
   /**
    * Active la capacité n° `index` (parmi les capacités activées reconnues de
    * la face visible) d'un permanent, ou d'une carte de son cimetière.

@@ -191,6 +191,28 @@ export interface CardInstance {
   alternative?: boolean;
   /** Lancé depuis la main (Approach of the Second Sun). */
   castFromHand?: boolean;
+  /**
+   * Peut être lancée depuis l'exil (rebond, cascade) : sans payer son coût si `free`,
+   * pendant ce tour (et cette étape si `step`), ou tant que le sort `whileOnStack` est sur la pile.
+   */
+  castPermission?: {
+    free: boolean;
+    turn: number;
+    step?: TurnStep;
+    ignoreTiming?: boolean;
+    whileOnStack?: CardInstanceId;
+    reason: string;
+    /** Présage : à lancer pour ce coût à un tour ultérieur à `turn` (sans limite de durée). */
+    foretell?: string;
+  };
+  /** Lancé depuis l'exil après avoir été présagé (« If this spell was foretold »). */
+  foretold?: boolean;
+  /** Provoquée par ces joueurs (jusqu'à leur prochain tour) : doit attaquer, et un autre joueur si possible. */
+  goadedBy?: PlayerId[];
+  /** Cavalier of Gales : la pioche qui précède le choix des cartes à remettre est faite. */
+  drewFirst?: boolean;
+  /** Rebond : exilée en se résolvant, lançable gratuitement à l'entretien suivant de ce joueur. */
+  rebound?: PlayerId;
   /** Lancé pour son coût d'évocation : sacrifié en arrivant. */
   evoked?: boolean;
   /** Type choisi en arrivant (« As ~ enters, choose a creature type »). */
@@ -247,6 +269,8 @@ export interface StackAbility {
   accepted?: boolean;
   /** Permanent choisi à la résolution (le sacrifice d'Exploit…). */
   choice?: CardInstanceId;
+  /** « One or more creatures … deal combat damage » : les créatures de l'événement groupé. */
+  batch?: CardInstanceId[];
   /** Couleur choisie pour « Add one mana of any color ». */
   color?: ManaType;
 }
@@ -372,6 +396,8 @@ export interface GameState {
   manaBonuses?: { turn: number; subtype: string; mana: ManaType }[];
   /** Cartes exilées à rendre au début de la prochaine étape de fin d'un joueur (The Eternal Wanderer). */
   delayedReturns?: { cardId: CardInstanceId; playerId: PlayerId }[];
+  /** Myriade : les jetons exilés à la fin du combat. */
+  endOfCombatExile?: CardInstanceId[];
   /**
    * Équipes. En chacun pour soi, chaque joueur est seul dans son équipe.
    * L'ordre des joueurs à l'intérieur d'une équipe suit l'ordre du tour.

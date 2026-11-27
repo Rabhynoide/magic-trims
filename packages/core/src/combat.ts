@@ -2,7 +2,7 @@
  * Combat : caractéristiques des créatures et mots-clés reconnus par le moteur.
  * Fonctions pures, sans modification de la partie.
  */
-import { creaturesCantAttack, grantedTo, staticsOf } from "./statics.js";
+import { colorsAmongPermanents, creaturesCantAttack, grantedTo, staticsOf } from "./statics.js";
 import type { CardInstance, CardInstanceId, GameState, PlayerId } from "./types.js";
 
 export interface CombatState {
@@ -36,7 +36,34 @@ export const COMBAT_KEYWORDS = [
   "Indestructible",
   "Hexproof",
   "Shroud",
+  "Fear",
 ] as const;
+
+const COLOR_NAMES: Record<string, string> = { white: "W", blue: "U", black: "B", red: "R", green: "G" };
+
+/** « Protection from white and from black » : les couleurs dont le permanent est protégé. */
+export function protectionColors(g: GameState, card: CardInstance): string[] {
+  if (card.faceDown) return [];
+  const colors: string[] = [];
+  for (const line of faceOf(g, card).oracleText.split("\n")) {
+    const clean = line.replace(/\([^)]*\)/g, "").trim();
+    if (!/^Protection from /i.test(clean)) continue;
+    for (const m of clean.matchAll(/\bfrom (white|blue|black|red|green)\b/gi)) colors.push(COLOR_NAMES[m[1]!.toLowerCase()]!);
+  }
+  return colors;
+}
+
+/** Couleurs d'un permanent (ou d'une carte). */
+export function colorsOf(g: GameState, card: CardInstance): string[] {
+  if (card.faceDown) return [];
+  return g.cardData[card.cardId]?.colors ?? [];
+}
+
+/** Le permanent est-il protégé de cette source ? */
+export function protectedFrom(g: GameState, card: CardInstance, sourceColors: string[]): boolean {
+  const prot = protectionColors(g, card);
+  return prot.length > 0 && sourceColors.some((c) => prot.includes(c));
+}
 export type CombatKeyword = (typeof COMBAT_KEYWORDS)[number];
 
 function faceOf(g: GameState, card: CardInstance) {
@@ -85,10 +112,13 @@ export function creatureStats(g: GameState, card: CardInstance): { power: number
   const minus = card.counters["-1/-1"] ?? 0;
   const granted = grantedTo(g, card);
   // « Sa force et son endurance sont égales au nombre de cartes dans ta main. »
-  const hand = staticsOf(g, card).some((s) => s.kind === "ptEqualsHand") ? g.players[card.controllerId]!.zones.hand.length : null;
+  const statics = staticsOf(g, card);
+  const hand = statics.some((s) => s.kind === "ptEqualsHand") ? g.players[card.controllerId]!.zones.hand.length : null;
+  // Faeburrow Elder : +1/+1 par couleur parmi les permanents contrôlés.
+  const colors = statics.some((s) => s.kind === "ptPerColor") ? colorsAmongPermanents(g, card.controllerId).length : 0;
   return {
-    power: (hand ?? toNumber(face.power)) + plus - minus + (card.ptBoost?.power ?? 0) + granted.power,
-    toughness: (hand ?? toNumber(face.toughness)) + plus - minus + (card.ptBoost?.toughness ?? 0) + granted.toughness,
+    power: (hand ?? toNumber(face.power)) + plus - minus + (card.ptBoost?.power ?? 0) + granted.power + colors,
+    toughness: (hand ?? toNumber(face.toughness)) + plus - minus + (card.ptBoost?.toughness ?? 0) + granted.toughness + colors,
   };
 }
 
@@ -158,5 +188,9 @@ export function canAttack(g: GameState, card: CardInstance): boolean {
 export function canBlock(g: GameState, card: CardInstance, attacker?: CardInstance): boolean {
   if (card.zone !== "battlefield" || !isCreature(g, card) || card.tapped || cantBlock(g, card)) return false;
   if (!attacker) return true;
-  return !hasKeyword(g, attacker, "Flying") || hasKeyword(g, card, "Flying") || hasKeyword(g, card, "Reach");
+  if (hasKeyword(g, attacker, "Flying") && !hasKeyword(g, card, "Flying") && !hasKeyword(g, card, "Reach")) return false;
+  // Peur : seulement par des créatures-artefacts et/ou noires.
+  if (hasKeyword(g, attacker, "Fear") && !colorsOf(g, card).includes("B") && !/\bArtifact\b/.test(faceOf(g, card).typeLine)) return false;
+  if (protectedFrom(g, attacker, colorsOf(g, card))) return false;
+  return true;
 }

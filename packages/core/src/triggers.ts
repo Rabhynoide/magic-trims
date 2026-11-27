@@ -10,16 +10,17 @@
  * gérer à la main (et la carte porte sa pastille).
  */
 import { parseActivatedLine, type ActivatedAbility } from "./activated.js";
-import { parseSpellEffects, selfToTilde, type SpellEffects } from "./effects.js";
+import { parseSpellEffects, selfToTilde, type Effect, type SpellEffects } from "./effects.js";
 import { joinModes } from "./text.js";
-import { parseStaticLine, type StaticAbility } from "./statics.js";
+import { hasCreatureType, parseStaticLine, typeLineHasCreatureType, type StaticAbility } from "./statics.js";
+import { creatureStats } from "./combat.js";
 import { areTeammates, isActivePlayer } from "./modes.js";
 import type { TurnStep } from "./turn.js";
 import type { CardData, CardInstanceId, GameState, PlayerId, StackAbility, Zone } from "./types.js";
 
 export type TriggerEvent =
   /** `cast` : le permanent arrive depuis la pile (il a été lancé). */
-  | { type: "enters"; cardId: CardInstanceId; controllerId: PlayerId; creature: boolean; cast?: boolean }
+  | { type: "enters"; cardId: CardInstanceId; controllerId: PlayerId; creature: boolean; cast?: boolean; land?: boolean }
   /** `granted` : capacités données à la créature jusqu'à la fin du tour (Malakir Rebirth). */
   | { type: "dies"; cardId: CardInstanceId; controllerId: PlayerId; dataId: string; faceIndex: number; isToken: boolean; granted?: string[] }
   /** `nth` : combientième carte piochée par ce joueur ce tour-ci. */
@@ -61,15 +62,15 @@ type Whose = "you" | "opponent" | "any";
 
 export type TriggerCondition =
   /** `ifCast` : « When ~ enters, if it was cast, … » (Wedding Ring). */
-  | { on: "enters"; self: boolean; another: boolean; creature: boolean; whose: Whose; ifCast?: boolean }
+  | { on: "enters"; self: boolean; another: boolean; creature: boolean; whose: Whose; ifCast?: boolean; land?: boolean; minPower?: number; subtype?: string; orSelf?: boolean }
   /** `batched` : « one or more … die » se déclenche une fois par action, quel que soit le nombre de morts. */
-  | { on: "dies"; self: boolean; others: boolean; whose: Whose; batched?: boolean }
+  | { on: "dies"; self: boolean; others: boolean; whose: Whose; batched?: boolean; subtype?: string }
   /** `nth` : « draw your second card each turn ». */
   /** `controlsSameName` : « an opponent who controls an artifact named ~ » ; `theirTurn` : « during their turn ». */
   | { on: "draw" | "lifeGain" | "lifeLoss" | "landPlayed"; whose: Whose; nth?: number; controlsSameName?: boolean; theirTurn?: boolean }
   /** `enchanted` : « enchanted player's upkeep » (aura sur un joueur) ; `first` : « first upkeep each turn ». */
-  | { on: "step"; step: "upkeep" | "draw" | "main1" | "end"; whose: Whose; enchanted?: boolean; first?: boolean }
-  | { on: "cast"; whose: Whose; types: string[]; notTypes: string[] }
+  | { on: "step"; step: "upkeep" | "draw" | "main1" | "beginCombat" | "end"; whose: Whose; enchanted?: boolean; first?: boolean }
+  | { on: "cast"; whose: Whose; types: string[]; notTypes: string[]; self?: boolean }
   /** « Whenever ~ attacks », « … blocks », « … attacks or blocks ». */
   | { on: "combat"; attacks: boolean; blocks: boolean; anyCreature?: boolean; defender?: "you" }
   /** « Whenever you sacrifice a nontoken Elemental » : `subtype` (ou type), `nontoken`. */
@@ -81,7 +82,7 @@ export type TriggerCondition =
   /** « Whenever ~ becomes untapped ». */
   | { on: "untapped" }
   /** « Whenever a creature deals combat damage to one of your opponents », « Whenever ~ deals combat damage to a player ». */
-  | { on: "combatDamage"; self: boolean; creature: Whose; player: Whose }
+  | { on: "combatDamage"; self: boolean; creature: Whose; player: Whose; batched?: boolean }
   /** « Whenever ~ is dealt damage ». */
   | { on: "damaged" }
   /** Chapitre d'une saga (« I, II — … »). */
@@ -144,13 +145,19 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   if (/^~ enters(?: the battlefield)?$/i.test(t)) {
     return { on: "enters", self: true, another: false, creature: false, whose: "you" };
   }
-  if ((m = /^(a|another) (creature|permanent)( you control| an opponent controls)? enters(?: the battlefield)?(?: under your control)?$/i.exec(t))) {
+  if ((m = /^(a|another|~ or another) (creature|permanent|land|[A-Z][a-z]+)( you control| an opponent controls)?(?: with power (\d+) or greater)? enters(?: the battlefield)?(?: under your control)?$/.exec(t))) {
     const controls = (m[3] ?? "").trim().toLowerCase();
+    const kind = m[2]!;
+    const subtype = /^[A-Z]/.test(kind) ? kind : undefined;
     return {
       on: "enters",
       self: false,
-      another: m[1]!.toLowerCase() === "another",
-      creature: m[2]!.toLowerCase() === "creature",
+      another: m[1] !== "a",
+      creature: kind === "creature" || !!subtype,
+      ...(kind === "land" ? { land: true } : {}),
+      ...(subtype ? { subtype } : {}),
+      ...(m[4] ? { minPower: parseInt(m[4], 10) } : {}),
+      ...(m[1] === "~ or another" ? { orSelf: true } : {}),
       whose: controls === "you control" || /under your control/i.test(t) ? "you" : controls ? "opponent" : "any",
     };
   }
@@ -159,10 +166,10 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
     const controls = (m[1] ?? "").trim().toLowerCase();
     return { on: "dies", self: false, others: true, whose: controls === "you control" ? "you" : controls ? "opponent" : "any", batched: true };
   }
-  if ((m = /^(~ or another|another|a) creature( you control| an opponent controls)? dies$/i.exec(t))) {
-    const controls = (m[2] ?? "").trim().toLowerCase();
+  if ((m = /^(~ or another|another|a) (creature|[A-Z][a-z]+)( you control| an opponent controls)? dies$/.exec(t))) {
+    const controls = (m[3] ?? "").trim().toLowerCase();
     const who: Whose = controls === "you control" ? "you" : controls ? "opponent" : "any";
-    return { on: "dies", self: m[1]!.startsWith("~"), others: true, whose: who };
+    return { on: "dies", self: m[1]!.startsWith("~"), others: true, whose: who, ...(m[2] !== "creature" ? { subtype: m[2]! } : {}) };
   }
   if ((m = /^(you|an opponent|a player) draws? a card$/i.exec(t))) return { on: "draw", whose: whose(m[1]!)! };
   if ((m = /^(you|an opponent|a player) draws? (?:your|their|his or her) (second|third) card each turn$/i.exec(t))) {
@@ -171,6 +178,7 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   if ((m = /^(you|an opponent|a player) gains? life$/i.exec(t))) return { on: "lifeGain", whose: whose(m[1]!)! };
   if ((m = /^(you|an opponent|a player) loses? life$/i.exec(t))) return { on: "lifeLoss", whose: whose(m[1]!)! };
   if ((m = /^(you|an opponent|a player) plays? a land$/i.exec(t))) return { on: "landPlayed", whose: whose(m[1]!)! };
+  if (/^you cast ~$/i.test(t)) return { on: "cast", whose: "you", types: [], notTypes: [], self: true };
   if ((m = /^(you|an opponent|a player) casts? an? (?:(creature|noncreature|artifact|enchantment|instant|sorcery|instant or sorcery) )?spell$/i.exec(t))) {
     const type = (m[2] ?? "").toLowerCase();
     return {
@@ -193,6 +201,9 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
     return { on: "sacrificed", whose: "you", nontoken: !!m[1], ...(what === "permanent" ? {} : { subtype: m[2]! }) };
   }
   if (/^~ is dealt damage$/i.test(t)) return { on: "damaged" };
+  if (/^one or more creatures you control deal combat damage to a player$/i.test(t)) {
+    return { on: "combatDamage", self: false, creature: "you", player: "any", batched: true };
+  }
   if ((m = /^(~|a creature|a creature you control|a creature an opponent controls) deals combat damage to (a player|an opponent|one of your opponents|you)$/i.exec(t))) {
     const who = m[1]!.toLowerCase();
     const to = m[2]!.toLowerCase();
@@ -212,6 +223,7 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   if ((m = /^the beginning of (your|each|each player's|each opponent's) (?:first|precombat) main phase$/i.exec(t))) {
     return { on: "step", step: "main1", whose: whose(m[1]!)! };
   }
+  if (/^the beginning of combat on your turn$/i.test(t)) return { on: "step", step: "beginCombat", whose: "you" };
   if (/^the beginning of enchanted player's first upkeep each turn$/i.test(t)) return { on: "step", step: "upkeep", whose: "any", enchanted: true, first: true };
   if (/^the beginning of enchanted player's upkeep$/i.test(t)) return { on: "step", step: "upkeep", whose: "any", enchanted: true };
   if ((m = /^the beginning of (your|each|each player's|each opponent's) (upkeep|draw step|end step)$/i.exec(t))) {
@@ -257,6 +269,40 @@ function parseTriggerBody(text: string): { effects: SpellEffects; optional: bool
   if (payX) return { effects: parseSpellEffects(cap(payX[1]!), "~"), optional: true, payMana: "{X}" };
   const pay = /^you may pay ((?:\{[^}]+\})+)\. If you do, (.+)$/i.exec(text);
   if (pay) return { effects: parseSpellEffects(cap(pay[2]!), "~"), optional: true, payMana: pay[1]! };
+  // Risen Reef, Cream of the Crop, Selvala : des « may » au milieu du texte.
+  const fixed = (effect: Effect, optional = false) => ({ effects: { targets: [], effects: [effect], unknown: [] }, optional });
+  if (/^look at the top card of your library\. If it's a land card, you may put it onto the battlefield tapped\. If you don't put the card onto the battlefield, put it into your hand\.?$/i.test(text)) {
+    return fixed({ type: "topLandOrHand" });
+  }
+  if (/^you may look at the top X cards of your library, where X is that creature's power\. If you do, put one of those cards on top of your library and the rest on the bottom of your library in any order\.?$/i.test(text)) {
+    return fixed({ type: "lookTopKeepOne" }, true);
+  }
+  // Descendants' Fury : sacrifier une des créatures qui ont infligé les blessures, puis révéler jusqu'à une créature de même type.
+  if (/^you may sacrifice one of them\. If you do, reveal cards from the top of your library until you reveal a creature card that shares a creature type with the sacrificed creature\. Put that card onto the battlefield and the rest on the bottom of your library in a random order\.?$/i.test(text)) {
+    return fixed({ type: "sacrificeOneReveal" }, true);
+  }
+  // Greenwarden of Murasa, Cavalier of Thorns : « you may exile it. If you do, … ».
+  const exileIt = /^you may exile it\. If you do, (.+)$/i.exec(text);
+  if (exileIt) {
+    const rest = parseSpellEffects(cap(exileIt[1]!), "~");
+    return { effects: { ...rest, effects: [{ type: "exileEventCard" }, ...rest.effects] }, optional: true };
+  }
+  // Fury : 4 blessures réparties ; chaque choix de cible vaut 1 blessure (la même cible peut revenir).
+  const divided = /^it deals (\d+) damage divided as you choose among any number of target creatures and\/or planeswalkers\.?$/i.exec(text);
+  if (divided) {
+    const n = parseInt(divided[1]!, 10);
+    const spec = { label: "créature ou planeswalker (1 blessure par choix)", permanent: { types: ["creature", "planeswalker"], notTypes: [] }, upTo: true };
+    return {
+      effects: { targets: Array.from({ length: n }, () => spec), effects: Array.from({ length: n }, (_, i) => ({ type: "damage" as const, target: i, amount: 1 })), unknown: [] },
+      optional: false,
+    };
+  }
+  // Havoc Eater : une cible facultative par adversaire (quatre au plus).
+  if (/^for each opponent, goad up to one target creature that opponent controls\. Put X \+1\/\+1 counters on ~, where X is the total power of creatures goaded this way\.?$/i.test(text)) {
+    const spec = { label: "créature d'un adversaire (une par adversaire)", permanent: { types: ["creature"], notTypes: [], controller: "notYou" as const }, upTo: true };
+    return { effects: { targets: [spec, spec, spec, spec], effects: [{ type: "goad", targets: [0, 1, 2, 3], countersFromPower: true }], unknown: [] }, optional: false };
+  }
+  if (/^its controller may draw a card if its power is greater than each other creature's power\.?$/i.test(text)) return fixed({ type: "drawIfGreatestPower" });
   const may = /^you may (.+)$/i.exec(text);
   if (may) return { effects: parseSpellEffects(cap(may[1]!), "~"), optional: true };
   if (/\bmay\b/i.test(text)) return null;
@@ -288,6 +334,42 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
     if (abilityWord) tilde = tilde.slice(abilityWord[0].length);
     if (/^exploit$/i.test(line)) {
       result.triggers.push(EXPLOIT);
+      continue;
+    }
+    // Cascade (une fois par mot) : se déclenche quand on lance le sort.
+    if (/^cascade(?:, cascade)*$/i.test(line)) {
+      for (const _ of line.split(",")) {
+        result.triggers.push({
+          text: "Cascade",
+          condition: { on: "cast", whose: "you", types: [], notTypes: [], self: true },
+          effects: { targets: [], effects: [{ type: "cascade" }], unknown: [] },
+          ifUntapped: false,
+          optional: false,
+        });
+      }
+      continue;
+    }
+    // Myriade : une copie qui attaque chacun des autres adversaires.
+    if (/^Myriad$/i.test(line)) {
+      result.triggers.push({
+        text: "Myriad",
+        condition: { on: "combat", attacks: true, blocks: false },
+        effects: { targets: [], effects: [{ type: "myriad" }], unknown: [] },
+        ifUntapped: false,
+        optional: false,
+      });
+      continue;
+    }
+    // Annihilateur N : le joueur défenseur sacrifie N permanents.
+    const annihilator = /^Annihilator (\d+)$/i.exec(line);
+    if (annihilator) {
+      result.triggers.push({
+        text: line,
+        condition: { on: "combat", attacks: true, blocks: false },
+        effects: { targets: [], effects: [{ type: "defenderSacrifices", count: parseInt(annihilator[1]!, 10) }], unknown: [] },
+        ifUntapped: false,
+        optional: false,
+      });
       continue;
     }
     // Entretien cumulatif : un marqueur d'âge, puis payer autant de fois le coût ou sacrifier.
@@ -326,12 +408,20 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
       continue;
     }
     // « When there are nine or more … counters on ~, exile it » : une règle d'état, lue comme un effet statique.
-    const stateRule = /^When there are |^At the beginning of your upkeep, look at the top card of your library\. If it's a creature card of the chosen type/i.test(tilde) ? parseStaticLine(tilde) : null;
+    const stateRule = /^When there are |^At the beginning of your upkeep, look at the top card of your library\. If it's a creature card of the chosen type|^Whenever enchanted \w+ is tapped for mana, its controller adds an additional/i.test(tilde) ? parseStaticLine(tilde) : null;
     if (stateRule) {
       result.statics.push(stateRule);
       continue;
     }
     const m = /^(When|Whenever|At) (.+?), (.+)$/.exec(tilde);
+    // « Whenever ~ enters or attacks » : deux capacités déclenchées au même effet.
+    const both = m && /^~ enters or attacks$/i.test(m[2]!) ? parseTriggerBody(m[3]!) : null;
+    if (both && both.effects.unknown.length === 0 && both.effects.effects.length > 0) {
+      for (const condition of [{ on: "enters", self: true, another: false, creature: false, whose: "you" }, { on: "combat", attacks: true, blocks: false }] as TriggerCondition[]) {
+        result.triggers.push({ text: line, condition, effects: both.effects, ifUntapped: false, optional: both.optional });
+      }
+      continue;
+    }
     if (m) {
       const condition = parseTriggerCondition(m[2]!);
       let body = m[3]!;
@@ -444,11 +534,24 @@ export function conditionMatches(
       if (c.on !== "enters") return false;
       if (c.ifCast && !event.cast) return false;
       if (c.self) return event.cardId === source.instanceId;
+      if (c.orSelf && event.cardId === source.instanceId) return true;
       if (c.another && event.cardId === source.instanceId) return false;
+      if (c.subtype || c.minPower !== undefined) {
+        const entered = g.cards[event.cardId];
+        if (!entered || entered.zone !== "battlefield") return false;
+        if (c.subtype && !hasCreatureType(g, entered, c.subtype)) return false;
+        if (c.minPower !== undefined && creatureStats(g, entered).power < c.minPower) return false;
+      }
       if (c.creature && !event.creature) return false;
+      if (c.land && !event.land) return false;
       return whoseMatches(g, c.whose, source.controllerId, event.controllerId);
     case "dies":
       if (c.on !== "dies") return false;
+      if (c.subtype && event.cardId !== source.instanceId) {
+        const data = g.cardData[event.dataId];
+        const face = data?.faces?.[event.faceIndex];
+        if (!typeLineHasCreatureType(face?.typeLine ?? data?.typeLine ?? "", face?.oracleText ?? data?.oracleText ?? "", c.subtype)) return false;
+      }
       if (event.cardId === source.instanceId) return c.self;
       return c.others && whoseMatches(g, c.whose, source.controllerId, event.controllerId);
     case "step":
@@ -458,6 +561,7 @@ export function conditionMatches(
       return whoseMatches(g, c.whose, source.controllerId, event.playerId);
     case "cast": {
       if (c.on !== "cast" || !whoseMatches(g, c.whose, source.controllerId, event.playerId)) return false;
+      if (c.self) return event.cardId === source.instanceId;
       const type = event.typeLine.toLowerCase();
       const has = (t: string) => new RegExp(`\\b${t}\\b`).test(type);
       return (c.types.length === 0 || c.types.some(has)) && !c.notTypes.some(has);

@@ -26,6 +26,15 @@ export interface Targeting {
   resolve: (targets: Target[] | null) => void;
 }
 
+/** Choix des modes d'un sort qu'on lance (« Choose two — » avec des cibles). */
+export interface ModesRequest {
+  title: string;
+  labels: string[];
+  min: number;
+  max: number;
+  resolve: (modes: number[] | null) => void;
+}
+
 /** Carte agrandie près du curseur, avec la position de la carte survolée. */
 export interface Zoom {
   card: CardView;
@@ -41,9 +50,10 @@ interface UiState {
   menu: { x: number; y: number; items: MenuItem[] } | null;
   prompt: PromptRequest | null;
   targeting: Targeting | null;
+  modes: ModesRequest | null;
 }
 
-let state: UiState = { preview: null, zoom: null, menu: null, prompt: null, targeting: null };
+let state: UiState = { preview: null, zoom: null, menu: null, prompt: null, targeting: null, modes: null };
 let zoomTimer: ReturnType<typeof setTimeout> | null = null;
 const listeners = new Set<() => void>();
 
@@ -86,6 +96,15 @@ export const ui = {
   closePrompt: (value: string | null) => {
     state.prompt?.resolve(value);
     set({ prompt: null });
+  },
+  /** Demande les modes d'un sort modal. `null` si le joueur annule. */
+  chooseModes(title: string, labels: string[], min: number, max: number): Promise<number[] | null> {
+    state.modes?.resolve(null);
+    return new Promise((resolve) => set({ modes: { title, labels, min, max, resolve } }));
+  },
+  closeModes(modes: number[] | null) {
+    state.modes?.resolve(modes);
+    set({ modes: null });
   },
   /** Demande les cibles d'un sort, une par une. `null` si le joueur annule. */
   chooseTargets(sourceName: string, sourceId: string, specs: TargetSpec[]): Promise<Target[] | null> {
