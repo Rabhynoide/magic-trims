@@ -47,6 +47,7 @@ import {
   cantPlayLands,
   castRestriction,
   costReduction,
+  doesntUntap,
   entersTapped,
   entersTappedStatic,
   entersUntappedChoice,
@@ -598,6 +599,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       cast.targets = effects.targets.length > 0 ? chosen.map((t) => ({ ...t })) : [];
       if (x !== undefined) cast.xValue = xValue;
     }
+    emitTargeted(g, cast);
     const paid = [payment.spent.length > 0 ? formatMana(payment.spent) : "rien", payment.life + lifeX > 0 ? `${payment.life + lifeX} PV` : ""]
       .filter(Boolean)
       .join(" et ");
@@ -811,6 +813,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     });
     card.targets = targets.map((t) => ({ ...t }));
     delete ability.needsTargets;
+    emitTargeted(g, card);
     log(g, actor.id, targets.length > 0 ? `${actor.name} vise ${targets.map((t) => targetName(g, t)).join(", ")} avec la capacité de ${ability.sourceName}.` : `${actor.name} ne choisit aucune cible pour la capacité de ${ability.sourceName}.`);
   },
 
@@ -1655,6 +1658,8 @@ function flushTriggers(g: GameState): boolean {
       instance.ability.eventZone = ev.type === "dies" ? "graveyard" : ev.to;
     } else if (ev.type === "attacks" || ev.type === "enters" || ev.type === "combatDamage" || ev.type === "playerDamage") {
       instance.ability.eventCardId = ev.cardId;
+    } else if (ev.type === "targeted") {
+      instance.ability.eventCardId = ev.spellId;
     } else if (ev.type === "sacrificed") {
       instance.ability.eventCardId = ev.cardId;
       instance.ability.eventDataId = ev.dataId;
@@ -1682,6 +1687,8 @@ function flushTriggers(g: GameState): boolean {
     const aimed = (instance.targets ?? []).length > 0 ? ` (cible : ${instance.targets!.map((t) => targetName(g, t)).join(", ")})` : "";
     log(g, null, `Capacité de ${sourceName} : « ${trigger.text} »${aimed}.`);
   }
+  // Les capacités mises sur la pile ont pu viser un permanent avec la garde.
+  if ((g.events as TriggerEvent[] | undefined)?.length) flushTriggers(g);
   return added > 0;
 }
 
@@ -1790,7 +1797,18 @@ function assignAbilityTargets(g: GameState, instance: CardInstance, specs: Targe
     instance.targets = [];
     ability.needsTargets = true;
   }
+  emitTargeted(g, instance);
   return true;
+}
+
+/** Garde (ward) : chaque permanent visé par ce sort ou cette capacité « devient la cible » (règle 702.21). */
+function emitTargeted(g: GameState, instance: CardInstance): void {
+  const seen = new Set<string>();
+  for (const t of instance.targets ?? []) {
+    if (t.kind !== "card" || seen.has(t.id) || g.cards[t.id]?.zone !== "battlefield") continue;
+    seen.add(t.id);
+    emit(g, { type: "targeted", cardId: t.id, playerId: instance.controllerId, spellId: instance.instanceId });
+  }
 }
 
 function targetName(g: GameState, t: Target): string {
@@ -2690,6 +2708,19 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         log(g, null, `${name} est contré(e).`);
         break;
       }
+      case "counterTriggering": {
+        // Garde : le sort ou la capacité qui ciblait le permanent, s'il est encore sur la pile.
+        const c = ability?.eventCardId ? g.cards[ability.eventCardId] : undefined;
+        if (!c || c.zone !== "stack") break;
+        const name = c.ability ? `la capacité de ${c.ability.sourceName}` : cardName(g, c);
+        if (!c.ability && /can't be countered/i.test(g.cardData[c.cardId]?.oracleText ?? "")) {
+          log(g, null, `${name} ne peut pas être contré(e).`);
+          break;
+        }
+        moveCardTo(g, c.instanceId, "graveyard", "top");
+        log(g, null, `${name.charAt(0).toUpperCase()}${name.slice(1)} est contré(e) par la garde.`);
+        break;
+      }
       case "mana":
         for (const m of effect.mana) caster.manaPool[m as ManaType] += 1;
         log(g, null, `${caster.name} ajoute ${formatMana(effect.mana as ManaType[])}.`);
@@ -3550,6 +3581,7 @@ function activateAbility(
   instance.ability = stackAbility;
   instance.targets = targets.map((t) => ({ ...t }));
   g.stack.push(instance.instanceId);
+  emitTargeted(g, instance);
   const aimed = instance.targets.length > 0 ? ` sur ${instance.targets.map((t) => targetName(g, t)).join(", ")}` : "";
   const how2 = costParts.length > 0 ? ` (${costParts.join(", ")})` : "";
   log(g, actor.id, `${actor.name} active ${name}${aimed}${how2} : « ${ability.text} ».`);
@@ -4438,7 +4470,15 @@ function enterStep(g: GameState, step: TurnStep): void {
   switch (step) {
     case "untap":
       for (const p of players) {
-        for (const id of p.zones.battlefield) untap(g, g.cards[id]!);
+        for (const id of p.zones.battlefield) {
+          const c = g.cards[id]!;
+          // « doesn't untap during your untap step » (Traxos, Claustrophobia).
+          if (c.tapped && g.settings.enforceRules && doesntUntap(g, c)) {
+            log(g, null, `${cardName(g, c)} ne se dégage pas.`);
+            continue;
+          }
+          untap(g, c);
+        }
       }
       if (players.length > 0) log(g, null, `${names(players)} ${players.length > 1 ? "dégagent leurs" : "dégage ses"} permanents.`);
       break;

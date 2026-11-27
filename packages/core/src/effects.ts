@@ -9,7 +9,7 @@
  */
 import { COMBAT_KEYWORDS, creatureStats, hasKeyword, protectedFrom } from "./combat.js";
 import { grantedManaAbility, manaOptions, manaTapEffect } from "./mana.js";
-import { parsePermanentAbilities } from "./triggers.js";
+import { parsePermanentAbilities, parseWard } from "./triggers.js";
 import { areTeammates } from "./modes.js";
 import { joinModes, keywordList, selfToTilde } from "./text.js";
 import { playerHasHexproof, playerHasShroud, printedEvoke, typeLineHasCreatureType } from "./statics.js";
@@ -196,6 +196,8 @@ type EffectBase =
   | { type: "life"; who: Who; amount: Amount }
   | { type: "token"; count: Amount; token: TokenSpec; tapped: boolean; forOpponents?: boolean }
   | { type: "counter"; target: number }
+  /** Garde : contrer le sort ou la capacité qui a déclenché la capacité (« counter that spell or ability »). */
+  | { type: "counterTriggering" }
   | { type: "mana"; mana: string[] }
   /** Marqueurs sur la source de la capacité (« put a +1/+1 counter on ~ »). */
   | { type: "counterSelf"; kind: string; count: number }
@@ -1682,7 +1684,7 @@ function faceSupport(typeLine: string, oracleText: string, name: string): { know
     if (!line) continue;
     const parts = line.split(/,\s*/).map((p) => p.trim().toLowerCase());
     const isProtection = (p: string) => /^protection from (white|blue|black|red|green)(?:,? and from (white|blue|black|red|green))*$/.test(p);
-    if (parts.every((p) => HANDLED_KEYWORDS.has(p) || isProtection(p))) {
+    if (parts.every((p) => HANDLED_KEYWORDS.has(p) || isProtection(p) || parseWard(p))) {
       known++;
       continue;
     }
@@ -1772,9 +1774,15 @@ export function abilityReport(data: CardData, faceIndex = 0): AbilityReportItem[
     if (!line) continue;
     const parts = line.split(/,\s*/).map((p) => p.trim());
     // « Lifelink, ward {2} » : une liste de mots-clés (avec un coût éventuel).
-    const isKeywordLine = !spell && !line.includes(".") && !line.includes(":") && parts.every((p) => /^[A-Za-z]+( [a-z]+)?( \{[^}]+\})*$/.test(p));
+    const isKeywordLine = !spell && !line.includes(":") && parts.every((p) => parseWard(p) || (!p.includes(".") && /^[A-Za-z]+( [a-z]+)?( \{[^}]+\})*$/.test(p)));
     if (isKeywordLine) {
       for (const part of parts) {
+        const ward = parseWard(part);
+        if (ward) {
+          const cost = ward.mana ?? (ward.life ? `${ward.life} PV` : "défausser une carte");
+          items.push({ title: `Garde (${cost})`, text: `Si un adversaire la cible avec un sort ou une capacité, ce sort ou cette capacité est contré(e), sauf s'il paie ${cost}.`, status: "auto" });
+          continue;
+        }
         const help = KEYWORD_HELP[part.toLowerCase()];
         const other = help ? null : permanentLineStatus(part, typeLine, name);
         items.push(
