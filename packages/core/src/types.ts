@@ -179,7 +179,8 @@ export interface CardInstance {
   /** Capacités déclenchées données jusqu'à la fin du tour (texte « When ~ dies, … »). */
   grantedTriggers?: string[];
   /** Choix de cartes en attente à la résolution (recherche, main révélée) : effet n° `index`. */
-  cardChoice?: { index: number; options: CardInstanceId[]; min: number; max: number; label: string; playerId?: PlayerId };
+  /** `perPlayer` : une carte au plus par joueur (contrôleur) — The Eternal Wanderer. */
+  cardChoice?: { index: number; options: CardInstanceId[]; min: number; max: number; label: string; playerId?: PlayerId; perPlayer?: boolean };
   /** Cartes choisies pour chaque effet (par son index). */
   choices?: Record<number, CardInstanceId[]>;
   /** Sort ou capacité modale sur la pile : les modes choisis (absents tant que le contrôleur n'a pas choisi). */
@@ -360,6 +361,8 @@ export interface GameState {
   cardData: Record<string, CardData>;
   /** Mana en plus quand on engage un terrain de ce type, jusqu'à la fin du tour (Bubbling Muck). */
   manaBonuses?: { turn: number; subtype: string; mana: ManaType }[];
+  /** Cartes exilées à rendre au début de la prochaine étape de fin d'un joueur (The Eternal Wanderer). */
+  delayedReturns?: { cardId: CardInstanceId; playerId: PlayerId }[];
   /**
    * Équipes. En chacun pour soi, chaque joueur est seul dans son équipe.
    * L'ordre des joueurs à l'intérieur d'une équipe suit l'ordre du tour.

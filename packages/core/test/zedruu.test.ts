@@ -195,7 +195,7 @@ describe("Deck Zedruu : prison et restrictions", () => {
 
   it("Ghostly Prison, Propaganda et la plupart des cartes du deck sont gérées", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "" })).level);
-    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(67);
+    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(78);
   });
 });
 
@@ -690,5 +690,55 @@ describe("Deck Zedruu : auras qui transforment", () => {
     expect(g.turn.step).toBe("draw");
     void rhystic;
     for (const name of ["Darksteel Mutation", "Witness Protection", "Paradox Haze"]) expect(cardSupport(real(name)).level, name).toBe("full");
+  });
+});
+
+describe("Deck Zedruu : The Eternal Wanderer", () => {
+  it("+1 exile jusqu'à une cible, qui revient à la fin du tour de son propriétaire ; −4 ne laisse qu'une créature par joueur", () => {
+    let g = toMain(newTestGame(2));
+    let pw: string, a: string, b: string, c: string;
+    [g, pw] = put(g, "p1", real("The Eternal Wanderer"));
+    g = act(g, "p1", { type: "adjustCardCounter", cardId: pw, kind: "loyauté", delta: 5 });
+    [g, a] = put(g, "p2", bear("A"), 0);
+    [g, b] = put(g, "p2", bear("B"), 0);
+    [g, c] = put(g, "p1", bear("C"), 0);
+    // +1 sans cible : permis (« up to one »).
+    g = act(g, "p1", { type: "activateAbility", cardId: pw, index: 0, targets: [] });
+    g = resolveAll(g);
+    g = endTurn(g, "p1");
+    g = act(g, "p2", { type: "nextStep", to: "main1" });
+    g = resolveAll(g);
+    g = act(g, "p2", { type: "passTurn" });
+    g = resolveAll(g);
+    g = act(g, "p1", { type: "nextStep", to: "main1" });
+    g = act(g, "p1", { type: "activateAbility", cardId: pw, index: 0, targets: [{ kind: "card", id: a }] });
+    g = resolveAll(g);
+    expect(g.players.p2!.zones.exile.length).toBe(1);
+    g = endTurn(g, "p1");
+    g = act(g, "p2", { type: "nextStep", to: "end" });
+    g = resolveAll(g);
+    expect(g.players.p2!.zones.battlefield.length).toBe(2);
+    expect(g.players.p2!.zones.exile.length).toBe(0);
+    void b;
+    void c;
+    for (const name of ["The Eternal Wanderer"]) expect(cardSupport(real(name)).level, name).toBe("full");
+  });
+
+  it("−4 : on garde une créature par joueur", () => {
+    let g = toMain(newTestGame(2));
+    let pw: string, a: string, b: string, c: string;
+    [g, pw] = put(g, "p1", real("The Eternal Wanderer"));
+    [g, a] = put(g, "p2", bear("A"), 0);
+    [g, b] = put(g, "p2", bear("B"), 0);
+    [g, c] = put(g, "p1", bear("C"), 0);
+    g = act(g, "p1", { type: "activateAbility", cardId: pw, index: 2 });
+    g = resolveAll(g);
+    const ability = g.stack.at(-1)!;
+    expect(refuse(g, "p1", { type: "chooseCards", cardId: ability, cardIds: [a, b] })).toMatch(/une seule/);
+    g = act(g, "p1", { type: "chooseCards", cardId: ability, cardIds: [a, c] });
+    g = resolveAll(g);
+    expect(g.players.p2!.zones.graveyard).toContain(b);
+    expect(g.players.p2!.zones.battlefield).toContain(a);
+    expect(g.players.p1!.zones.battlefield).toContain(c);
   });
 });

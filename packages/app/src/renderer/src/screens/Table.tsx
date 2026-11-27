@@ -714,6 +714,7 @@ function TargetingBanner() {
         {spec.choice ? `un(e) ${spec.label}` : spec.label === "n'importe quelle cible" ? "n'importe quelle cible" : `une cible (${spec.label})`}
         {targeting.specs.length > 1 ? `, cible ${index + 1} sur ${targeting.specs.length}` : ""}. Clique sur {where}.
       </span>
+      {targeting.specs.slice(index).every((s) => s.upTo) && <button onClick={() => ui.skipTargets()}>Sans cible</button>}
       <button onClick={() => ui.cancelTargeting()}>Annuler</button>
     </div>
   );

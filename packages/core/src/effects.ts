@@ -40,6 +40,8 @@ export interface TargetSpec {
   graveyard?: GraveyardFilter;
   /** « target player other than ~'s owner » (Crown of Doom). */
   notOwner?: boolean;
+  /** « up to one target » : la cible peut être omise. */
+  upTo?: boolean;
 }
 
 export interface GraveyardFilter {
@@ -105,7 +107,10 @@ export type Effect =
   | { type: "draw"; who: Who; count: Amount }
   | { type: "destroy"; target: number }
   | { type: "destroyAll"; filter: PermanentFilter }
-  | { type: "exile"; target: number }
+  /** `returnAtEnd` : revient sous le contrôle de son propriétaire au début de sa prochaine étape de fin. */
+  | { type: "exile"; target: number; returnAtEnd?: boolean }
+  /** The Eternal Wanderer −4 : chaque joueur garde la créature choisie et sacrifie les autres. */
+  | { type: "keepOnePerPlayer" }
   | { type: "exileAll"; filter: PermanentFilter }
   | { type: "bounce"; target: number }
   | { type: "damage"; target: number | "event" | "you"; amount: Amount }
@@ -575,6 +580,7 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
   let wheel: "event" | "all" | null = null;
   let revealing: Extract<Effect, { type: "shuffleIntoLibrary" }> | null = null;
   let approach = false;
+  let keepOne = false;
   for (const sentence of sentences) {
     let s = sentence.replace(/\.$/, "");
     if (HARMLESS.some((re) => re.test(sentence))) continue;
@@ -708,6 +714,20 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       approach = false;
       continue;
     }
+    // The Eternal Wanderer : « Return that card to the battlefield under its owner's control at the beginning of that player's next end step. »
+    if (/^return that card to the battlefield under its owner's control at the beginning of that player's next end step$/i.test(s) && prev?.type === "exile" && !prev.returnAtEnd) {
+      prev.returnAtEnd = true;
+      continue;
+    }
+    if (/^for each player, choose a creature that player controls$/i.test(s)) {
+      keepOne = true;
+      continue;
+    }
+    if (keepOne && /^each player sacrifices all creatures they control not chosen this way$/i.test(s)) {
+      result.effects.push({ type: "keepOnePerPlayer" });
+      keepOne = false;
+      continue;
+    }
     // Bronze Bombshell : « If the player does, ~ deals 7 damage to the player. »
     if ((m = /^if the player does, ~ deals (\d+) damage to the player$/i.exec(s)) && prev?.type === "sacrificeSelf" && !prev.thenDamage) {
       prev.thenDamage = parseInt(m[1]!, 10);
@@ -748,13 +768,13 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       result.effects.push({ type: "draw", who: "you", count: amount(m[1]!) });
     } else if ((m = new RegExp(`^target player draws ${NUM} cards?$`, "i").exec(s))) {
       result.effects.push({ type: "draw", who: { target: target({ label: "joueur", player: true }) }, count: amount(m[1]!) });
-    } else if ((m = /^(destroy|exile) target (.+)$/i.exec(s))) {
-      const filter = parsePermanentFilter(m[2]!);
+    } else if ((m = /^(destroy|exile) (up to one )?target (.+)$/i.exec(s))) {
+      const filter = parsePermanentFilter(m[3]!);
       if (!filter) {
         result.unknown.push(sentence);
         continue;
       }
-      const t = target({ label: permanentLabel(filter), permanent: filter });
+      const t = target({ label: permanentLabel(filter), permanent: filter, ...(m[2] ? { upTo: true } : {}) });
       result.effects.push({ type: m[1]!.toLowerCase() === "destroy" ? "destroy" : "exile", target: t });
     } else if ((m = /^(destroy|exile) all (.+)$/i.exec(s))) {
       const filter = parsePermanentFilter(m[2]!);

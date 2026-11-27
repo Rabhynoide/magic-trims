@@ -54,7 +54,14 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
 
   // La fenêtre de choix : la première carte proposée.
   const picking = g.stack.map((id) => g.cards[id]!).find((c) => c.cardChoice && (c.cardChoice.playerId ?? c.controllerId) === botId);
-  if (picking) return { type: "chooseCards", cardId: picking.instanceId, cardIds: picking.cardChoice!.options.slice(0, 1) };
+  if (picking) {
+    const choice = picking.cardChoice!;
+    // Une carte par joueur (The Eternal Wanderer) : la première de chacun.
+    const ids = choice.perPlayer
+      ? choice.options.filter((id, i) => choice.options.findIndex((o) => g.cards[o]!.controllerId === g.cards[id]!.controllerId) === i)
+      : choice.options.slice(0, Math.max(1, choice.min));
+    return { type: "chooseCards", cardId: picking.instanceId, cardIds: ids };
+  }
 
   // Ses modes : le premier (ou le nombre minimum).
   const choosing = g.stack.map((id) => g.cards[id]!).find((c) => c.modes && !c.modes.chosen && c.controllerId === botId);

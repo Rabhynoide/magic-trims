@@ -52,6 +52,11 @@ export type StaticAbility =
   /** « No more than one creature can attack (block) each combat. » */
   | { kind: "maxOne"; attack: boolean }
   /**
+   * « No more than one creature can attack ~ each combat. » : les attaques se déclarent contre des
+   * joueurs dans ce moteur, la limite est donc toujours respectée.
+   */
+  | { kind: "attackLimitSelf" }
+  /**
    * Darksteel Mutation, Witness Protection : la créature enchantée perd ses capacités et devient
    * autre chose (types, force et endurance de base, mots-clés, couleurs, nom).
    */
@@ -86,6 +91,7 @@ export function parseStaticLine(line: string): StaticAbility | null {
   const l = line.replace(/\.$/, "").trim();
   let m: RegExpExecArray | null;
   if (/^you have no maximum hand size$/i.test(l)) return { kind: "noMaxHandSize" };
+  if (/^no more than one creature can attack ~ each combat$/i.test(l)) return { kind: "attackLimitSelf" };
   if (/^players have no maximum hand size$/i.test(l)) return { kind: "noMaxHandSizeAll" };
   if (/^~ enters tapped$/i.test(l)) return { kind: "entersTapped" };
   if (/^you can't play lands$/i.test(l)) return { kind: "cantPlayLands" };

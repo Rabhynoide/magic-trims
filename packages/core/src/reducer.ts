@@ -767,6 +767,9 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     if (chosen.length < pending.min || chosen.length > pending.max || chosen.some((id) => !pending.options.includes(id))) {
       throw new ActionError(pending.min === pending.max ? `Choisis ${plural(pending.max, "carte")} parmi celles proposées.` : `Choisis au plus ${plural(pending.max, "carte")} parmi celles proposées.`);
     }
+    if (pending.perPlayer && new Set(chosen.map((id) => g.cards[id]!.controllerId)).size !== chosen.length) {
+      throw new ActionError("Choisis une seule créature par joueur.");
+    }
     card.choices = { ...(card.choices ?? {}), [pending.index]: chosen };
     delete card.cardChoice;
     if (card.ability) resolveAbility(g, card);
@@ -1690,7 +1693,11 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         const c = card(effect.target);
         if (!c) break;
         const name = cardName(g, c);
-        moveCardTo(g, c.instanceId, effect.type === "exile" ? "exile" : "hand", "top");
+        const moved = moveCardTo(g, c.instanceId, effect.type === "exile" ? "exile" : "hand", "top");
+        if (effect.type === "exile" && effect.returnAtEnd && !moved.isToken) {
+          (g.delayedReturns ??= []).push({ cardId: moved.instanceId, playerId: moved.ownerId });
+          log(g, null, `${name} reviendra au début de la prochaine étape de fin de ${g.players[moved.ownerId]!.name}.`);
+        }
         log(g, null, effect.type === "exile" ? `${name} est exilé(e).` : `${name} retourne dans la main de son propriétaire.`);
         break;
       }
@@ -1911,6 +1918,15 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         if (!c || c.zone !== "battlefield") break;
         c.grantedTriggers = [...(c.grantedTriggers ?? []), effect.text];
         log(g, null, `${cardName(g, c)} gagne « ${effect.text} » jusqu'à la fin du tour.`);
+        break;
+      }
+      case "keepOnePerPlayer": {
+        const kept = new Set(source.choices?.[effects.indexOf(effect)] ?? []);
+        for (const p of g.turnOrder.map((id) => g.players[id]!).filter((p) => !p.hasConceded)) {
+          const doomed = p.zones.battlefield.map((id) => g.cards[id]!).filter((c) => isCreature(g, c) && !kept.has(c.instanceId));
+          for (const c of doomed) moveCardTo(g, c.instanceId, "graveyard", "top");
+          if (doomed.length > 0) log(g, null, `${p.name} sacrifie ${doomed.map((c) => cardName(g, c)).join(", ")}.`);
+        }
         break;
       }
       case "extraUpkeep":
@@ -2191,6 +2207,21 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
   const controller = g.players[card.controllerId]!;
   for (const [index, effect] of effects.entries()) {
     if (card.choices?.[index]) continue;
+    // The Eternal Wanderer −4 : une créature par joueur, choisie par le contrôleur de la capacité.
+    if (effect.type === "keepOnePerPlayer") {
+      const options = g.turnOrder
+        .map((id) => g.players[id]!)
+        .filter((p) => !p.hasConceded)
+        .flatMap((p) => p.zones.battlefield.filter((id) => isCreature(g, g.cards[id]!)));
+      const owners = new Set(options.map((id) => g.cards[id]!.controllerId));
+      if (options.length === owners.size) {
+        card.choices = { ...(card.choices ?? {}), [index]: options };
+        continue;
+      }
+      card.cardChoice = { index, options, min: owners.size, max: owners.size, label: "Choisis une créature par joueur (les autres seront sacrifiées)", perPlayer: true };
+      log(g, null, `${controller.name} choisit une créature par joueur pour ${cardName(g, card)}.`);
+      return true;
+    }
     // Sacrifice obligatoire (« sacrifice another artifact ») : le contrôleur choisit dans la fenêtre commune.
     if (effect.type === "sacrifice" && !card.ability?.choice) {
       const sourceId = card.ability?.sourceId;
@@ -2386,6 +2417,13 @@ const PERMANENT_TYPES = ["artifact", "battle", "creature", "enchantment", "land"
 const CARD_TYPE_WORDS = [...PERMANENT_TYPES, "instant", "sorcery", "kindred", "tribal"];
 
 /** Condition entre deux permanents échangés (Role Reversal, Daring Thief, Puca's Mischief, Modify Memory). */
+/** Nombre de cibles obligatoires : les dernières « up to one target » peuvent manquer. */
+function requiredTargets(specs: { upTo?: boolean }[]): number {
+  let n = specs.length;
+  while (n > 0 && specs[n - 1]!.upTo) n--;
+  return n;
+}
+
 function exchangeRelationHolds(g: GameState, a: CardInstance, b: CardInstance, relation: ExchangeRelation): boolean {
   const typesOf = (c: CardInstance, list: string[]) => {
     const data = g.cardData[c.cardId];
@@ -2459,11 +2497,11 @@ function activateAbility(
     }
   }
   const specs = ability.effects.targets;
-  if (targets.length !== specs.length) {
+  if (targets.length !== specs.length && !(targets.length >= requiredTargets(specs) && targets.length < specs.length)) {
     throw new ActionError(`Choisis ${specs.map((t) => `une cible (${t.label})`).join(", puis ")}.`);
   }
-  specs.forEach((spec, i) => {
-    if (!isLegalTarget(g, spec, targets[i]!, actor.id, card.instanceId)) throw new ActionError(`Cible invalide : il faut un(e) ${spec.label}.`);
+  targets.forEach((t, i) => {
+    if (!isLegalTarget(g, specs[i]!, t, actor.id, card.instanceId)) throw new ActionError(`Cible invalide : il faut un(e) ${specs[i]!.label}.`);
   });
   const anyColor = ability.effects.effects.some((e) => e.type === "manaAny");
   if (anyColor && (!color || !isManaType(color) || color === "C")) throw new ActionError("Choisis la couleur du mana.");
@@ -3127,6 +3165,17 @@ function enterStep(g: GameState, step: TurnStep): void {
     g.turn.upkeeps = (g.turn.upkeeps ?? 0) + 1;
   }
   g.turn.step = step;
+  // The Eternal Wanderer : les cartes exilées reviennent au début de l'étape de fin de leur propriétaire.
+  if (step === "end" && g.delayedReturns?.length) {
+    const due = g.delayedReturns.filter((r) => isActivePlayer(g, r.playerId));
+    g.delayedReturns = g.delayedReturns.filter((r) => !due.includes(r));
+    for (const r of due) {
+      const c = g.cards[r.cardId];
+      if (!c || c.zone !== "exile") continue;
+      moveCardTo(g, c.instanceId, "battlefield", "top", { controllerId: c.ownerId });
+      log(g, null, `${cardName(g, c)} revient sur le champ de bataille.`);
+    }
+  }
   if (step === "upkeep" || step === "draw" || step === "main1" || step === "end") {
     for (const p of activePlayers(g)) emit(g, { type: "step", step, playerId: p.id });
   }
