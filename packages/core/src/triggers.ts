@@ -11,7 +11,7 @@
  */
 import { parseActivatedLine, type ActivatedAbility } from "./activated.js";
 import { KEYWORD_HELP, parseSpellEffects, selfToTilde, type Effect, type SpellEffects } from "./effects.js";
-import { joinModes, keywordList } from "./text.js";
+import { joinModes, keywordList, NUMBER_WORDS } from "./text.js";
 import { hasCreatureType, parseStaticLine, typeLineHasCreatureType, type StaticAbility } from "./statics.js";
 import { creatureStats } from "./combat.js";
 import { areTeammates, isActivePlayer } from "./modes.js";
@@ -506,6 +506,16 @@ function parseTriggerBody(text: string): { effects: SpellEffects; optional: bool
   }
   if (/^you may look at the top X cards of your library, where X is that creature's power\. If you do, put one of those cards on top of your library and the rest on the bottom of your library in any order\.?$/i.test(text)) {
     return fixed({ type: "lookTopKeepOne" }, true);
+  }
+  // Sylvan Library : piocher en plus, puis pour chacune des cartes choisies parmi celles piochées ce tour, payer des PV ou la remettre dessus.
+  const library = /^you may draw (\w+) additional cards?\. If you do, choose (\w+) cards? in your hand drawn this turn\. For each of those cards, pay (\d+) life or put the card on top of your library\.?$/i.exec(text);
+  const drawn = library ? NUMBER_WORDS[library[1]!.toLowerCase()] : undefined;
+  const count = library ? NUMBER_WORDS[library[2]!.toLowerCase()] : undefined;
+  if (library && drawn && count) {
+    return {
+      effects: { targets: [], effects: [{ type: "chooseDrawn", count, drawFirst: drawn }, { type: "payLifeOrTop", life: parseInt(library[3]!, 10) }], unknown: [] },
+      optional: true,
+    };
   }
   // Descendants' Fury : sacrifier une des créatures qui ont infligé les blessures, puis révéler jusqu'à une créature de même type.
   if (/^you may sacrifice one of them\. If you do, reveal cards from the top of your library until you reveal a creature card that shares a creature type with the sacrificed creature\. Put that card onto the battlefield and the rest on the bottom of your library in a random order\.?$/i.test(text)) {

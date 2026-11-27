@@ -319,6 +319,8 @@ export interface PlayerState {
   lifeLost?: { turn: number; amount: number };
   /** Cartes piochées ce tour (Gixian Puppeteer). */
   drawsThisTurn?: { turn: number; count: number };
+  /** Les cartes piochées ce tour, dans l'ordre (Sylvan Library : « cards in your hand drawn this turn »). */
+  drawnThisTurn?: { turn: number; ids: CardInstanceId[] };
   /** Sorts lancés ce tour (Moderation…). */
   spellsCast?: { turn: number; count: number };
   /** Sorts lancés ce tour, dans l'ordre (« your first noncreature spell each turn », Esper Sentinel). */

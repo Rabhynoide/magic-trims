@@ -162,6 +162,10 @@ type EffectBase =
   | { type: "shuffleEventCard" }
   /** Cavalier of Gales : mettre N cartes de sa main sur le dessus de sa bibliothèque. */
   | { type: "handToTop"; count: number; drawFirst?: number }
+  /** Sylvan Library : choisir des cartes de la main piochées ce tour (après avoir pioché `drawFirst` cartes). */
+  | { type: "chooseDrawn"; count: number; drawFirst?: number }
+  /** Pour chaque carte choisie par l'effet précédent : payer `life` PV pour la garder, sinon la remettre sur le dessus. */
+  | { type: "payLifeOrTop"; life: number }
   /** Incandescent Soulstoke : une carte de sa main sur le champ de bataille (au choix), célérité, sacrifiée à la fin du tour. */
   | { type: "putFromHand"; subtype: string; haste: boolean; sacrificeAtEnd: boolean }
   /**

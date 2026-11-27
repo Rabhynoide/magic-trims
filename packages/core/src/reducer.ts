@@ -2122,6 +2122,22 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         log(g, null, `${caster.name} met ${plural(chosen.length, "carte")} de sa main sur le dessus de sa bibliothèque.`);
         break;
       }
+      case "chooseDrawn":
+        break;
+      case "payLifeOrTop": {
+        const index = effects.indexOf(effect);
+        const chosen = (source.choices?.[index - 1] ?? []).filter((id) => g.cards[id]?.zone === "hand");
+        const kept = (source.choices?.[index] ?? []).filter((id) => chosen.includes(id));
+        if (kept.length > 0) {
+          payLife(g, caster, effect.life * kept.length);
+          log(g, null, `${caster.name} paie ${effect.life * kept.length} points de vie pour garder ${plural(kept.length, "carte")}.`);
+        }
+        const back = chosen.filter((id) => !kept.includes(id));
+        // La première choisie finit sur le dessus.
+        for (const id of [...back].reverse()) moveCardTo(g, id, "library", "top");
+        if (back.length > 0) log(g, null, `${caster.name} remet ${plural(back.length, "carte")} sur le dessus de sa bibliothèque.`);
+        break;
+      }
       case "searchSharingType": {
         const [id] = source.choices?.[effects.indexOf(effect)] ?? [];
         const c = id ? g.cards[id] : undefined;
@@ -2978,6 +2994,33 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
         continue;
       }
       card.cardChoice = { index, options, min: effect.count, max: effect.count, label: `Choisis ${plural(effect.count, "carte")} de ta main à mettre sur le dessus de ta bibliothèque (la première choisie sera dessus)` };
+      return true;
+    }
+    // Sylvan Library : pioche en plus, puis les cartes piochées ce tour qui doivent être payées ou remises.
+    if (effect.type === "chooseDrawn") {
+      if (effect.drawFirst && !card.drewFirst) {
+        drawCards(g, controller, effect.drawFirst);
+        card.drewFirst = true;
+      }
+      const drawn = controller.drawnThisTurn?.turn === g.turn.number ? controller.drawnThisTurn.ids : [];
+      const options = drawn.filter((id) => g.cards[id]?.zone === "hand" && controller.zones.hand.includes(id));
+      if (options.length <= effect.count) {
+        card.choices = { ...(card.choices ?? {}), [index]: options };
+        continue;
+      }
+      card.cardChoice = { index, options, min: effect.count, max: effect.count, label: `Choisis ${plural(effect.count, "carte")} de ta main piochées ce tour (à payer en points de vie ou à remettre sur le dessus de ta bibliothèque)` };
+      return true;
+    }
+    if (effect.type === "payLifeOrTop") {
+      const options = (card.choices?.[index - 1] ?? []).filter((id) => g.cards[id]?.zone === "hand");
+      // On ne paie des points de vie que si on les a (règle 119.4).
+      const affordable = controller.life > 0 ? Math.floor(controller.life / effect.life) : 0;
+      const max = Math.min(options.length, affordable);
+      if (max === 0) {
+        card.choices = { ...(card.choices ?? {}), [index]: [] };
+        continue;
+      }
+      card.cardChoice = { index, options, min: 0, max, label: `Choisis les cartes que tu gardes en payant ${effect.life} points de vie chacune (les autres vont sur le dessus de ta bibliothèque)` };
       return true;
     }
     // Pyre of Heroes : une créature qui partage un type avec la sacrifiée, de valeur de mana +1.
@@ -4656,9 +4699,11 @@ function drawCards(g: GameState, player: PlayerState, count: number): void {
   const library = player.zones.library;
   const drawn = Math.min(count, library.length);
   for (let i = 0; i < drawn; i++) {
-    moveCardTo(g, library[0]!, "hand", "top");
+    const drawnId = library[0]!;
+    moveCardTo(g, drawnId, "hand", "top");
     const before = player.drawsThisTurn?.turn === g.turn.number ? player.drawsThisTurn.count : 0;
     player.drawsThisTurn = { turn: g.turn.number, count: before + 1 };
+    player.drawnThisTurn = { turn: g.turn.number, ids: [...(player.drawnThisTurn?.turn === g.turn.number ? player.drawnThisTurn.ids : []), drawnId] };
     emit(g, { type: "draw", playerId: player.id, nth: before + 1 });
   }
   log(g, player.id, `${player.name} pioche ${plural(drawn, "carte")}.`);
