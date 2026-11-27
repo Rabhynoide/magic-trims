@@ -1051,7 +1051,7 @@ export interface CardSupport {
   unknown: string[];
 }
 
-const HANDLED_KEYWORDS = new Set([...COMBAT_KEYWORDS, "Flash", "Exploit", "Read ahead", "Evoke"].map((k) => k.toLowerCase()));
+const HANDLED_KEYWORDS = new Set([...COMBAT_KEYWORDS, "Flash", "Exploit", "Read ahead", "Evoke", "Changeling"].map((k) => k.toLowerCase()));
 
 /** Ce que le moteur fait d'une ligne de texte d'un permanent. */
 interface LineStatus {
@@ -1169,6 +1169,7 @@ export const KEYWORD_HELP: Record<string, { name: string; help: string }> = {
   exploit: { name: "Exploitation", help: "En arrivant, tu peux sacrifier une créature (le moteur te le demande)." },
   flash: { name: "Flash", help: "Peut se lancer à tout moment où l'on a la priorité." },
   evoke: { name: "Évocation", help: "Peut se lancer pour son coût d'évocation ; elle est alors sacrifiée en arrivant." },
+  changeling: { name: "Changelin", help: "Cette carte a tous les types de créature." },
 };
 
 /**

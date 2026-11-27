@@ -45,9 +45,23 @@ const BASIC_LAND_TYPES: Record<string, ManaType> = {
  * [[C], [R], [G]] ; Command Tower → les cinq couleurs.
  */
 export function manaOptions(typeLine: string, oracleText: string): ManaType[][] {
-  const options: ManaType[][] = [];
+  return manaOptionsDetailed(typeLine, oracleText).map((o) => o.mana);
+}
+
+/** Restriction d'un mana : seulement pour les sorts (et capacités) d'un type de créature, ou du type choisi. */
+export interface ManaRestriction {
+  /** Un type de créature, ou « chosen » : le type choisi en arrivant. */
+  subtype: string;
+  /** Aussi pour activer les capacités de ces sources. */
+  abilities: boolean;
+}
+
+/** Les choix de mana d'une carte, avec leur restriction (Primal Beyond, Smokebraider, Secluded Courtyard). */
+export function manaOptionsDetailed(typeLine: string, oracleText: string): { mana: ManaType[]; only?: ManaRestriction }[] {
+  const options: { mana: ManaType[]; only?: ManaRestriction }[] = [];
+  let only: ManaRestriction | undefined;
   const add = (mana: ManaType[]) => {
-    if (mana.length > 0 && !options.some((o) => o.join() === mana.join())) options.push(mana);
+    if (mana.length > 0 && !options.some((o) => o.mana.join() === mana.join() && !!o.only === !!only)) options.push({ mana, ...(only ? { only } : {}) });
   };
 
   // Types de terrain de base : capacité intrinsèque (règle 305.6).
@@ -62,6 +76,12 @@ export function manaOptions(typeLine: string, oracleText: string): ManaType[][] 
     const match = /^\{T\}: Add ([^.]+)\./.exec(line);
     if (!match) continue;
     const effect = match[1]!.trim();
+    only = manaRestriction(line);
+    if (/^two mana in any combination of colors$/i.test(effect)) {
+      const colors = ["W", "U", "B", "R", "G"] as const;
+      colors.forEach((a, i) => colors.slice(i).forEach((b) => add([a, b])));
+      continue;
+    }
     if (/^one mana of any color\b/i.test(effect)) {
       for (const m of ["W", "U", "B", "R", "G"] as const) add([m]);
       continue;
@@ -73,6 +93,13 @@ export function manaOptions(typeLine: string, oracleText: string): ManaType[][] 
     }
   }
   return options;
+}
+
+/** « Spend this mana only to cast an Elemental spell or activate an ability of an Elemental. » */
+function manaRestriction(line: string): ManaRestriction | undefined {
+  const m = /Spend this mana only to cast (?:an? )?(?:creature spells? of the chosen type|(\w+) spells?)( or activate (?:an )?abilit(?:y|ies) of)?/i.exec(line);
+  if (!m) return undefined;
+  return { subtype: m[1] ? m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase() : "chosen", abilities: !!m[2] };
 }
 
 /** Un symbole d'un coût de mana. */

@@ -1007,6 +1007,7 @@ function ManaPoolView(props: { view: GameView; playerId: PlayerId }) {
   const { view, playerId } = props;
   const pool = view.players[playerId]!.manaPool;
   if (!pool) return null;
+  const reserved = view.players[playerId]!.restrictedMana ?? [];
   const isMe = playerId === view.viewerId;
   const shown = MANA_TYPES.filter((m) => isMe || pool[m] > 0);
   if (shown.length === 0) return null;
@@ -1028,6 +1029,11 @@ function ManaPoolView(props: { view: GameView; playerId: PlayerId }) {
           {pool[m] > 0 && <span className="mana-count">{pool[m]}</span>}
         </button>
       ))}
+      {reserved.length > 0 && (
+        <span className="mana-reserved" title="Mana réservé à certains sorts">
+          {reserved.map((r) => `{${r.mana}}`).join("")} ({[...new Set(reserved.map((r) => r.subtype))].join(", ")})
+        </span>
+      )}
     </span>
   );
 }

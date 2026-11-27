@@ -60,7 +60,8 @@ export type GameAction =
    * Joue un terrain depuis la main (un par tour, pendant sa phase principale,
    * pile vide). `face` : 1 pour jouer le verso d'une carte modale.
    */
-  | { type: "playLand"; cardId: CardInstanceId; face?: number }
+  /** `chosenType` : « As ~ enters, choose a creature type » (Secluded Courtyard). */
+  | { type: "playLand"; cardId: CardInstanceId; face?: number; chosenType?: string }
   /**
    * Lance un sort depuis la main (ou son commandant depuis la zone de
    * commandement) en payant son coût avec la réserve ; les terrains qui
@@ -83,6 +84,8 @@ export type GameAction =
       evoke?: boolean | "granted";
       /** Évocation « Exile a green card from your hand » : la carte exilée. */
       evokeExile?: CardInstanceId;
+      /** « As ~ enters, choose a creature type » : le type choisi (Herald's Horn, Morophon). */
+      chosenType?: string;
     }
   /**
    * Active la capacité n° `index` (parmi les capacités activées reconnues de

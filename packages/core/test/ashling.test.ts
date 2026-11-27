@@ -213,6 +213,80 @@ describe("Deck Ashling : recherches de terrains", () => {
 describe("Deck Ashling : bilan", () => {
   it("compte les cartes entièrement gérées", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "", manaCost: c.manaCost ?? "" })).level);
-    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(44);
+    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(53);
+  });
+});
+
+describe("Deck Ashling : type choisi et mana réservé", () => {
+  const elemental = (name: string, cost = "{1}{G}") => fakeCard(name, { typeLine: "Creature — Elemental", power: "2", toughness: "2", manaCost: cost, colors: ["G"] });
+
+  it("Primal Beyond : le mana de couleur ne sert qu'aux Élémentaux", () => {
+    let g = toMain(newTestGame(2));
+    let beyond: string, ours: string, elem: string;
+    [g, beyond] = put(g, "p1", real("Primal Beyond"));
+    [g, ours] = inHand(g, "p1", bear("Ours"), 1);
+    [g, elem] = inHand(g, "p1", elemental("Élémental", "{G}"), 2);
+    g = act(g, "p1", { type: "tapForMana", cardId: beyond, choice: 5 });
+    expect(g.players.p1!.restrictedMana).toEqual([{ mana: "G", subtype: "Elemental", abilities: true }]);
+    expect(refuse(g, "p1", { type: "castSpell", cardId: ours })).toMatch(/mana/);
+    g = act(g, "p1", { type: "castSpell", cardId: elem });
+    expect(g.players.p1!.restrictedMana).toEqual([]);
+  });
+
+  it("Secluded Courtyard : le type choisi en jouant le terrain", () => {
+    let g = toMain(newTestGame(2));
+    let yard: string;
+    [g, yard] = inHand(g, "p1", real("Secluded Courtyard"));
+    g = act(g, "p1", { type: "playLand", cardId: yard, chosenType: "elf" });
+    expect(g.cards[yard]!.chosenType).toBe("Elf");
+    g = act(g, "p1", { type: "tapForMana", cardId: yard, choice: 1 });
+    expect(g.players.p1!.restrictedMana?.[0]?.subtype).toBe("Elf");
+  });
+
+  it("Herald's Horn, Urza's Incubator, Morophon : réductions selon le type choisi", () => {
+    let g = toMain(newTestGame(2));
+    let elem: string, theirs: string;
+    [g] = put(g, "p1", real("Herald's Horn"));
+    expect(g.cards[g.players.p1!.zones.battlefield.at(-1)!]!.chosenType).toBeDefined();
+    let horn = g.players.p1!.zones.battlefield.at(-1)!;
+    g.cards[horn]!.chosenType = "Elemental";
+    [g] = put(g, "p2", real("Urza's Incubator"));
+    const incubator = g.players.p2!.zones.battlefield.at(-1)!;
+    g.cards[incubator]!.chosenType = "Elemental";
+    [g, elem] = inHand(g, "p1", elemental("Élémental", "{4}{G}"), 2);
+    // {4}{G} − 1 (Horn) − 2 (Incubator, pour tout le monde) = {1}{G}.
+    g = mana(g, "p1", "GC");
+    g = act(g, "p1", { type: "castSpell", cardId: elem });
+    g = resolveAll(g);
+    expect(g.cards[elem]!.zone).toBe("battlefield");
+    // Morophon : {W}{U}{B}{R}{G} de moins pour le type choisi.
+    [g] = put(g, "p1", real("Morophon, the Boundless"), 0);
+    const morophon = g.players.p1!.zones.battlefield.at(-1)!;
+    g.cards[morophon]!.chosenType = "Elemental";
+    [g, theirs] = inHand(g, "p1", fakeCard("Grand Élémental", { typeLine: "Creature — Elemental", power: "5", toughness: "5", manaCost: "{1}{W}{U}{B}{R}{G}" }), 0);
+    g = act(g, "p1", { type: "castSpell", cardId: theirs });
+    expect(g.cards[theirs]!.zone).toBe("stack");
+    // Les autres créatures du type choisi : +1/+1 (Morophon).
+    expect(creatureStats(g, g.cards[elem]!)).toEqual({ power: 3, toughness: 3 });
+    void horn;
+    horn = "";
+  });
+
+  it("Incandescent Soulstoke et Goblin Anarchomancer", () => {
+    let g = toMain(newTestGame(2));
+    let elem: string, ours: string, spell: string;
+    [g] = put(g, "p1", real("Incandescent Soulstoke"));
+    [g, elem] = put(g, "p1", elemental("Élémental"), 0);
+    [g, ours] = put(g, "p1", bear("Ours"), 0);
+    expect(creatureStats(g, g.cards[elem]!)).toEqual({ power: 3, toughness: 3 });
+    expect(creatureStats(g, g.cards[ours]!)).toEqual({ power: 2, toughness: 2 });
+    [g] = put(g, "p1", real("Goblin Anarchomancer"), 0);
+    [g, spell] = inHand(g, "p1", fakeCard("Sort vert", { typeLine: "Sorcery", manaCost: "{1}{G}", colors: ["G"], oracleText: "You gain 1 life." }), 0);
+    g = mana(g, "p1", "G");
+    g = act(g, "p1", { type: "castSpell", cardId: spell });
+    expect(g.cards[spell]!.zone).toBe("stack");
+    for (const name of ["Primal Beyond", "Secluded Courtyard", "Unclaimed Territory", "Herald's Horn", "Urza's Incubator", "Cloud Key", "Morophon, the Boundless", "Smokebraider", "Flamebraider", "Incandescent Soulstoke", "Goblin Anarchomancer"]) {
+      expect(cardSupport(real(name)).level, name).not.toBe("manual");
+    }
   });
 });

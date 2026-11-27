@@ -17,11 +17,20 @@ export type StaticAbility =
   /** « This creature can't block. » (appliqué par le combat) */
   | { kind: "restriction" }
   /** « Black creature spells you cast cost {1} less to cast. » */
-  | { kind: "costReduction"; amount: number; colors: string[]; types: string[]; notTypes: string[] }
+  /**
+   * `chosenType` : seulement le type choisi en arrivant (Herald's Horn, Cloud Key) ; `everyone` : les sorts de tous
+   * les joueurs (Urza's Incubator) ; `colored` : réduit le mana coloré (Morophon : {W}{U}{B}{R}{G}).
+   */
+  | { kind: "costReduction"; amount: number; colors: string[]; types: string[]; notTypes: string[]; chosenType?: boolean; everyone?: boolean; colored?: string; anyColor?: boolean }
+  /** « As ~ enters, choose a creature type » (ou un type de carte : Cloud Key). */
+  | { kind: "chooseType"; what: "creature" | "card" }
+  /** Herald's Horn : à l'entretien, la carte du dessus en main si c'est une créature du type choisi. */
+  | { kind: "heraldsHorn" }
   /** « Equipped creature has haste and shroud. », « Enchanted creature gets +2/+2. » */
   | { kind: "attached"; keywords: string[]; power: number; toughness: number }
   /** « Creatures you control get +1/+1. », « Other creatures you control have flying. » */
-  | { kind: "anthem"; others: boolean; keywords: string[]; power: number; toughness: number }
+  /** `subtype` : seulement ce type de créature (« Other Elemental creatures you control »), ou le type choisi. */
+  | { kind: "anthem"; others: boolean; keywords: string[]; power: number; toughness: number; subtype?: string; chosenType?: boolean }
   /** « ~'s power and toughness are each equal to the number of cards in your hand. » */
   | { kind: "ptEqualsHand" }
   /** « Players have no maximum hand size. » */
@@ -90,7 +99,7 @@ function grant(text: string): { keywords: string[]; power: number; toughness: nu
 
 /** Lit une ligne d'effet statique (le nom de la carte déjà remplacé par « ~ »). */
 export function parseStaticLine(line: string): StaticAbility | null {
-  const l = line.replace(/\.$/, "").trim();
+  const l = line.replace(/\.$/, "").replace(/\. this effect reduces only the amount of colored mana you pay$/i, "").trim();
   let m: RegExpExecArray | null;
   if (/^you have no maximum hand size$/i.test(l)) return { kind: "noMaxHandSize" };
   if (/^no more than one creature can attack ~ each combat$/i.test(l)) return { kind: "attackLimitSelf" };
@@ -130,6 +139,39 @@ export function parseStaticLine(line: string): StaticAbility | null {
   if ((m = /^no more than one creature can (attack|block) each combat$/i.exec(l))) return { kind: "maxOne", attack: m[1]!.toLowerCase() === "attack" };
   if (/^~ can't (attack|block)( or (attack|block))?$/i.test(l)) return { kind: "restriction" };
   if (/^~'s power and toughness are each equal to the number of cards in your hand$/i.test(l)) return { kind: "ptEqualsHand" };
+  if (/^as ~ enters, choose a creature type$/i.test(l)) return { kind: "chooseType", what: "creature" };
+  if (/^as ~ enters, choose artifact, creature, enchantment, instant, or sorcery$/i.test(l)) return { kind: "chooseType", what: "card" };
+  // Herald's Horn, Urza's Incubator, Cloud Key, Morophon : le type choisi.
+  if ((m = /^(creature )?spells (?:you cast )?of the chosen type (?:you cast )?cost (\{\d+\}|(?:\{[WUBRG]\})+) less to cast$/i.exec(l))) {
+    const everyone = !/you cast/i.test(l);
+    const colored = /^\{\d+\}$/.test(m[2]!) ? undefined : m[2]!;
+    return {
+      kind: "costReduction",
+      amount: colored ? 0 : parseInt(m[2]!.slice(1, -1), 10),
+      colors: [],
+      types: m[1] ? ["creature"] : [],
+      notTypes: [],
+      chosenType: true,
+      ...(everyone ? { everyone } : {}),
+      ...(colored ? { colored } : {}),
+    };
+  }
+  if (/^this effect reduces only the amount of colored mana you pay$/i.test(l)) return { kind: "restriction" };
+  // Goblin Anarchomancer : « Each spell you cast that's red or green costs {1} less to cast. »
+  if ((m = /^each spell you cast that's (white|blue|black|red|green) or (white|blue|black|red|green) costs \{(\d+)\} less to cast$/i.exec(l))) {
+    return { kind: "costReduction", amount: parseInt(m[3]!, 10), colors: [COLOR_WORDS[m[1]!.toLowerCase()]!, COLOR_WORDS[m[2]!.toLowerCase()]!], types: [], notTypes: [] };
+  }
+  if (/^at the beginning of your upkeep, look at the top card of your library\. if it's a creature card of the chosen type, you may reveal it and put it into your hand$/i.test(l)) {
+    return { kind: "heraldsHorn" };
+  }
+  if ((m = /^other (\w+) creatures you control (.+)$/i.exec(l)) && !/^other$/i.test(m[1]!)) {
+    const g = grant(m[2]!);
+    return g ? { kind: "anthem", others: true, ...g, subtype: m[1]!.charAt(0).toUpperCase() + m[1]!.slice(1).toLowerCase() } : null;
+  }
+  if ((m = /^other creatures you control of the chosen type (.+)$/i.exec(l))) {
+    const g = grant(m[1]!);
+    return g ? { kind: "anthem", others: true, ...g, chosenType: true } : null;
+  }
   if ((m = /^((?:white|blue|black|red|green) )?((?:non)?[a-z]+ )?spells you cast cost \{(\d+)\} less to cast$/i.exec(l))) {
     const color = m[1]?.trim().toLowerCase();
     const type = m[2]?.trim().toLowerCase();
@@ -207,7 +249,11 @@ export function grantedTo(g: GameState, card: CardInstance): { keywords: string[
     for (const s of staticsOf(g, other)) {
       const applies =
         (s.kind === "attached" && card.instanceId === other.attachedTo) ||
-        (s.kind === "anthem" && other.controllerId === card.controllerId && !(s.others && other.instanceId === card.instanceId));
+        (s.kind === "anthem" &&
+          other.controllerId === card.controllerId &&
+          !(s.others && other.instanceId === card.instanceId) &&
+          (!s.subtype || hasCreatureType(g, card, s.subtype)) &&
+          (!s.chosenType || (!!other.chosenType && hasCreatureType(g, card, other.chosenType))));
       if (!applies || (s.kind !== "attached" && s.kind !== "anthem")) continue;
       out.keywords.push(...s.keywords);
       out.power += s.power;
@@ -277,20 +323,68 @@ export function cantGainLife(g: GameState, playerId: PlayerId): boolean {
 }
 
 /** Réduction du coût générique d'un sort lancé par ce joueur. */
-export function costReduction(g: GameState, playerId: PlayerId, spell: { typeLine: string; colors: string[] }): number {
-  let total = 0;
+export function costReduction(g: GameState, playerId: PlayerId, spell: { typeLine: string; colors: string[]; oracleText?: string }): number {
+  return costReductions(g, playerId, spell).generic;
+}
+
+/** Réductions de coût : le générique, et le mana coloré retiré (Morophon). */
+export function costReductions(g: GameState, playerId: PlayerId, spell: { typeLine: string; colors: string[]; oracleText?: string }): { generic: number; colored: string[] } {
+  let generic = 0;
+  const colored: string[] = [];
   const type = spell.typeLine.toLowerCase();
   const has = (t: string) => new RegExp(`\\b${t}\\b`).test(type);
-  for (const id of g.players[playerId]!.zones.battlefield) {
-    for (const s of staticsOf(g, g.cards[id]!)) {
-      if (s.kind !== "costReduction") continue;
-      if (s.colors.length > 0 && !s.colors.some((c) => spell.colors.includes(c))) continue;
-      if (s.types.length > 0 && !s.types.some(has)) continue;
-      if (s.notTypes.some(has)) continue;
-      total += s.amount;
+  for (const pid of g.turnOrder) {
+    for (const id of g.players[pid]!.zones.battlefield) {
+      const source = g.cards[id]!;
+      for (const s of staticsOf(g, source)) {
+        if (s.kind !== "costReduction") continue;
+        if (pid !== playerId && !s.everyone) continue;
+        if (s.colors.length > 0 && !s.colors.some((c) => spell.colors.includes(c))) continue;
+        if (s.types.length > 0 && !s.types.some(has)) continue;
+        if (s.notTypes.some(has)) continue;
+        if (s.chosenType) {
+          const chosen = source.chosenType;
+          if (!chosen) continue;
+          const isCardType = ["artifact", "creature", "enchantment", "instant", "sorcery"].includes(chosen.toLowerCase());
+          if (isCardType ? !has(chosen.toLowerCase()) : !typeLineHasCreatureType(spell.typeLine, spell.oracleText ?? "", chosen)) continue;
+        }
+        generic += s.amount;
+        if (s.colored) colored.push(...[...s.colored.matchAll(/\{([WUBRG])\}/g)].map((x) => x[1]!));
+      }
     }
   }
-  return total;
+  return { generic, colored };
+}
+
+/** La ligne de type a-t-elle ce type de créature ? Changelin : tous les types de créature. */
+export function typeLineHasCreatureType(typeLine: string, oracleText: string, subtype: string): boolean {
+  if (new RegExp(`\\b${subtype}\\b`, "i").test(typeLine)) return true;
+  return /\b(Creature|Kindred|Tribal)\b/.test(typeLine) && /^Changeling\b/m.test(oracleText);
+}
+
+/** Le permanent a-t-il ce type de créature (Changelin compris) ? */
+export function hasCreatureType(g: GameState, card: CardInstance, subtype: string): boolean {
+  const data = g.cardData[card.cardId];
+  const face = data?.faces?.[card.faceIndex];
+  return typeLineHasCreatureType(face?.typeLine ?? data?.typeLine ?? "", face?.oracleText ?? data?.oracleText ?? "", subtype);
+}
+
+/** Le type le plus fréquent parmi les créatures d'un joueur (le choix par défaut). */
+export function mostCommonCreatureType(g: GameState, playerId: PlayerId): string {
+  const counts = new Map<string, number>();
+  for (const c of Object.values(g.cards)) {
+    if (c.ownerId !== playerId || c.ability) continue;
+    const typeLine = g.cardData[c.cardId]?.typeLine ?? "";
+    if (!/\bCreature\b/.test(typeLine)) continue;
+    for (const t of (typeLine.split("—")[1] ?? "").trim().split(/\s+/).filter(Boolean)) counts.set(t, (counts.get(t) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "Elemental";
+}
+
+/** Ce que la carte fait choisir en arrivant (« As ~ enters, choose a creature type »). */
+export function chooseTypeOf(data: CardData | undefined, faceIndex = 0): "creature" | "card" | null {
+  const s = staticsOfData(data, faceIndex).find((x) => x.kind === "chooseType");
+  return s && s.kind === "chooseType" ? s.what : null;
 }
 
 /** D'où viennent des blessures : pour les effets qui les modifient. */
@@ -400,7 +494,7 @@ export function evokeOptions(
   if (fromHand) {
     for (const c of g.players[playerId]?.zones.battlefield.map((id) => g.cards[id]!) ?? []) {
       const s = staticsOf(g, c).find((x) => x.kind === "grantEvoke");
-      if (s && s.kind === "grantEvoke" && new RegExp(`\\b${s.subtype}\\b`).test(typeLine)) granted = { mana: s.mana };
+      if (s && s.kind === "grantEvoke" && typeLineHasCreatureType(typeLine, face?.oracleText ?? data.oracleText, s.subtype)) granted = { mana: s.mana };
     }
   }
   return { ...(printed ? { printed } : {}), ...(granted ? { granted } : {}) };

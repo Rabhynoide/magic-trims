@@ -6,6 +6,8 @@ import {
   parseSpellEffects,
   auraTarget,
   evokeOptions,
+  chooseTypeOf,
+  mostCommonCreatureType,
   stateFromView,
   sagaChapters,
   permanentLabel,
@@ -315,8 +317,24 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
     .filter((f, i) => i === 0 || f.manaCost || /\bLand\b/.test(f.typeLine))
     .flatMap((f): MenuItem[] => {
       const face = f.face !== undefined ? { face: f.face } : {};
+      // « As ~ enters, choose a creature type » : demandé en jouant la carte.
+      const askType = async (): Promise<string | null | undefined> => {
+        const what = view.settings.enforceRules ? chooseTypeOf(data, f.face ?? 0) : null;
+        if (!what) return undefined;
+        if (what === "card") return ui.ask("Type choisi (artifact, creature, enchantment, instant ou sorcery)", "creature", "text");
+        return ui.ask("Type de créature choisi (en anglais : Elemental, Elf…)", mostCommonCreatureType(stateFromView(view), view.viewerId), "text");
+      };
       if (/\bLand\b/.test(f.typeLine)) {
-        return [{ label: `Jouer ${f.name}`, onClick: () => void act({ type: "playLand", cardId: id, ...face }) }];
+        return [
+          {
+            label: `Jouer ${f.name}`,
+            onClick: async () => {
+              const chosenType = await askType();
+              if (chosenType === null) return;
+              void act({ type: "playLand", cardId: id, ...face, ...(chosenType ? { chosenType } : {}) });
+            },
+          },
+        ];
       }
       const cast = (alternative: boolean, evoke?: true | "granted", exileColor?: string) => async () => {
           let x: number | undefined;
@@ -351,6 +369,8 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
             if (!chosen) return;
             evokeExile = chosen[0]!.id;
           }
+          const chosenType = await askType();
+          if (chosenType === null) return;
           // Saga avec lecture anticipée : le chapitre de départ.
           let chapter: number | undefined;
           const chapters = view.settings.enforceRules ? sagaChapters(data, f.face ?? 0) : 0;
@@ -377,6 +397,7 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
             ...(chapter !== undefined ? { chapter } : {}),
             ...(evoke ? { evoke } : {}),
             ...(evokeExile ? { evokeExile } : {}),
+            ...(chosenType ? { chosenType } : {}),
           });
       };
       const items: MenuItem[] = [{ label: `Lancer ${f.name}${f.manaCost ? ` ${f.manaCost}` : ""}`, onClick: cast(false) }];
