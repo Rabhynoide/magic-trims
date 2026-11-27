@@ -116,7 +116,32 @@ export interface SpellFilter {
  * Un nombre : fixe, X (choisi au lancement), ou « that much » d'une capacité
  * déclenchée (la quantité de l'événement : PV gagnés ou perdus).
  */
-export type Amount = number | "X" | "-X" | "event" | "-event" | "dealt" | "hand" | "given" | "devotion" | "-devotion" | "lost" | "-lostThisTurn" | { perPermanent: PermanentFilter };
+export type Amount =
+  | number
+  | "X"
+  | "-X"
+  | "event"
+  | "-event"
+  | "dealt"
+  | "hand"
+  | "given"
+  | "devotion"
+  | "-devotion"
+  | "lost"
+  | "-lostThisTurn"
+  /** « for each creature you control » ; `all` : « for each creature on the battlefield » (tous les joueurs). */
+  | { perPermanent: PermanentFilter; all?: boolean; times?: number; negative?: boolean }
+  /** « equal to its power », « equal to the greatest toughness among creatures you control »… */
+  | { q: Quantity; negative?: boolean };
+
+/**
+ * Une quantité lue sur le jeu à la résolution : la force ou l'endurance d'une
+ * cible (`of` : son numéro, valeur au moment où le sort commence à se résoudre)
+ * ou de la source de la capacité (`"self"`), ou la plus grande parmi des permanents.
+ */
+export type Quantity =
+  | { stat: "power" | "toughness"; of: number | "self" }
+  | { greatest: "power" | "toughness"; filter: PermanentFilter };
 
 /** Qui subit l'effet : « you », une cible, ou le joueur de l'événement déclencheur (« that player », « they »). */
 export type Who = "you" | "opponents" | "all" | "event" | { target: number } | { controllerOf: number };
@@ -212,9 +237,12 @@ type EffectBase =
   | { type: "pumpTarget"; target: number; power: number; toughness: number; keywords: string[]; untilNextTurn?: boolean }
   /** « Creatures you control gain lifelink until end of turn. » */
   /** « Legendary creatures you control get +1/+0 and gain indestructible until end of turn. » ; `others` : sauf la source. */
-  | { type: "grantAll"; filter: PermanentFilter; keywords: string[]; power?: number; toughness?: number; others?: boolean; untilNextTurn?: boolean }
+  /** `power`/`toughness` : un nombre, ou X (Toxic Deluge : « All creatures get -X/-X »). */
+  | { type: "grantAll"; filter: PermanentFilter; keywords: string[]; power?: number | "X" | "-X"; toughness?: number | "X" | "-X"; others?: boolean; untilNextTurn?: boolean }
   /** Équiper : attache la source à la cible. */
   | { type: "attach"; target: number }
+  /** Hero's Blade : « attach ~ to it » (la créature de l'événement). */
+  | { type: "attachEvent" }
   /** « Sacrifice a creature » (au choix du contrôleur, à la résolution). */
   | { type: "sacrifice"; filter: PermanentFilter; another?: boolean; orElse?: Effect[] }
   /** « tap ~ ». */
@@ -224,6 +252,10 @@ type EffectBase =
   | { type: "selfCounterDamage"; kind: string }
   /** « it gets +2/+0 until end of turn » : la créature de l'événement (Crown of Doom). */
   | { type: "pumpEvent"; power: number; toughness: number }
+  /** « put a +1/+1 counter on it » : la créature de l'événement (The Great Henge). */
+  | { type: "counterEvent"; kind: string; count: number }
+  /** Odric, Lunarch Marshal : chaque mot-clé qu'a une de vos créatures est donné à toutes jusqu'à la fin du tour. */
+  | { type: "shareKeywords"; keywords: string[] }
   /** « Target opponent gains control of target permanent you control » ; `permanent` : une cible, ou la source. */
   | { type: "gainControl"; permanent: number | "self"; player: number }
   /** « Exchange control of target land you control and target land an opponent controls. » */
@@ -231,7 +263,7 @@ type EffectBase =
   /** Chaos Warp : le propriétaire mélange le permanent dans sa bibliothèque ; `revealPermanent` : puis révèle et met en jeu un permanent. */
   | { type: "shuffleIntoLibrary"; target: number; revealPermanent?: boolean }
   /** Ashling : « create a token that's a copy of it » (la carte sacrifiée), avec la célérité et un sacrifice à la fin du tour. */
-  | { type: "copyEventCard"; haste?: boolean; endStepUnless?: string }
+  | { type: "copyEventCard"; haste?: boolean; endStepUnless?: string; sacrificeAtEnd?: boolean }
   /** Paradox Haze : « that player gets an additional upkeep step after this step ». */
   | { type: "extraUpkeep" }
   /** Wedding Ring : « target opponent creates a token that's a copy of it ». */
@@ -308,6 +340,8 @@ export interface SpellEffects {
   sacrifice?: PermanentFilter;
   /** Coût alternatif (« You may pay {1}{B} rather than pay this spell's mana cost »). */
   alternativeCost?: string;
+  /** Coût supplémentaire : payer X PV (Toxic Deluge), X choisi en lançant le sort. */
+  payLifeX?: boolean;
   /** « Cast this spell only during combat on an opponent's turn » (Wake the Dead). */
   castOnly?: "opponentCombat";
   /**
@@ -490,6 +524,15 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
     }
   }
   if ((m = /^(?:you )?draw that many cards$/i.exec(s))) return [{ type: "draw", who: "you", count: "event" }];
+  if (/^attach ~ to (?:it|that creature)$/i.test(s) && lastTarget() < 0) return [{ type: "attachEvent" }];
+  // The Great Henge : « put a +1/+1 counter on it and draw a card » (la créature arrivée).
+  if ((m = new RegExp(`^put ${NUM} ([+-]1/[+-]1|\\w+) counters? on (?:it|that creature)(?: and draw ${NUM} cards?)?$`, "i").exec(s)) && lastTarget() < 0) {
+    const n = amount(m[1]!);
+    if (typeof n === "number") {
+      const draw = m[3] ? amount(m[3]) : null;
+      return [{ type: "counterEvent", kind: counterKind(m[2]!), count: n }, ...(draw !== null ? [{ type: "draw" as const, who: "you" as const, count: draw }] : [])];
+    }
+  }
   if (/^(?:you )?draw an additional card$/i.test(s)) return [{ type: "draw", who: "you", count: 1 }];
   if (/^discard your hand$/i.test(s)) return [{ type: "discardHand", who: "you" }];
   if (/^sacrifice ~$/i.test(s)) return [{ type: "sacrificeSelf" }];
@@ -648,6 +691,125 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
   if (/^that player gets an additional upkeep step after this step$/i.test(s)) return [{ type: "extraUpkeep" }];
   // Bronze Bombshell : « that player sacrifices it. »
   if (/^that player sacrifices (?:it|~)$/i.test(s)) return [{ type: "sacrificeSelf" }];
+  return null;
+}
+
+/**
+ * « the number of creatures you control », « creature on the battlefield »… :
+ * un décompte de permanents (ceux du lanceur, ou de tous les joueurs).
+ */
+function countOf(text: string): Amount | null {
+  const t = text.trim();
+  if (/^cards? in your hand$/i.test(t)) return "hand";
+  const onBattlefield = /^(.+?) on the battlefield$/i.exec(t);
+  const filter = parsePermanentFilter(onBattlefield ? onBattlefield[1]! : t);
+  if (!filter) return null;
+  // Sans « you control » ni « on the battlefield », le moteur compte les permanents du lanceur (comme avant).
+  return { perPermanent: filter, ...(onBattlefield && !filter.controller ? { all: true } : {}) };
+}
+
+/**
+ * Ce qui suit « equal to » : « its power » (la dernière cible), « ~'s power »
+ * (la source), « the greatest toughness among creatures you control »,
+ * « the number of … ». `null` si non compris.
+ */
+function quantityOf(text: string, lastTarget: number): Amount | null {
+  const t = text.trim();
+  let m: RegExpExecArray | null;
+  if ((m = /^(its|that creature's|~'s) (power|toughness)$/i.exec(t))) {
+    const stat = m[2]!.toLowerCase() as "power" | "toughness";
+    if (m[1]!.toLowerCase() === "~'s") return { q: { stat, of: "self" } };
+    return lastTarget >= 0 ? { q: { stat, of: lastTarget } } : null;
+  }
+  if ((m = /^the greatest (power|toughness) among (.+)$/i.exec(t))) {
+    const filter = parsePermanentFilter(m[2]!.replace(/ on the battlefield$/i, ""));
+    return filter ? { q: { greatest: m[1]!.toLowerCase() as "power" | "toughness", filter } } : null;
+  }
+  if ((m = /^the number of (.+)$/i.exec(t))) return countOf(m[1]!);
+  return null;
+}
+
+const negate = (a: Amount): Amount | null => (typeof a === "object" ? { ...a, negative: !a.negative } : a === "hand" ? null : neg(a));
+
+/**
+ * Quantités variables : « equal to … », « that many », « for each … »
+ * (pioche, points de vie, jetons, blessures). `null` si la phrase n'en est pas une.
+ */
+function parseVariableSentence(s: string, target: (spec: TargetSpec) => number, lastTarget: () => number): Effect[] | null {
+  let m: RegExpExecArray | null;
+  const NAMED = "(Treasure|Food|Clue|Blood)";
+  const named = (w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+  // Points de vie : « Its controller gains life equal to its power. », « You gain life equal to the greatest power among… »
+  if ((m = /^(its controller|you|target player|target opponent|each opponent|each player) (gains?|loses?) life equal to (.+)$/i.exec(s))) {
+    const w = m[1]!.toLowerCase();
+    if (w === "its controller" && lastTarget() < 0) return null;
+    const q = quantityOf(m[3]!, lastTarget());
+    const amt = q && (/lose/i.test(m[2]!) ? negate(q) : q);
+    if (!amt) return null;
+    const who: Who =
+      w === "you" ? "you" : w === "its controller" ? { controllerOf: lastTarget() } : w === "each opponent" ? "opponents" : w === "each player" ? "all" : { target: target(playerTarget(w)) };
+    return [{ type: "life", who, amount: amt }];
+  }
+  // Pioche : « Draw cards equal to the greatest toughness among creatures you control. »
+  if ((m = /^(?:(you|target player) )?draws? cards equal to (.+)$/i.exec(s))) {
+    const q = quantityOf(m[2]!, lastTarget());
+    if (!q) return null;
+    const who: Who = /target/i.test(m[1] ?? "") ? { target: target({ label: "joueur", player: true }) } : "you";
+    return [{ type: "draw", who, count: q }];
+  }
+  // « Draw a card for each creature you control. »
+  if ((m = /^(?:(you|target player) )?draws? a card for each (.+)$/i.exec(s))) {
+    const q = countOf(m[2]!);
+    if (!q) return null;
+    const who: Who = /target/i.test(m[1] ?? "") ? { target: target({ label: "joueur", player: true }) } : "you";
+    return [{ type: "draw", who, count: q }];
+  }
+  // « You gain 2 life for each creature you control. », « Each opponent loses 1 life for each … »
+  if ((m = new RegExp(`^(you|target player|target opponent|each opponent) (gains?|loses?) ${NUM} life for each (.+)$`, "i").exec(s))) {
+    const n = amount(m[3]!);
+    const q = countOf(m[4]!);
+    if (typeof n !== "number" || !q || typeof q !== "object") return null;
+    const w = m[1]!.toLowerCase();
+    const who: Who = w === "you" ? "you" : w === "each opponent" ? "opponents" : { target: target(playerTarget(w)) };
+    return [{ type: "life", who, amount: { ...q, times: n, ...(/lose/i.test(m[2]!) ? { negative: true } : {}) } }];
+  }
+  // Jetons : « create that many Treasure tokens », « create a number of 1/1 red Goblin creature tokens equal to ~'s power ».
+  if ((m = new RegExp(`^(?:you )?create that many (tapped )?${NAMED} tokens$`, "i").exec(s))) {
+    return [{ type: "namedToken", name: named(m[2]!), count: "event", tapped: !!m[1] }];
+  }
+  if ((m = /^(?:you )?create that many (tapped )?(.+ tokens)$/i.exec(s)) && parseToken(m[2]!)) {
+    return [{ type: "token", count: "event", token: parseToken(m[2]!)!, tapped: !!m[1] }];
+  }
+  if ((m = /^(?:you )?create a number of (tapped )?(.+? tokens) equal to (.+)$/i.exec(s))) {
+    const q = quantityOf(m[3]!, lastTarget());
+    if (!q) return null;
+    const nm = new RegExp(`^${NAMED} tokens$`, "i").exec(m[2]!);
+    if (nm) return [{ type: "namedToken", name: named(nm[1]!), count: q, tapped: !!m[1] }];
+    const token = parseToken(m[2]!);
+    return token ? [{ type: "token", count: q, token, tapped: !!m[1] }] : null;
+  }
+  if ((m = new RegExp(`^(?:you )?create (?:a|an|one) (tapped )?${NAMED} token for each (.+)$`, "i").exec(s))) {
+    const q = countOf(m[3]!);
+    return q ? [{ type: "namedToken", name: named(m[2]!), count: q, tapped: !!m[1] }] : null;
+  }
+  // Blessures : « ~ deals damage equal to its power to target creature », « ~ deals 2 damage to each opponent for each … »
+  if ((m = /^~ deals damage equal to (.+?) to (.+)$/i.exec(s)) || (m = /^~ deals damage to (.+?) equal to (.+)$/i.exec(s))) {
+    const [qText, who] = /^~ deals damage equal to/i.test(s) ? [m[1]!, m[2]!] : [m[2]!, m[1]!];
+    const q = quantityOf(qText, lastTarget());
+    if (!q) return null;
+    if (/^each opponent$/i.test(who)) return [{ type: "damageEach", who: "opponents", amount: q }];
+    const spec = damageTarget(who);
+    return spec ? [{ type: "damage", target: target(spec), amount: q }] : null;
+  }
+  if ((m = new RegExp(`^~ deals ${NUM} damage to (.+?) for each (.+)$`, "i").exec(s))) {
+    const n = amount(m[1]!);
+    const q = countOf(m[3]!);
+    if (typeof n !== "number" || !q || typeof q !== "object") return null;
+    const per: Amount = { ...q, times: n };
+    if (/^each opponent$/i.test(m[2]!)) return [{ type: "damageEach", who: "opponents", amount: per }];
+    const spec = damageTarget(m[2]!);
+    return spec ? [{ type: "damage", target: target(spec), amount: per }] : null;
+  }
   return null;
 }
 
@@ -920,12 +1082,17 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       result.effects.push({ type: "copyEventCard" });
       continue;
     }
-    if (/^the token gains haste until end of turn$/i.test(s) && prev?.type === "copyEventCard") {
+    if (/^(?:the|that) token gains haste(?: until end of turn)?$/i.test(s) && prev?.type === "copyEventCard") {
       prev.haste = true;
       continue;
     }
     if ((m = /^at the beginning of your next end step, sacrifice it unless you pay ((?:\{[^}]+\})+)$/i.exec(s)) && prev?.type === "copyEventCard") {
       prev.endStepUnless = m[1]!;
+      continue;
+    }
+    // Cadric, Soul Kindler : « Sacrifice it at the beginning of the next end step. »
+    if (/^sacrifice it at the beginning of the next end step$/i.test(s) && prev?.type === "copyEventCard" && !prev.endStepUnless) {
+      prev.sacrificeAtEnd = true;
       continue;
     }
     // Chaos Warp.
@@ -991,6 +1158,25 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     if (triggered) {
       result.effects.push(...triggered);
       continue;
+    }
+    const variable = parseVariableSentence(s, target, () => result.targets.length - 1);
+    if (variable) {
+      result.effects.push(...variable);
+      continue;
+    }
+    // Toxic Deluge : « As an additional cost to cast this spell, pay X life. »
+    if (/^as an additional cost to cast ~, pay X life$/i.test(s)) {
+      result.payLifeX = true;
+      continue;
+    }
+    // « All creatures get -X/-X until end of turn. »
+    if ((m = /^all (.+?) get ([+-](?:\d+|X))\/([+-](?:\d+|X)) until end of turn$/i.exec(s))) {
+      const filter = parsePermanentFilter(m[1]!);
+      const pt = (v: string): number | "X" | "-X" => (/x$/i.test(v) ? (v.startsWith("-") ? "-X" : "X") : parseInt(v, 10));
+      if (filter && filter.types.includes("creature")) {
+        result.effects.push({ type: "grantAll", filter, keywords: [], power: pt(m[2]!), toughness: pt(m[3]!) });
+        continue;
+      }
     }
     if ((m = new RegExp(`^(you |target player )?draws? ${NUM} cards? and (?:you )?loses? ${NUM} life$`, "i").exec(s))) {
       // « You draw two cards and you lose 2 life. », « Target player draws X cards and loses X life. »
@@ -1372,9 +1558,21 @@ export function resolveAmount(
   a: Amount,
   x: number,
   eventAmount = 0,
-  context: { dealt?: number; hand?: number; given?: number; devotion?: number; lost?: number; lostThisTurn?: number; count?: (filter: PermanentFilter) => number } = {},
+  context: {
+    dealt?: number;
+    hand?: number;
+    given?: number;
+    devotion?: number;
+    lost?: number;
+    lostThisTurn?: number;
+    count?: (filter: PermanentFilter, all: boolean) => number;
+    quantity?: (q: Quantity) => number;
+  } = {},
 ): number {
-  if (typeof a === "object") return context.count?.(a.perPermanent) ?? 0;
+  if (typeof a === "object") {
+    const v = "q" in a ? (context.quantity?.(a.q) ?? 0) : (context.count?.(a.perPermanent, !!a.all) ?? 0) * (a.times ?? 1);
+    return a.negative ? -v : v;
+  }
   if (a === "dealt") return context.dealt ?? 0;
   if (a === "given") return context.given ?? 0;
   if (a === "devotion") return context.devotion ?? 0;
@@ -1538,6 +1736,7 @@ export const KEYWORD_HELP: Record<string, { name: string; help: string }> = {
   exploit: { name: "Exploitation", help: "En arrivant, tu peux sacrifier une créature (le moteur te le demande)." },
   flash: { name: "Flash", help: "Peut se lancer à tout moment où l'on a la priorité." },
   fear: { name: "Peur", help: "Ne peut être bloquée que par des créatures-artefacts et/ou noires." },
+  skulk: { name: "Rôder", help: "Ne peut pas être bloquée par des créatures de plus grande force." },
   goad: { name: "Provocation", help: "Jusqu'au prochain tour du joueur qui provoque, la créature doit attaquer à chaque combat, et un autre joueur que lui si possible." },
   myriad: { name: "Myriade", help: "Quand elle attaque, une copie attaque chacun des autres adversaires ; les copies sont exilées à la fin du combat." },
   cascade: { name: "Cascade", help: "Quand tu la lances, exile des cartes jusqu'à une carte non-terrain de plus petite valeur de mana : tu peux la lancer gratuitement." },
