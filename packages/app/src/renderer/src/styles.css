@@ -1436,6 +1436,16 @@ textarea:focus {
   font-size: 13px;
 }
 
+.sound-settings {
+  font-size: 13px;
+  color: var(--text-dim);
+  gap: 6px;
+}
+.sound-settings input[type="range"] {
+  width: 80px;
+}
+.sound-settings input[type="checkbox"] {
+  width: auto;
 .deck-support {
   margin: 6px 0;
   font-size: 13px;
