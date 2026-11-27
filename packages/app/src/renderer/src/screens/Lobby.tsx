@@ -5,6 +5,8 @@ import { supportOf } from "../cards";
 import { session, useSession } from "../session";
 import { storage, type SavedDeck } from "../storage";
 import { DeckImport } from "./DeckImport";
+import { DeckBrowser } from "../components/DeckBrowser";
+import { Modal } from "../components/Modal";
 
 const MODE_ORDER: GameModeType[] = ["freeForAll", "duel", "teams", "twoHeadedGiant", "star", "archenemy"];
 
@@ -15,6 +17,7 @@ export function Lobby() {
   const [decks, setDecks] = useState<SavedDeck[]>(storage.getDecks());
   const [selected, setSelected] = useState<string | null>(storage.getSelectedDeck());
   const [importing, setImporting] = useState(false);
+  const [picking, setPicking] = useState(false);
   const selectedDeck = decks.find((d) => d.id === selected);
   const [loadingExtras, setLoadingExtras] = useState(false);
   const config = lobby.config;
@@ -191,16 +194,10 @@ export function Lobby() {
 
           <h3>Mon deck</h3>
           <div className="row">
-            <select value={selected ?? ""} onChange={(e) => chooseDeck(e.target.value)} aria-label="Mon deck">
-              <option value="" disabled>
-                Choisir un deck…
-              </option>
-              {decks.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}
-                </option>
-              ))}
-            </select>
+            <span className="chosen-deck">{selectedDeck ? selectedDeck.name : <span className="hint">Aucun deck choisi</span>}</span>
+            <button className={selectedDeck ? "" : "primary"} onClick={() => setPicking(true)}>
+              {selectedDeck ? "Changer" : "Choisir un deck"}
+            </button>
             <button onClick={() => setImporting(true)}>Importer</button>
           </div>
           {selectedDeck && <DeckSupport deck={selectedDeck.deck} />}
@@ -359,6 +356,23 @@ export function Lobby() {
           <Chat />
         </section>
       </div>
+
+      {picking && (
+        <Modal title="Choisir mon deck" wide onClose={() => setPicking(false)}>
+          <DeckBrowser
+            decks={decks}
+            selectedId={selected}
+            currentMode={config.mode}
+            onSelect={(d) => {
+              chooseDeck(d.id);
+              setPicking(false);
+            }}
+          />
+          <p className="hint">
+            La colonne surlignée est le mode de cette partie. Survole une croix pour voir ce qui rend le deck non légal.
+          </p>
+        </Modal>
+      )}
 
       {importing && (
         <DeckImport
