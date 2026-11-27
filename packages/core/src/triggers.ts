@@ -428,6 +428,13 @@ function parseTriggerBody(text: string): { effects: SpellEffects; optional: bool
   if (/^you may look at the top X cards of your library, where X is that creature's power\. If you do, put one of those cards on top of your library and the rest on the bottom of your library in any order\.?$/i.test(text)) {
     return fixed({ type: "lookTopKeepOne" }, true);
   }
+  // Jodah : une cascade légendaire, par rapport au sort lancé (et non à la source).
+  const cascade = /^exile cards from the top of your library until you exile a (legendary )?nonland card with lesser mana value\. You may cast that card without paying its mana cost\. Put the rest on the bottom of your library in a random order\.?$/i.exec(text);
+  if (cascade) return fixed({ type: "cascade", ofEvent: true, ...(cascade[1] ? { legendary: true } : {}) });
+  // Etali : la carte du dessus de chaque bibliothèque, ses sorts se lancent gratuitement.
+  if (/^exile the top card of each player's library, then you may cast any number of spells from among those cards without paying their mana costs\.?$/i.test(text)) {
+    return fixed({ type: "exileTopEachCastFree" });
+  }
   // Descendants' Fury : sacrifier une des créatures qui ont infligé les blessures, puis révéler jusqu'à une créature de même type.
   if (/^you may sacrifice one of them\. If you do, reveal cards from the top of your library until you reveal a creature card that shares a creature type with the sacrificed creature\. Put that card onto the battlefield and the rest on the bottom of your library in a random order\.?$/i.test(text)) {
     return fixed({ type: "sacrificeOneReveal" }, true);

@@ -212,7 +212,19 @@ type EffectBase =
   /** Encore : un jeton copie par adversaire, avec la célérité, sacrifié à la fin du tour. */
   | { type: "encore" }
   /** Cascade : exiler jusqu'à une carte non-terrain de plus petite valeur de mana, lançable gratuitement. */
-  | { type: "cascade" }
+  /**
+   * Cascade ; Jodah : `legendary` (une carte légendaire non-terrain), `ofEvent` (de plus petite valeur
+   * de mana que le sort de l'événement, et non que la source).
+   */
+  | { type: "cascade"; legendary?: boolean; ofEvent?: boolean }
+  /**
+   * Stock Up, Dihada −3 : regarder (ou révéler) les N cartes du dessus, en prendre `take` (« any » : autant
+   * qu'on veut) parmi celles qui sont légendaires si `legendary`, le reste dessous ou au cimetière ;
+   * `treasurePerRest` : un Trésor par carte mise au cimetière ainsi.
+   */
+  | { type: "digTop"; count: number; take: number | "any"; legendary?: boolean; reveal: boolean; rest: "bottom" | "graveyard"; treasurePerRest?: boolean }
+  /** Etali : exiler la carte du dessus de chaque bibliothèque, ses sorts se lancent gratuitement (pendant cette étape). */
+  | { type: "exileTopEachCastFree" }
   /** Annihilateur : le joueur que la créature attaque sacrifie des permanents de son choix. */
   | { type: "defenderSacrifices"; count: number }
   /** Risen Reef : la carte du dessus, sur le champ de bataille engagée si c'est un terrain (au choix), sinon en main. */
@@ -892,6 +904,7 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       continue;
     }
     let m: RegExpExecArray | null;
+    let dig: RegExpExecArray | null;
     // « If you control eight or more lands, draw a card. »
     if ((m = /^if you control (\w+) or more (.+?), (.+)$/i.exec(s))) {
       const filter = parsePermanentFilter(`${m[2]!} you control`);
@@ -1239,6 +1252,23 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       result.effects.push({ type: "graveyardToBottom", who: { target: target({ label: "joueur", player: true, ...(m[1] ? { upTo: true } : {}) }) } });
     } else if ((m = /^its controller creates (.+)$/i.exec(s)) && parseToken(m[1]!.replace(/^an? /i, "")) && result.targets.length > 0) {
       result.effects.push({ type: "tokenForController", target: result.targets.length - 1, token: parseToken(m[1]!.replace(/^an? /i, ""))! });
+    } else if (
+      (m = new RegExp(`^(look at|reveal) the top ${NUM} cards of your library$`, "i").exec(s)) &&
+      (dig = new RegExp(`^put (${NUM}|any number) of (them|legendary cards from among them) into your hand and the rest (on the bottom of your library in (?:any|a random) order|into your graveyard)\\.?$`, "i").exec(sentences[sentences.indexOf(sentence) + 1] ?? ""))
+    ) {
+      // Stock Up, Dihada −3 : regarder les N cartes du dessus, en prendre quelques-unes, le reste dessous ou au cimetière.
+      const count = amount(m[2]!);
+      const take = /^any number$/i.test(dig[1]!) ? "any" : amount(dig[1]!);
+      if (typeof count !== "number" || (take !== "any" && typeof take !== "number")) {
+        result.unknown.push(sentence);
+        continue;
+      }
+      // (NUM a sa propre parenthèse : dig[2])
+      const rest = /graveyard/i.test(dig[4]!) ? "graveyard" : "bottom";
+      result.effects.push({ type: "digTop", count, take, reveal: /^reveal/i.test(m[1]!), rest, ...(/legendary/i.test(dig[3]!) ? { legendary: true } : {}) });
+      followUps.push(/^put (?:.+) into your hand and the rest (?:on the bottom of your library in (?:any|a random) order|into your graveyard)$/i);
+    } else if (/^create a treasure token for each card put into your graveyard this way$/i.test(s) && result.effects.at(-1)?.type === "digTop") {
+      (result.effects.at(-1) as Extract<Effect, { type: "digTop" }>).treasurePerRest = true;
     } else if ((m = new RegExp(`^reveal the top ${NUM} cards of your library$`, "i").exec(s)) && /^put a land card from among them onto the battlefield and the rest into your graveyard\.?$/i.test(sentences[sentences.indexOf(sentence) + 1] ?? "")) {
       result.effects.push({ type: "revealLandRestGraveyard", count: amount(m[1]!) as number });
       followUps.push(/^put a land card from among them onto the battlefield and the rest into your graveyard$/i);
