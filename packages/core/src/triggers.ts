@@ -12,7 +12,7 @@
 import { parseActivatedLine, type ActivatedAbility } from "./activated.js";
 import { KEYWORD_HELP, parseSpellEffects, selfToTilde, type Effect, type SpellEffects } from "./effects.js";
 import { joinModes, keywordList } from "./text.js";
-import { hasCreatureType, parseStaticLine, typeLineHasCreatureType, type StaticAbility } from "./statics.js";
+import { hasCreatureType, isCreatureSubtype, parseStaticLine, typeLineHasCreatureType, type StaticAbility } from "./statics.js";
 import { creatureStats } from "./combat.js";
 import { areTeammates, isActivePlayer } from "./modes.js";
 import type { TurnStep } from "./turn.js";
@@ -234,7 +234,8 @@ function castFilterMatches(f: CastFilter, spell: CastRecord): boolean {
   if (f.colorless && spell.colors.length > 0) return false;
   if (f.subtypes) {
     const sub = (spell.typeLine.split("—")[1] ?? "").split("//")[0]!;
-    if (!f.subtypes.some((s) => new RegExp(`\\b${s}\\b`, "i").test(sub))) return false;
+    const changeling = !!spell.changeling && /\b(Creature|Kindred|Tribal)\b/.test(spell.typeLine);
+    if (!f.subtypes.some((s) => new RegExp(`\\b${s}\\b`, "i").test(sub) || (changeling && isCreatureSubtype(s)))) return false;
   }
   if (f.minManaValue !== undefined && spell.manaValue < f.minManaValue) return false;
   if (f.from === "hand" && !spell.fromHand) return false;
@@ -914,13 +915,8 @@ export function triggerConditionHolds(g: GameState, onlyIf: TriggeredAbility["on
   return true;
 }
 
-/** Types de carte (pas de créature) : un changelin n'en gagne aucun. */
-const CARD_TYPES = /^(creature|artifact|enchantment|land|planeswalker|battle)$/i;
-
 /** Le permanent sacrifié avait-il ce type ? Changelin compris (Morophon sacrifié par Ashling). */
 function sacrificedHasType(g: GameState, event: Extract<TriggerEvent, { type: "sacrificed" }>, subtype: string): boolean {
-  if (CARD_TYPES.test(subtype)) return new RegExp(`\\b${subtype}\\b`, "i").test(event.typeLine);
   const data = g.cardData[event.dataId];
-  const oracle = data?.faces?.[event.faceIndex]?.oracleText ?? data?.oracleText ?? "";
-  return typeLineHasCreatureType(event.typeLine, oracle, subtype);
+  return typeLineHasCreatureType(event.typeLine, data?.faces?.[event.faceIndex]?.oracleText ?? data?.oracleText ?? "", subtype);
 }

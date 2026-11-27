@@ -572,6 +572,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       manaValue: (faceData ? manaValueOfCost(faceData.manaCost) : data.manaValue) + xValue * (castCost.match(/\{X\}/g)?.length ?? 0),
       fromHand,
       hasX: /\{X\}/.test(castCost),
+      ...(/^Changeling\b/m.test(faceData?.oracleText ?? data.oracleText) ? { changeling: true } : {}),
     };
     const history = actor.castHistory?.turn === g.turn.number ? actor.castHistory.spells : [];
     actor.castHistory = { turn: g.turn.number, spells: [...history, record] };
