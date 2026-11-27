@@ -1,0 +1,25 @@
+{
+  "name": "@magic-trims/central",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Serveur central facultatif : partage de decks entre amis d'un même groupe. Le jeu fonctionne sans lui.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p .",
+    "central": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@magic-trims/core": "0.1.0",
+    "@magic-trims/host": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.0",
+    "tsx": "^4.20.0"
+  }
+}
