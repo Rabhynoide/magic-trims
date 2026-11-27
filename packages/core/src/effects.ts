@@ -286,8 +286,9 @@ type EffectBase =
   /**
    * `types` : au moins un de ces types ou sous-types (« Forest or Island ») ; `basic` : terrain de base ;
    * `count` : « up to two » ; `split` : Cultivate (la première carte sur le champ de bataille engagée, les autres en main).
+   * `legendary` : carte légendaire ; `mv` : valeur de mana bornée (« with mana value less than ~'s power », « 3 or less »).
    */
-  | { type: "search"; types: string[]; to: "hand" | "battlefield"; reveal: boolean; who?: Who; tapped?: boolean; basic?: boolean; count?: number; split?: boolean }
+  | { type: "search"; types: string[]; to: "hand" | "battlefield"; reveal: boolean; who?: Who; tapped?: boolean; basic?: boolean; count?: number; split?: boolean; legendary?: boolean; mv?: { cmp: "lt" | "le"; amount: Amount } }
   | { type: "shuffle"; who?: Who }
   /** « Target opponent reveals their hand. » */
   | { type: "revealHand"; who: Who }
@@ -951,6 +952,25 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       const types = (m[1] ?? "").trim().toLowerCase().replace(/^basic /, "").split(" ").filter(Boolean);
       result.effects.push({ type: "search", types, to: /hand/i.test(m[3]!) ? "hand" : "battlefield", reveal: !!m[2], ...(/^basic /i.test(m[1] ?? "") ? { basic: true } : {}) });
       continue;
+    }
+    // Tuteurs filtrés : « Search your library for a legendary permanent card with mana value less than ~'s power, put that card onto the battlefield » (Sisay).
+    if (
+      (m = /^search your library for an? (legendary )?((?:(?:nonland|land|creature|artifact|enchantment|instant|sorcery|planeswalker|permanent)(?: or | )?)+) card with mana value (less than (?:or equal to )?(.+?)|(\w+) or less)(?:,| and) (reveal it, )?(?:then )?put (?:it|that card) (into your hand|onto the battlefield)$/i.exec(s))
+    ) {
+      const le = !!m[5] || /or equal to/i.test(m[3]!);
+      const q = m[5] ? amount(m[5]) : (/^\w+$/.test(m[4]!) ? amount(m[4]!) : quantityOf(m[4]!, -1));
+      const types = m[2]!.toLowerCase().split(/ or | /).filter(Boolean);
+      if (q !== null && !(typeof q === "number" && Number.isNaN(q))) {
+        result.effects.push({
+          type: "search",
+          types,
+          to: /hand/i.test(m[7]!) ? "hand" : "battlefield",
+          reveal: !!m[6],
+          ...(m[1] ? { legendary: true } : {}),
+          mv: { cmp: le ? "le" : "lt", amount: q },
+        });
+        continue;
+      }
     }
     // Fetchlands, Farseek, Rampant Growth, Cultivate, Land Tax : terrains par type ou sous-type.
     const LAND_WORDS = "(?:basic land|land|plains|island|swamp|mountain|forest)";

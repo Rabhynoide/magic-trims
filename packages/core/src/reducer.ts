@@ -3047,7 +3047,12 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
     const typeOk = (id: CardInstanceId, types: string[]) => {
       const data = g.cardData[g.cards[id]!.cardId];
       const typeLine = (data?.faces?.[0]?.typeLine ?? data?.typeLine ?? "").toLowerCase();
-      return types.length === 0 || types.some((t) => (t === "nonland" ? !/\bland\b/.test(typeLine) : new RegExp(`\\b${t}\\b`).test(typeLine)));
+      return (
+        types.length === 0 ||
+        types.some((t) =>
+          t === "nonland" ? !/\bland\b/.test(typeLine) : t === "permanent" ? !/\b(?:instant|sorcery)\b/.test(typeLine) : new RegExp(`\\b${t}\\b`).test(typeLine),
+        )
+      );
     };
     let options: CardInstanceId[] = [];
     let label = "";
@@ -3066,8 +3071,27 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
         chooser = g.players[id]!;
       }
       const isBasic = (id: CardInstanceId) => /\bBasic\b/.test(g.cardData[g.cards[id]!.cardId]?.typeLine ?? "");
-      options = chooser.zones.library.filter((id) => typeOk(id, effect.types) && (!effect.basic || isBasic(id)));
-      const what = effect.basic ? "terrain de base" : effect.types.join(", ");
+      // Tuteurs filtrés (Sisay) : légendaire, valeur de mana bornée (calculée maintenant, à la résolution).
+      const isLegendary = (id: CardInstanceId) => /\bLegendary\b/.test(g.cardData[g.cards[id]!.cardId]?.faces?.[0]?.typeLine ?? g.cardData[g.cards[id]!.cardId]?.typeLine ?? "");
+      const mv = effect.mv;
+      const self = card.ability ? g.cards[card.ability.sourceId] : undefined;
+      const bound = mv
+        ? resolveAmount(mv.amount, card.xValue ?? 0, 0, {
+            quantity: (q) => ("of" in q && q.of === "self" && self?.zone === "battlefield" ? Math.max(0, creatureStats(g, self)[q.stat]) : 0),
+          })
+        : 0;
+      const mvOk = (id: CardInstanceId) => {
+        if (!mv) return true;
+        const v = g.cardData[g.cards[id]!.cardId]?.manaValue ?? 0;
+        return mv.cmp === "lt" ? v < bound : v <= bound;
+      };
+      options = chooser.zones.library.filter((id) => typeOk(id, effect.types) && (!effect.basic || isBasic(id)) && (!effect.legendary || isLegendary(id)) && mvOk(id));
+      const what = [
+        effect.basic ? "terrain de base" : [effect.legendary ? "légendaire" : "", effect.types.join(", ")].filter(Boolean).join(" "),
+        mv ? `valeur de mana ${mv.cmp === "lt" ? "inférieure à" : "au plus"} ${bound}` : "",
+      ]
+        .filter(Boolean)
+        .join(", ");
       const n = effect.count ?? 1;
       label = `Choisis ${n > 1 ? `jusqu'à ${n} cartes` : "une carte"}${what ? ` (${what})` : ""} de ta bibliothèque${effect.split ? " : la première va sur le champ de bataille engagée, les autres en main" : ""}`;
       for (const id of options) addRevealed(g.cards[id]!, [chooser.id]);
