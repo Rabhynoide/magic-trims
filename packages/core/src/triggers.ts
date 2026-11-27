@@ -38,6 +38,8 @@ export type TriggerEvent =
   | { type: "sacrificed"; cardId: CardInstanceId; controllerId: PlayerId; dataId: string; faceIndex: number; isToken: boolean; typeLine: string }
   /** Un permanent change de contrôleur. */
   | { type: "controlChanged"; cardId: CardInstanceId; controllerId: PlayerId }
+  /** Un permanent devient la cible d'un sort ou d'une capacité (`spellId`) contrôlé par `playerId` (garde). */
+  | { type: "targeted"; cardId: CardInstanceId; playerId: PlayerId; spellId: CardInstanceId }
   /** Un permanent engagé se dégage. */
   | { type: "untapped"; cardId: CardInstanceId }
   /** Un permanent subit des blessures (Body of Knowledge). */
@@ -124,6 +126,8 @@ export type TriggerCondition =
     }
   /** « Whenever ~ is dealt damage ». */
   | { on: "damaged" }
+  /** Garde (ward) : « Whenever ~ becomes the target of a spell or ability an opponent controls ». */
+  | { on: "targeted" }
   /** Chapitre d'une saga (« I, II — … »). */
   | { on: "chapter"; chapters: number[] }
   /** « When ~ leaves the battlefield » ; `enchanted` : « When enchanted permanent dies or is put into exile » (`to` : zones visées). */
@@ -455,6 +459,16 @@ export interface Unless {
   xPower?: boolean;
 }
 
+/** Coût de la garde (« ward {2} », « Ward—Pay 3 life. », « Ward—Discard a card. »), payé par le contrôleur du sort ; null sinon. */
+export function parseWard(part: string): Unless | null {
+  const p = part.trim().replace(/\.$/, "");
+  let m: RegExpExecArray | null;
+  if ((m = /^ward ((?:\{[^}]+\})+)$/i.exec(p))) return { payer: "event", mana: m[1]! };
+  if ((m = /^ward\s*[—-]\s*pay (\d+) life$/i.exec(p))) return { payer: "event", life: parseInt(m[1]!, 10) };
+  if (/^ward\s*[—-]\s*discard a card$/i.test(p)) return { payer: "event", discard: 1 };
+  return null;
+}
+
 /** Lit le corps d'une capacité déclenchée : ses effets, et si elle est facultative. */
 function parseTriggerBody(text: string): { effects: SpellEffects; optional: boolean; payMana?: string; payLife?: number; unless?: Unless } | null {
   const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
@@ -567,6 +581,23 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
           effects: { targets: [], effects: [{ type: "cascade" }], unknown: [] },
           ifUntapped: false,
           optional: false,
+        });
+      }
+      continue;
+    }
+    // Garde (ward) : « Vigilance, ward {2} », « Ward—Pay 3 life. » : contrer le sort ou la capacité
+    // d'un adversaire qui cible ce permanent, sauf si son contrôleur paie le coût.
+    const wards = line.split(/,\s*/).map(parseWard);
+    if (wards.some(Boolean)) {
+      for (const unless of wards) {
+        if (!unless) continue;
+        result.triggers.push({
+          text: `Ward ${unless.mana ?? (unless.life ? `— Pay ${unless.life} life` : "— Discard a card")}`,
+          condition: { on: "targeted" },
+          effects: { targets: [], effects: [{ type: "counterTriggering" }], unknown: [] },
+          ifUntapped: false,
+          optional: false,
+          unless,
         });
       }
       continue;
@@ -812,6 +843,8 @@ export function conditionMatches(
       }
       return true;
     }
+    case "targeted":
+      return c.on === "targeted" && event.cardId === source.instanceId && whoseMatches(g, "opponent", source.controllerId, event.playerId);
     case "attacks":
     case "blocks":
       if (c.on !== "combat" || !(event.type === "attacks" ? c.attacks : c.blocks)) return false;

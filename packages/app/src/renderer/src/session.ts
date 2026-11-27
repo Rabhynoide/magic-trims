@@ -116,7 +116,9 @@ class Session {
 
   private async join(url: string, name: string, extra: { hostKey?: string; token?: string }) {
     this.client?.close();
-    const client = new GameClient({ url, name, ...extra });
+    const info = await window.magic?.appInfo().catch(() => undefined);
+    const app = info ? { version: info.version, ...(info.commit ? { commit: info.commit } : {}) } : undefined;
+    const client = new GameClient({ url, name, ...extra, ...(app ? { app } : {}) });
     this.client = client;
     this.rawView = null;
     this.set({ connecting: true, chat: [], view: null, lobby: null });
