@@ -65,6 +65,7 @@ import {
   foretellCost,
   colorsAmongPermanents,
   costReductions,
+  selfCostReduction,
   mostCommonCreatureType,
   hasCreatureType,
   typeLineHasCreatureType,
@@ -491,6 +492,10 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const earlyModes = parsedEffects && modesTargeted(parsedEffects) ? checkModes(g, actor.id, parsedEffects.modes!, modes ?? []) : undefined;
     const effects = parsedEffects && earlyModes ? flattenModes(parsedEffects, earlyModes) : parsedEffects;
     if (alternative && !effects?.alternativeCost) throw new ActionError("Ce sort n'a pas de coût alternatif.");
+    // Flawless Maneuver, Fierce Guardianship : gratuit si l'on contrôle un commandant.
+    if (alternative && effects?.alternativeIf === "commander" && !controlsCommander(g, actor.id)) {
+      throw new ActionError("Il faut contrôler un commandant pour lancer ce sort sans payer son coût.");
+    }
     if (effects?.castOnly === "opponentCombat" && (isActivePlayer(g, actor.id) || !["beginCombat", "declareAttackers", "declareBlockers", "combatDamage", "endCombat"].includes(g.turn.step))) {
       throw new ActionError("Ce sort ne se lance que pendant le combat, au tour d'un adversaire.");
     }
@@ -542,7 +547,9 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const reductions = g.settings.enforceRules
       ? costReductions(g, actor.id, { typeLine, colors: data.colors, oracleText: faceData?.oracleText ?? data.oracleText })
       : { generic: 0, colored: [] as string[] };
-    const reduction = permission?.free ? 0 : reductions.generic;
+    // Le sort lui-même (The Great Henge, Blasphemous Act) ; rien quand il est lancé sans payer son coût.
+    const selfReduction = g.settings.enforceRules && !permission?.free && !alternative && !evokeCost ? selfCostReduction(g, actor.id, card, faceIndex) : 0;
+    const reduction = permission?.free || (alternative && effects?.alternativeIf) ? 0 : reductions.generic + selfReduction;
     // Morophon : retire du coût le mana coloré indiqué (une fois chaque symbole).
     let paidCost = costText;
     for (const c of reductions.colored) paidCost = paidCost.replace(`{${c}}`, "");
@@ -613,6 +620,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       permission ? `${permission.reason}${permission.free ? ", sans payer son coût" : permission.foretell ? ` pour ${permission.foretell}` : ""}` : "",
       tax > 0 ? `taxe de commandant {${tax}}` : "",
       reduction > 0 ? `réduction de {${reduction}}` : "",
+      reduction < 0 ? `surcoût de {${-reduction}}` : "",
     ]
       .filter(Boolean)
       .join(", ");

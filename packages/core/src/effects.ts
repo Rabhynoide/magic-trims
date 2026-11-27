@@ -337,6 +337,8 @@ export interface SpellEffects {
   sacrifice?: PermanentFilter;
   /** Coût alternatif (« You may pay {1}{B} rather than pay this spell's mana cost »). */
   alternativeCost?: string;
+  /** Le coût alternatif n'est permis que si l'on contrôle un commandant (Flawless Maneuver : « {0} »). */
+  alternativeIf?: "commander";
   /** Coût supplémentaire : payer X PV (Toxic Deluge), X choisi en lançant le sort. */
   payLifeX?: boolean;
   /** « Cast this spell only during combat on an opponent's turn » (Wake the Dead). */
@@ -966,6 +968,11 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       }
     }
 
+    if (/^if you control a commander, you may cast ~ without paying its mana cost$/i.test(s)) {
+      result.alternativeCost = "{0}";
+      result.alternativeIf = "commander";
+      continue;
+    }
     // Addendum : « If you cast this spell during your main phase, … » (Unbreakable Formation).
     if ((m = /^(?:addendum — )?if you cast ~ during your main phase, (.+)$/i.exec(s))) {
       pendingMainPhase = result.effects.length;

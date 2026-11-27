@@ -453,8 +453,10 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
       const items: MenuItem[] = [{ label: `Lancer ${f.name}${f.manaCost ? ` ${f.manaCost}` : ""}`, onClick: cast(false) }];
       // Coût alternatif (Baleful Mastery) : une seconde entrée.
       const faceText = (faces ? faces[f.face ?? 0]?.oracleText : data.oracleText) ?? "";
-      const alt = view.settings.enforceRules && /\b(Instant|Sorcery)\b/.test(f.typeLine) ? parseSpellEffects(faceText, f.name).alternativeCost : undefined;
-      if (alt) items.push({ label: `Lancer ${f.name} pour ${alt} (coût alternatif)`, onClick: cast(true) });
+      const altEffects = view.settings.enforceRules && /\b(Instant|Sorcery)\b/.test(f.typeLine) ? parseSpellEffects(faceText, f.name) : undefined;
+      const alt = altEffects?.alternativeCost;
+      if (alt && altEffects?.alternativeIf === "commander") items.push({ label: `Lancer ${f.name} sans payer son coût (si tu contrôles un commandant)`, onClick: cast(true) });
+      else if (alt) items.push({ label: `Lancer ${f.name} pour ${alt} (coût alternatif)`, onClick: cast(true) });
       // Évocation : la sienne, et celle que donne Ashling (sacrifiée en arrivant).
       if (view.settings.enforceRules && card.zone === "hand") {
         const evoke = evokeOptions(stateFromView(view), view.viewerId, data, f.face ?? 0, true);
