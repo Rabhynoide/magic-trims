@@ -27,6 +27,8 @@ import {
   resolveAmount,
   spellEffectsOf,
   flattenModes,
+  modesAtCast,
+  modesCost,
   modesMax,
   modesTargeted,
   auraTarget,
@@ -488,8 +490,12 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     }
     // Cibles des effets que le moteur sait appliquer.
     const parsedEffects = g.settings.enforceRules ? spellEffectsOf(g, card, faceIndex, alternative ?? false) : null;
-    // Modes avec des cibles (Ashling's Command) : choisis en lançant le sort, leurs cibles s'ajoutent à celles du sort.
-    const earlyModes = parsedEffects && modesTargeted(parsedEffects) ? checkModes(g, actor.id, parsedEffects.modes!, modes ?? []) : undefined;
+    // Modes avec des cibles (Ashling's Command), un coût (Spree) ou un commandant (Akroma's Will) : choisis en lançant le sort,
+    // leurs cibles s'ajoutent à celles du sort. Sans choix envoyé, un sort comme Akroma's Will les choisit à la résolution.
+    const withCommander = controlsCommander(g, actor.id);
+    const spec = parsedEffects?.modes;
+    const atCast = !!spec && (modesTargeted(parsedEffects) || spec.list.some((m) => m.cost) || (modesAtCast(parsedEffects) && modes !== undefined));
+    const earlyModes = atCast ? checkModes(spec!, modes ?? [], withCommander) : undefined;
     const effects = parsedEffects && earlyModes ? flattenModes(parsedEffects, earlyModes) : parsedEffects;
     if (alternative && !effects?.alternativeCost) throw new ActionError("Ce sort n'a pas de coût alternatif.");
     // Flawless Maneuver, Fierce Guardianship : gratuit si l'on contrôle un commandant.
@@ -551,7 +557,8 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const selfReduction = g.settings.enforceRules && !permission?.free && !alternative && !evokeCost ? selfCostReduction(g, actor.id, card, faceIndex) : 0;
     const reduction = permission?.free || (alternative && effects?.alternativeIf) ? 0 : reductions.generic + selfReduction;
     // Morophon : retire du coût le mana coloré indiqué (une fois chaque symbole).
-    let paidCost = costText;
+    // Spree : le coût supplémentaire de chaque mode choisi.
+    let paidCost = costText + modesCost(parsedEffects, earlyModes);
     for (const c of reductions.colored) paidCost = paidCost.replace(`{${c}}`, "");
     // Toxic Deluge : X PV payés en coût supplémentaire (on ne peut pas payer plus de PV qu'on n'en a).
     const lifeX = effects?.payLifeX ? xValue : 0;
@@ -591,6 +598,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     if (alternative) cast.alternative = true;
     if (evokeCost) cast.evoked = true;
     if (permission?.foretell) cast.foretold = true;
+    if (spec?.maxWithCommander !== undefined && withCommander) cast.castWithCommander = true;
     if (earlyModes) {
       cast.modes = { chosen: earlyModes };
       log(g, actor.id, `${actor.name} choisit : ${earlyModes.map((i) => `« ${parsedEffects!.modes!.list[i]!.label} »`).join(", ")}.`);
@@ -924,7 +932,8 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const effects = card.ability ? abilityEffects(g, card) : spellEffectsOf(g, card);
     const spec = effects?.modes;
     if (!spec) throw new ActionError("Ce sort n'a pas de modes.");
-    const chosen = checkModes(g, actor.id, spec, modes);
+    // Akroma's Will : « if you control a commander as you cast this spell » (noté en lançant le sort).
+    const chosen = checkModes(spec, modes, card.ability ? controlsCommander(g, actor.id) : !!card.castWithCommander);
     card.modes.chosen = chosen;
     log(g, actor.id, `${actor.name} choisit : ${chosen.map((i) => `« ${spec.list[i]!.label} »`).join(", ")}.`);
     // Capacité déclenchée aux modes ciblés (Titan of Industry) : les modes sont choisis en la mettant sur la pile, puis ses cibles.
@@ -1263,6 +1272,7 @@ export function moveCardTo(
     delete card.choices;
     delete card.scry;
     delete card.modes;
+    delete card.castWithCommander;
     delete card.alternative;
     delete card.castFromHand;
     delete card.foretold;
@@ -3233,10 +3243,9 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
 }
 
 /** Les modes choisis, triés, s'ils respectent « Choose two — » et compagnie. */
-function checkModes(g: GameState, playerId: PlayerId, spec: NonNullable<SpellEffects["modes"]>, modes: number[]): number[] {
+function checkModes(spec: NonNullable<SpellEffects["modes"]>, modes: number[], withCommander: boolean): number[] {
   const chosen = [...new Set(modes)].sort((a, b) => a - b);
-  // Akroma's Will : « if you control a commander as you cast this spell » ; les modes se choisissent ici, à la résolution (approximation).
-  const max = modesMax(spec, controlsCommander(g, playerId));
+  const max = modesMax(spec, withCommander);
   if (chosen.length < Math.max(1, spec.min) || chosen.length > max || chosen.some((i) => !Number.isInteger(i) || i < 0 || i >= spec.list.length)) {
     throw new ActionError(spec.min === max ? `Choisis ${plural(spec.min, "mode")}.` : `Choisis entre ${Math.max(1, spec.min)} et ${max} modes.`);
   }
