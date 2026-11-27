@@ -819,7 +819,7 @@ export function conditionMatches(
       return c.anyCreature ? true : event.cardId === source.instanceId;
     case "sacrificed":
       if (c.on !== "sacrificed" || (c.nontoken && event.isToken)) return false;
-      if (c.subtype && !new RegExp(`\\b${c.subtype}\\b`, "i").test(event.typeLine)) return false;
+      if (c.subtype && !sacrificedHasType(g, event, c.subtype)) return false;
       return whoseMatches(g, c.whose, source.controllerId, event.controllerId);
     case "controlChanged":
       return c.on === "controlledByNonOwner" && event.cardId === source.instanceId && g.cards[source.instanceId]?.ownerId !== event.controllerId;
@@ -912,4 +912,15 @@ export function triggerConditionHolds(g: GameState, onlyIf: TriggeredAbility["on
     return g.turnOrder.some((id) => id !== controllerId && !g.players[id]!.hasConceded && !areTeammates(g, id, controllerId) && lands(id) > mine);
   }
   return true;
+}
+
+/** Types de carte (pas de créature) : un changelin n'en gagne aucun. */
+const CARD_TYPES = /^(creature|artifact|enchantment|land|planeswalker|battle)$/i;
+
+/** Le permanent sacrifié avait-il ce type ? Changelin compris (Morophon sacrifié par Ashling). */
+function sacrificedHasType(g: GameState, event: Extract<TriggerEvent, { type: "sacrificed" }>, subtype: string): boolean {
+  if (CARD_TYPES.test(subtype)) return new RegExp(`\\b${subtype}\\b`, "i").test(event.typeLine);
+  const data = g.cardData[event.dataId];
+  const oracle = data?.faces?.[event.faceIndex]?.oracleText ?? data?.oracleText ?? "";
+  return typeLineHasCreatureType(event.typeLine, oracle, subtype);
 }
