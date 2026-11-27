@@ -79,25 +79,44 @@ export function Card(props: {
         );
       })()}
       {props.combat && <span className={`card-combat ${props.combat.kind}`}>{props.combat.label}</span>}
-      {(() => {
-        const pt = creaturePT(view, card);
-        if (!pt) return null;
-        const damage = card.damage ?? 0;
-        return (
-          <span className={`card-pt ${pt.base ? "" : "modified"} ${damage > 0 ? "damaged" : ""}`} title={damage > 0 ? `${damage} blessure(s)` : undefined}>
-            {pt.power}/{pt.toughness - damage}
-          </span>
-        );
-      })()}
-      {counters.length > 0 && (
-        <div className="card-counters">
-          {counters.map(([kind, n]) => (
-            <span key={kind} className="counter" title={kind}>
-              {kind === "+1/+1" || kind === "-1/-1" ? `${kind} ×${n}` : `${n} ${kind}`}
+      {/* Marqueurs et force/endurance : calque qui reste à l'endroit même si la carte est engagée. */}
+      <div className="card-stats">
+        {counters.length > 0 && (
+          <div className="card-counters">
+            {counters.map(([kind, n]) => {
+              const c = counterBadge(kind, n);
+              return (
+                <span key={kind} className={`counter ${c.tone}`} title={`${n} marqueur${n > 1 ? "s" : ""} ${kind}`}>
+                  {c.label}
+                </span>
+              );
+            })}
+          </div>
+        )}
+        {(() => {
+          const pt = creaturePT(view, card);
+          if (!pt) return null;
+          const damage = card.damage ?? 0;
+          const toughness = pt.toughness - damage;
+          const printedP = Number(pt.printed?.power);
+          const printedT = Number(pt.printed?.toughness);
+          const tone = (value: number, printed: number) =>
+            Number.isNaN(printed) || value === printed ? "" : value > printed ? "up" : "down";
+          const title = [
+            pt.printed ? `Imprimée : ${pt.printed.power}/${pt.printed.toughness}` : null,
+            pt.base ? null : `Actuelle : ${pt.power}/${pt.toughness}`,
+            damage > 0 ? `${damage} blessure${damage > 1 ? "s" : ""}` : null,
+          ]
+            .filter(Boolean)
+            .join(" · ");
+          return (
+            <span className={`card-pt ${pt.base ? "" : "modified"} ${damage > 0 ? "damaged" : ""}`} title={title}>
+              <span className={tone(pt.power, printedP)}>{pt.power}</span>/
+              <span className={damage > 0 ? "hurt" : tone(pt.toughness, printedT)}>{toughness}</span>
             </span>
-          ))}
-        </div>
-      )}
+          );
+        })()}
+      </div>
       {props.attachments && props.attachments.length > 0 && (
         <div className="card-attachments">
           {props.attachments.map((a) => (
@@ -107,4 +126,12 @@ export function Card(props: {
       )}
     </div>
   );
+}
+
+/** Pastille compacte d'un type de marqueur : « +3 », « −2 », « 4 charge »… */
+function counterBadge(kind: string, n: number): { label: string; tone: string } {
+  if (kind === "+1/+1") return { label: `+${n}`, tone: "plus" };
+  if (kind === "-1/-1") return { label: `−${n}`, tone: "minus" };
+  if (kind === "loyalty" || kind === "loyauté") return { label: `◆${n}`, tone: "loyalty" };
+  return { label: `${n} ${kind}`, tone: "" };
 }
