@@ -114,8 +114,8 @@ describe("Déclencheurs « quand vous lancez un sort » filtrés : lecture", () 
     for (const name of ["Reki, the History of Kamigawa", "Shanid, Sleepers' Scourge", "Aragorn, the Uniter", "Esper Sentinel"]) {
       expect(cardSupport(real(name)), name).toMatchObject({ level: "full" });
     }
-    // Traxos : il reste « ne se dégage pas pendant votre étape de dégagement ».
-    expect(cardSupport(real("Traxos, Scourge of Kroog")).unknown).toEqual(["Traxos enters tapped and doesn't untap during your untap step."]);
+    // Traxos : « ne se dégage pas pendant votre étape de dégagement » est géré aussi (famille 23).
+    expect(cardSupport(real("Traxos, Scourge of Kroog")).level).toBe("full");
     // Jodah : la condition est lue ; l'effet (cascade légendaire) est géré depuis la famille 8.
     const jodah = real("Jodah, the Unifier");
     expect(parseTriggerCondition("you cast a legendary spell from your hand")).not.toBeNull();

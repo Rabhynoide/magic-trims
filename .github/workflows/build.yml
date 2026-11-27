@@ -24,6 +24,11 @@ jobs:
   installateur-windows:
     runs-on: windows-latest
     needs: tests
+    # Publier une release (mise à jour automatique des applis installées).
+    permissions:
+      contents: write
+    env:
+      PUBLIER: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,7 +36,21 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run dist
+      # Sur main, chaque passage reçoit un numéro de version qui augmente
+      # (0.1.<numéro du passage>) : les applis installées la verront comme
+      # une mise à jour.
+      - name: Numéro de version
+        if: env.PUBLIER == 'true'
+        run: npm pkg set version=0.1.${{ github.run_number }} -w @magic-trims/app
+      - name: Installateur
+        if: env.PUBLIER != 'true'
+        run: npm run dist
+      - name: Installateur et publication de la release
+        if: env.PUBLIER == 'true'
+        working-directory: packages/app
+        run: npx electron-vite build && npx electron-builder --win --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/upload-artifact@v4
         with:
           name: MagicTrims-installateur-windows
