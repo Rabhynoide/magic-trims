@@ -644,3 +644,51 @@ describe("Deck Zedruu : Wedding Ring", () => {
     for (const name of ["Wedding Ring"]) expect(cardSupport(real(name)).level, name).toBe("full");
   });
 });
+
+describe("Deck Zedruu : auras qui transforment", () => {
+  it("Darksteel Mutation : insecte artefact 0/1 indestructible sans ses capacités ; Witness Protection : 1/1 renommé", () => {
+    let g = toMain(newTestGame(2));
+    let big: string, other: string, mutation: string, witness: string;
+    [g, big] = put(g, "p2", fakeCard("Ange", { typeLine: "Creature — Angel", power: "4", toughness: "4", oracleText: "Flying", keywords: ["Flying"] }));
+    [g, other] = put(g, "p2", bear("Ours"), 1);
+    [g, mutation] = inHand(g, "p1", real("Darksteel Mutation"));
+    [g, witness] = inHand(g, "p1", real("Witness Protection"), 1);
+    g = mana(g, "p1", "WCU");
+    g = act(g, "p1", { type: "castSpell", cardId: mutation, targets: [{ kind: "card", id: big }] });
+    g = resolveAll(g);
+    expect(creatureStats(g, g.cards[big]!)).toEqual({ power: 0, toughness: 1 });
+    expect(hasKeyword(g, g.cards[big]!, "Indestructible")).toBe(true);
+    expect(hasKeyword(g, g.cards[big]!, "Flying")).toBe(false);
+    g = act(g, "p1", { type: "castSpell", cardId: witness, targets: [{ kind: "card", id: other }] });
+    g = resolveAll(g);
+    expect(g.cardData[g.cards[other]!.cardId]!.name).toBe("Legitimate Businessperson");
+    expect(creatureStats(g, g.cards[other]!)).toEqual({ power: 1, toughness: 1 });
+    // L'aura partie, la créature redevient elle-même.
+    g = act(g, "p1", { type: "moveCard", cardId: mutation, to: "graveyard", force: true });
+    expect(creatureStats(g, g.cards[big]!)).toEqual({ power: 4, toughness: 4 });
+  });
+
+  it("Paradox Haze donne une étape d'entretien supplémentaire au joueur enchanté", () => {
+    let g = toMain(newTestGame(2));
+    let haze: string, rhystic: string;
+    [g, haze] = inHand(g, "p1", real("Paradox Haze"));
+    g = mana(g, "p1", "UCC");
+    g = act(g, "p1", { type: "castSpell", cardId: haze, targets: [{ kind: "player", id: "p1" }] });
+    g = resolveAll(g);
+    expect(g.cards[haze]!.attachedPlayer).toBe("p1");
+    // Une capacité d'entretien qui compte les entretiens : Zedruu pioche à chacun.
+    [g, rhystic] = put(g, "p1", real("Zedruu the Greathearted"), 0);
+    g = endTurn(g, "p1");
+    g = endTurn(g, "p2");
+    g = resolveAll(g);
+    g = act(g, "p1", { type: "nextStep" });
+    g = resolveAll(g);
+    expect(g.turn.step).toBe("upkeep");
+    expect(g.turn.upkeeps).toBe(2);
+    g = act(g, "p1", { type: "nextStep" });
+    g = resolveAll(g);
+    expect(g.turn.step).toBe("draw");
+    void rhystic;
+    for (const name of ["Darksteel Mutation", "Witness Protection", "Paradox Haze"]) expect(cardSupport(real(name)).level, name).toBe("full");
+  });
+});

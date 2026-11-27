@@ -40,6 +40,7 @@ import {
   modifyDamage,
   skipsDrawStep,
   staticsOf,
+  type StaticAbility,
   type DamageSource,
 } from "./statics.js";
 import { canAttack, canBlock, cantAttack, cantBlock, creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatState } from "./combat.js";
@@ -430,7 +431,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     }
     // Une aura enchante ce qu'on choisit en la lançant (« Enchant creature you control »).
     const auraSpec = g.settings.enforceRules && !effects ? auraTarget(typeLine, faceData?.oracleText ?? data.oracleText) : null;
-    const aura = auraSpec?.permanent ? auraSpec : null;
+    const aura = auraSpec?.permanent || auraSpec?.player ? auraSpec : null;
     if (aura && (chosen.length !== 1 || !isLegalTarget(g, aura, chosen[0]!, actor.id, card.instanceId))) {
       throw new ActionError(`Choisis ce que l'aura enchante : un(e) ${aura.label}.`);
     }
@@ -996,6 +997,11 @@ export function moveCardTo(
 ): CardInstance {
   const card = getCard(g, cardId);
   const from = card.zone;
+  // Une créature transformée par une aura retrouve sa vraie carte en quittant le champ de bataille.
+  if (card.originalCardId) {
+    card.cardId = card.originalCardId;
+    delete card.originalCardId;
+  }
   const wasPublic = isVisibleToAll(card);
   removeFromZone(g, card);
   // Une capacité qui quitte la pile (résolue, contrée, retirée) disparaît.
@@ -1069,6 +1075,7 @@ export function moveCardTo(
     card.tapped = false;
     card.counters = {};
     delete card.attachedTo;
+    delete card.attachedPlayer;
     for (const other of Object.values(g.cards)) {
       if (other.attachedTo !== card.instanceId) continue;
       delete other.attachedTo;
@@ -1906,6 +1913,10 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         log(g, null, `${cardName(g, c)} gagne « ${effect.text} » jusqu'à la fin du tour.`);
         break;
       }
+      case "extraUpkeep":
+        g.turn.extraUpkeeps = (g.turn.extraUpkeeps ?? 0) + 1;
+        log(g, null, `${g.players[g.turn.activePlayerId]!.name} aura une étape d'entretien supplémentaire.`);
+        break;
       case "copyToken": {
         const t = targets[effect.player];
         const self3 = ability ? g.cards[ability.sourceId] : undefined;
@@ -2296,6 +2307,9 @@ function resolveTop(g: GameState, stackId?: CardInstanceId): void {
     const entered = moveCardTo(g, id, "battlefield", "top", { controllerId: card.controllerId });
     if (host?.kind === "card") {
       entered.attachedTo = host.id;
+      log(g, null, `${name} enchante ${targetName(g, host)}.`);
+    } else if (host?.kind === "player") {
+      entered.attachedPlayer = host.id;
       log(g, null, `${name} enchante ${targetName(g, host)}.`);
     }
     const data = g.cardData[card.cardId];
@@ -2712,6 +2726,7 @@ function advanceTo(g: GameState, target: TurnStep): TurnStep {
  * de combat n'ont pas lieu (règle 508.8).
  */
 function followingStep(g: GameState): TurnStep {
+  if (g.turn.step === "upkeep" && (g.turn.extraUpkeeps ?? 0) > 0) return "upkeep";
   if (g.turn.step === "declareAttackers" && noAttack(g)) return "endCombat";
   return TURN_STEPS[stepIndex(g.turn.step) + 1]!;
 }
@@ -2916,9 +2931,59 @@ function evaluateOutcomeOver(g: GameState): boolean {
  * plus rien ne change. Les blessures mortelles s'appliquent toujours ; le
  * reste seulement quand l'hôte fait respecter les règles.
  */
+/**
+ * Darksteel Mutation, Witness Protection : la créature enchantée prend d'autres données de carte
+ * (sans capacités, autres types et caractéristiques) tant que l'aura est attachée.
+ */
+function applyTransformations(g: GameState): void {
+  const wanted = new Map<CardInstanceId, { auraDataId: string; becomes: Extract<StaticAbility, { kind: "becomes" }> }>();
+  for (const pid of g.turnOrder) {
+    for (const id of g.players[pid]!.zones.battlefield) {
+      const aura = g.cards[id]!;
+      if (!aura.attachedTo) continue;
+      const becomes = staticsOf(g, aura).find((s) => s.kind === "becomes");
+      if (becomes && becomes.kind === "becomes") wanted.set(aura.attachedTo, { auraDataId: aura.cardId, becomes });
+    }
+  }
+  for (const pid of g.turnOrder) {
+    for (const id of g.players[pid]!.zones.battlefield) {
+      const card = g.cards[id]!;
+      const original = card.originalCardId ?? card.cardId;
+      const want = wanted.get(id);
+      const targetId = want ? `${original}#${want.auraDataId}` : original;
+      if (card.cardId === targetId) continue;
+      if (want && !g.cardData[targetId]) {
+        const base = g.cardData[original]!;
+        const b = want.becomes;
+        g.cardData[targetId] = {
+          ...base,
+          id: targetId,
+          name: b.name ?? base.faces?.[card.faceIndex]?.name ?? base.name,
+          typeLine: b.typeLine,
+          oracleText: b.keywords.join(", "),
+          keywords: b.keywords,
+          power: b.power,
+          toughness: b.toughness,
+          colors: b.colors ?? base.colors,
+          faces: undefined,
+        } as CardData;
+      }
+      if (want) {
+        card.originalCardId = original;
+        card.cardId = targetId;
+      } else {
+        card.cardId = original;
+        delete card.originalCardId;
+      }
+      log(g, null, want ? `${cardName(g, card)} est transformé(e) par une aura.` : `${cardName(g, card)} retrouve ses caractéristiques.`);
+    }
+  }
+}
+
 function checkStateBasedActions(g: GameState): void {
   for (let guard = 0; guard < 20; guard++) {
     const before = g.log.length;
+    if (g.settings.enforceRules) applyTransformations(g);
     destroyLethal(g);
     if (g.settings.enforceRules) {
       // Défaites : points de vie, poison, blessures de commandant, pioche dans une bibliothèque vide.
@@ -3039,6 +3104,8 @@ function startTurn(g: GameState, playerId: PlayerId): void {
   g.turn.number += 1;
   g.turn.activePlayerId = playerId;
   g.turn.planarDieRolls = 0;
+  delete g.turn.extraUpkeeps;
+  delete g.turn.upkeeps;
   for (const p of Object.values(g.players)) p.landsPlayed = 0;
   g.combat = null;
   // Les permanents des joueurs actifs ne sont plus « malades » (règle 302.6).
@@ -3052,6 +3119,13 @@ function startTurn(g: GameState, playerId: PlayerId): void {
 
 /** Entre dans une étape et fait ses actions obligatoires (actions de tour). */
 function enterStep(g: GameState, step: TurnStep): void {
+  if (step === "upkeep") {
+    if (g.turn.step === "upkeep") {
+      g.turn.extraUpkeeps = Math.max(0, (g.turn.extraUpkeeps ?? 0) - 1);
+      log(g, null, "Étape d'entretien supplémentaire.");
+    }
+    g.turn.upkeeps = (g.turn.upkeeps ?? 0) + 1;
+  }
   g.turn.step = step;
   if (step === "upkeep" || step === "draw" || step === "main1" || step === "end") {
     for (const p of activePlayers(g)) emit(g, { type: "step", step, playerId: p.id });

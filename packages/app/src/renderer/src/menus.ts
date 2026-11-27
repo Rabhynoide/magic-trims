@@ -352,7 +352,7 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
           }
           // Une aura : ce qu'elle va enchanter.
           const aura = view.settings.enforceRules && !effects ? auraTarget(f.typeLine, faceData?.oracleText ?? data.oracleText) : null;
-          if (aura?.permanent) {
+          if (aura?.permanent || aura?.player) {
             const chosen = await ui.chooseTargets(cardName(view, card), id, [aura]);
             if (!chosen) return;
             targets = chosen;

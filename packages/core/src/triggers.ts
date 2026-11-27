@@ -65,7 +65,8 @@ export type TriggerCondition =
   /** `nth` : « draw your second card each turn ». */
   /** `controlsSameName` : « an opponent who controls an artifact named ~ » ; `theirTurn` : « during their turn ». */
   | { on: "draw" | "lifeGain" | "lifeLoss" | "landPlayed"; whose: Whose; nth?: number; controlsSameName?: boolean; theirTurn?: boolean }
-  | { on: "step"; step: "upkeep" | "draw" | "main1" | "end"; whose: Whose }
+  /** `enchanted` : « enchanted player's upkeep » (aura sur un joueur) ; `first` : « first upkeep each turn ». */
+  | { on: "step"; step: "upkeep" | "draw" | "main1" | "end"; whose: Whose; enchanted?: boolean; first?: boolean }
   | { on: "cast"; whose: Whose; types: string[]; notTypes: string[] }
   /** « Whenever ~ attacks », « … blocks », « … attacks or blocks ». */
   | { on: "combat"; attacks: boolean; blocks: boolean; anyCreature?: boolean; defender?: "you" }
@@ -201,6 +202,8 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   if ((m = /^the beginning of (your|each|each player's|each opponent's) (?:first|precombat) main phase$/i.exec(t))) {
     return { on: "step", step: "main1", whose: whose(m[1]!)! };
   }
+  if (/^the beginning of enchanted player's first upkeep each turn$/i.test(t)) return { on: "step", step: "upkeep", whose: "any", enchanted: true, first: true };
+  if (/^the beginning of enchanted player's upkeep$/i.test(t)) return { on: "step", step: "upkeep", whose: "any", enchanted: true };
   if ((m = /^the beginning of (your|each|each player's|each opponent's) (upkeep|draw step|end step)$/i.exec(t))) {
     const step = m[2]!.toLowerCase().startsWith("upkeep") ? "upkeep" : m[2]!.toLowerCase().startsWith("draw") ? "draw" : "end";
     return { on: "step", step, whose: whose(m[1]!)! };
@@ -431,7 +434,10 @@ export function conditionMatches(
       if (event.cardId === source.instanceId) return c.self;
       return c.others && whoseMatches(g, c.whose, source.controllerId, event.controllerId);
     case "step":
-      return c.on === "step" && c.step === event.step && whoseMatches(g, c.whose, source.controllerId, event.playerId);
+      if (c.on !== "step" || c.step !== event.step) return false;
+      if (c.enchanted && g.cards[source.instanceId]?.attachedPlayer !== event.playerId) return false;
+      if (c.first && (g.turn.upkeeps ?? 1) > 1) return false;
+      return whoseMatches(g, c.whose, source.controllerId, event.playerId);
     case "cast": {
       if (c.on !== "cast" || !whoseMatches(g, c.whose, source.controllerId, event.playerId)) return false;
       const type = event.typeLine.toLowerCase();

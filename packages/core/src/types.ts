@@ -156,6 +156,10 @@ export interface CardInstance {
   isCommander: boolean;
   /** Carte à laquelle celle-ci est attachée (aura, équipement). */
   attachedTo?: CardInstanceId;
+  /** Aura qui enchante un joueur (Paradox Haze). */
+  attachedPlayer?: PlayerId;
+  /** Carte d'origine quand une aura la transforme (Darksteel Mutation, Witness Protection). */
+  originalCardId?: string;
   /** Joueurs qui ont vu cette carte alors qu'elle était cachée (révélée). */
   revealedTo: PlayerId[];
   /** Arrivée (ou changée de contrôleur) depuis le début du dernier tour de son contrôleur : mal d'invocation. */
@@ -384,6 +388,9 @@ export interface GameState {
     step: TurnStep;
     /** Jets de dé planaire déjà faits ce tour (le suivant coûte autant de mana générique). */
     planarDieRolls: number;
+    /** Étapes d'entretien supplémentaires à venir (Paradox Haze), et entretiens déjà commencés ce tour. */
+    extraUpkeeps?: number;
+    upkeeps?: number;
   };
   /** État du générateur aléatoire (mélanges), pour des parties rejouables. */
   rngState: number;

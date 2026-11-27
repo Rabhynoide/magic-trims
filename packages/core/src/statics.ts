@@ -50,7 +50,12 @@ export type StaticAbility =
   /** « Creatures you control can't attack. » */
   | { kind: "creaturesCantAttack" }
   /** « No more than one creature can attack (block) each combat. » */
-  | { kind: "maxOne"; attack: boolean };
+  | { kind: "maxOne"; attack: boolean }
+  /**
+   * Darksteel Mutation, Witness Protection : la créature enchantée perd ses capacités et devient
+   * autre chose (types, force et endurance de base, mots-clés, couleurs, nom).
+   */
+  | { kind: "becomes"; typeLine: string; power: string; toughness: string; keywords: string[]; colors?: string[]; name?: string };
 
 const COLOR_WORDS: Record<string, string> = { white: "W", blue: "U", black: "B", red: "R", green: "G" };
 const SPELL_TYPES = ["creature", "artifact", "enchantment", "instant", "sorcery", "planeswalker", "battle"];
@@ -125,6 +130,20 @@ export function parseStaticLine(line: string): StaticAbility | null {
       (type.startsWith("non") ? notTypes : types).push(base);
     }
     return { kind: "costReduction", amount: parseInt(m[3]!, 10), colors: color ? [COLOR_WORDS[color]!] : [], types, notTypes };
+  }
+  if ((m = /^enchanted creature (?:loses all abilities and )?is an? (?:(white|blue|black|red|green) and (white|blue|black|red|green) )?(\w+) (artifact )?creature with base power and toughness (\d+)\/(\d+)(?: named (.+?))?(?: and has (\w+))?(, and it loses all other abilities, card types, and creature types)?$/i.exec(l))) {
+    if (!/loses all abilities/i.test(l) && !m[9]) return null;
+    const subtype = m[3]!.charAt(0).toUpperCase() + m[3]!.slice(1);
+    const keyword = m[8] ? m[8].charAt(0).toUpperCase() + m[8].slice(1).toLowerCase() : null;
+    return {
+      kind: "becomes",
+      typeLine: `${m[4] ? "Artifact " : ""}Creature — ${subtype}`,
+      power: m[5]!,
+      toughness: m[6]!,
+      keywords: keyword ? [keyword] : [],
+      ...(m[1] ? { colors: [COLOR_WORDS[m[1].toLowerCase()]!, COLOR_WORDS[m[2]!.toLowerCase()]!] } : {}),
+      ...(m[7] ? { name: m[7] } : {}),
+    };
   }
   if ((m = /^(?:equipped|enchanted) creature (.+)$/i.exec(l))) {
     const g = grant(m[1]!);
