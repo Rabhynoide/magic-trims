@@ -1542,7 +1542,7 @@ function flushTriggers(g: GameState): boolean {
     if (ev.type === "dies" || ev.type === "leaves") {
       instance.ability.eventCardId = ev.cardId;
       instance.ability.eventZone = ev.type === "dies" ? "graveyard" : ev.to;
-    } else if (ev.type === "attacks") {
+    } else if (ev.type === "attacks" || ev.type === "enters") {
       instance.ability.eventCardId = ev.cardId;
     } else if (ev.type === "sacrificed") {
       instance.ability.eventCardId = ev.cardId;
@@ -2119,6 +2119,41 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         }
         break;
       }
+      case "topLandOrHand": {
+        const top = caster.zones.library[0];
+        if (!top) break;
+        const name = cardName(g, g.cards[top]!);
+        if ((source.choices?.[effects.indexOf(effect)] ?? []).includes(top)) {
+          moveCardTo(g, top, "battlefield", "top", { controllerId: caster.id, tapped: true });
+          log(g, null, `${caster.name} met ${name} sur le champ de bataille engagé.`);
+        } else {
+          moveCardTo(g, top, "hand", "top");
+          log(g, null, `${caster.name} met la carte du dessus de sa bibliothèque dans sa main.`);
+        }
+        break;
+      }
+      case "lookTopKeepOne": {
+        const chosen = source.choices?.[effects.indexOf(effect)] ?? [];
+        const entered = ability?.eventCardId ? g.cards[ability.eventCardId] : undefined;
+        const x = entered && entered.zone === "battlefield" ? Math.max(0, creatureStats(g, entered).power) : chosen.length;
+        const looked = caster.zones.library.slice(0, x);
+        const rest = looked.filter((id) => !chosen.includes(id));
+        for (const id of rest) moveCardTo(g, id, "library", "bottom");
+        log(g, null, `${caster.name} regarde ${plural(looked.length, "carte")} du dessus de sa bibliothèque et en met ${rest.length} dessous.`);
+        break;
+      }
+      case "drawIfGreatestPower": {
+        const entered = ability?.eventCardId ? g.cards[ability.eventCardId] : undefined;
+        if (!entered || entered.zone !== "battlefield" || !isCreature(g, entered)) break;
+        const power = creatureStats(g, entered).power;
+        const others = g.turnOrder
+          .flatMap((id) => g.players[id]!.zones.battlefield)
+          .map((id) => g.cards[id]!)
+          .filter((c) => c.instanceId !== entered.instanceId && isCreature(g, c));
+        if (others.every((c) => creatureStats(g, c).power < power)) drawCards(g, g.players[entered.controllerId]!, 1);
+        else log(g, null, `${cardName(g, entered)} n'a pas la plus grande force : pas de pioche.`);
+        break;
+      }
       case "counterTarget":
       case "counterAll": {
         const list = effect.type === "counterTarget" ? [card(effect.target)].filter((c): c is CardInstance => !!c && c.zone === "battlefield") : allMatching(effect.filter);
@@ -2367,6 +2402,31 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
       }
       card.cardChoice = { index, options, min: 1, max: 1, label: `Choisis un(e) ${permanentLabel(effect.filter)} à sacrifier` };
       log(g, null, `${controller.name} choisit quoi sacrifier pour ${cardName(g, card)}.`);
+      return true;
+    }
+    // Risen Reef : un terrain du dessus peut aller sur le champ de bataille (sinon en main).
+    if (effect.type === "topLandOrHand") {
+      const top = controller.zones.library[0];
+      const data = top ? g.cardData[g.cards[top]!.cardId] : undefined;
+      if (!top || !/\bLand\b/.test(data?.faces?.[0]?.typeLine ?? data?.typeLine ?? "")) {
+        card.choices = { ...(card.choices ?? {}), [index]: [] };
+        continue;
+      }
+      addRevealed(g.cards[top]!, [controller.id]);
+      card.cardChoice = { index, options: [top], min: 0, max: 1, label: `Choisis ${data?.name ?? "le terrain"} pour le mettre sur le champ de bataille engagé (sinon il va dans ta main)` };
+      return true;
+    }
+    // Cream of the Crop : une des X cartes du dessus reste dessus.
+    if (effect.type === "lookTopKeepOne") {
+      const entered = card.ability?.eventCardId ? g.cards[card.ability.eventCardId] : undefined;
+      const x = entered && entered.zone === "battlefield" ? Math.max(0, creatureStats(g, entered).power) : 0;
+      const options = controller.zones.library.slice(0, x);
+      if (options.length <= 1) {
+        card.choices = { ...(card.choices ?? {}), [index]: options };
+        continue;
+      }
+      for (const id of options) addRevealed(g.cards[id]!, [controller.id]);
+      card.cardChoice = { index, options, min: 1, max: 1, label: "Choisis la carte à garder sur le dessus de ta bibliothèque (les autres vont dessous)" };
       return true;
     }
     if (effect.type !== "search" && effect.type !== "chooseDiscard") continue;

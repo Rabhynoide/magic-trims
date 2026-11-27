@@ -10,9 +10,10 @@
  * gérer à la main (et la carte porte sa pastille).
  */
 import { parseActivatedLine, type ActivatedAbility } from "./activated.js";
-import { parseSpellEffects, selfToTilde, type SpellEffects } from "./effects.js";
+import { parseSpellEffects, selfToTilde, type Effect, type SpellEffects } from "./effects.js";
 import { joinModes } from "./text.js";
-import { parseStaticLine, typeLineHasCreatureType, type StaticAbility } from "./statics.js";
+import { hasCreatureType, parseStaticLine, typeLineHasCreatureType, type StaticAbility } from "./statics.js";
+import { creatureStats } from "./combat.js";
 import { areTeammates, isActivePlayer } from "./modes.js";
 import type { TurnStep } from "./turn.js";
 import type { CardData, CardInstanceId, GameState, PlayerId, StackAbility, Zone } from "./types.js";
@@ -61,7 +62,7 @@ type Whose = "you" | "opponent" | "any";
 
 export type TriggerCondition =
   /** `ifCast` : « When ~ enters, if it was cast, … » (Wedding Ring). */
-  | { on: "enters"; self: boolean; another: boolean; creature: boolean; whose: Whose; ifCast?: boolean; land?: boolean }
+  | { on: "enters"; self: boolean; another: boolean; creature: boolean; whose: Whose; ifCast?: boolean; land?: boolean; minPower?: number; subtype?: string; orSelf?: boolean }
   /** `batched` : « one or more … die » se déclenche une fois par action, quel que soit le nombre de morts. */
   | { on: "dies"; self: boolean; others: boolean; whose: Whose; batched?: boolean; subtype?: string }
   /** `nth` : « draw your second card each turn ». */
@@ -144,14 +145,19 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   if (/^~ enters(?: the battlefield)?$/i.test(t)) {
     return { on: "enters", self: true, another: false, creature: false, whose: "you" };
   }
-  if ((m = /^(a|another) (creature|permanent|land)( you control| an opponent controls)? enters(?: the battlefield)?(?: under your control)?$/i.exec(t))) {
+  if ((m = /^(a|another|~ or another) (creature|permanent|land|[A-Z][a-z]+)( you control| an opponent controls)?(?: with power (\d+) or greater)? enters(?: the battlefield)?(?: under your control)?$/.exec(t))) {
     const controls = (m[3] ?? "").trim().toLowerCase();
+    const kind = m[2]!;
+    const subtype = /^[A-Z]/.test(kind) ? kind : undefined;
     return {
       on: "enters",
       self: false,
-      another: m[1]!.toLowerCase() === "another",
-      creature: m[2]!.toLowerCase() === "creature",
-      ...(m[2]!.toLowerCase() === "land" ? { land: true } : {}),
+      another: m[1] !== "a",
+      creature: kind === "creature" || !!subtype,
+      ...(kind === "land" ? { land: true } : {}),
+      ...(subtype ? { subtype } : {}),
+      ...(m[4] ? { minPower: parseInt(m[4], 10) } : {}),
+      ...(m[1] === "~ or another" ? { orSelf: true } : {}),
       whose: controls === "you control" || /under your control/i.test(t) ? "you" : controls ? "opponent" : "any",
     };
   }
@@ -258,6 +264,15 @@ function parseTriggerBody(text: string): { effects: SpellEffects; optional: bool
   if (payX) return { effects: parseSpellEffects(cap(payX[1]!), "~"), optional: true, payMana: "{X}" };
   const pay = /^you may pay ((?:\{[^}]+\})+)\. If you do, (.+)$/i.exec(text);
   if (pay) return { effects: parseSpellEffects(cap(pay[2]!), "~"), optional: true, payMana: pay[1]! };
+  // Risen Reef, Cream of the Crop, Selvala : des « may » au milieu du texte.
+  const fixed = (effect: Effect, optional = false) => ({ effects: { targets: [], effects: [effect], unknown: [] }, optional });
+  if (/^look at the top card of your library\. If it's a land card, you may put it onto the battlefield tapped\. If you don't put the card onto the battlefield, put it into your hand\.?$/i.test(text)) {
+    return fixed({ type: "topLandOrHand" });
+  }
+  if (/^you may look at the top X cards of your library, where X is that creature's power\. If you do, put one of those cards on top of your library and the rest on the bottom of your library in any order\.?$/i.test(text)) {
+    return fixed({ type: "lookTopKeepOne" }, true);
+  }
+  if (/^its controller may draw a card if its power is greater than each other creature's power\.?$/i.test(text)) return fixed({ type: "drawIfGreatestPower" });
   const may = /^you may (.+)$/i.exec(text);
   if (may) return { effects: parseSpellEffects(cap(may[1]!), "~"), optional: true };
   if (/\bmay\b/i.test(text)) return null;
@@ -445,7 +460,14 @@ export function conditionMatches(
       if (c.on !== "enters") return false;
       if (c.ifCast && !event.cast) return false;
       if (c.self) return event.cardId === source.instanceId;
+      if (c.orSelf && event.cardId === source.instanceId) return true;
       if (c.another && event.cardId === source.instanceId) return false;
+      if (c.subtype || c.minPower !== undefined) {
+        const entered = g.cards[event.cardId];
+        if (!entered || entered.zone !== "battlefield") return false;
+        if (c.subtype && !hasCreatureType(g, entered, c.subtype)) return false;
+        if (c.minPower !== undefined && creatureStats(g, entered).power < c.minPower) return false;
+      }
       if (c.creature && !event.creature) return false;
       if (c.land && !event.land) return false;
       return whoseMatches(g, c.whose, source.controllerId, event.controllerId);

@@ -213,7 +213,7 @@ describe("Deck Ashling : recherches de terrains", () => {
 describe("Deck Ashling : bilan", () => {
   it("compte les cartes entièrement gérées", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "", manaCost: c.manaCost ?? "" })).level);
-    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(66);
+    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(70);
   });
 });
 
@@ -489,5 +489,81 @@ describe("Deck Ashling : doubleurs de déclencheurs", () => {
     // Sans doubleur : un seul jeton.
     expect(tokens(landfall(toMain(newTestGame(2)), []))).toBe(1);
     for (const name of ["Yarok, the Desecrated", "Twinflame Travelers"]) expect(cardSupport(real(name)).level, name).toBe("full");
+  });
+});
+
+describe("Deck Ashling : créatures qui arrivent", () => {
+  const big = (name: string, power: number, subtype = "Beast") => fakeCard(name, { typeLine: `Creature — ${subtype}`, power: String(power), toughness: String(power), manaCost: "{G}", colors: ["G"] });
+  const cast = (g: GameState, card: CardData, n = 0): [GameState, string] => {
+    let id: string;
+    [g, id] = inHand(g, "p1", card, n);
+    g = mana(g, "p1", "G");
+    g = act(g, "p1", { type: "castSpell", cardId: id });
+    return [resolveAll(g), id];
+  };
+
+  it("Elemental Bond : pioche pour une créature de force 3 ou plus", () => {
+    let g = toMain(newTestGame(2));
+    [g] = put(g, "p1", real("Elemental Bond"));
+    const hand = g.players.p1!.zones.hand.length;
+    [g] = cast(g, big("Petit", 2));
+    expect(g.players.p1!.zones.hand.length).toBe(hand - 1);
+    [g] = cast(g, big("Gros", 3));
+    expect(g.players.p1!.zones.hand.length).toBe(hand - 1);
+  });
+
+  it("Risen Reef : un terrain du dessus sur le champ de bataille, sinon en main", () => {
+    let g = toMain(newTestGame(2));
+    const topId = g.players.p1!.zones.library[0]!;
+    g.cardData[g.cards[topId]!.cardId] = { ...basic("Forest"), id: g.cards[topId]!.cardId };
+    // Risen Reef se déclenche lui-même en arrivant.
+    [g] = put(g, "p1", real("Risen Reef"));
+    g = resolveAll(g);
+    const trigger = g.stack.map((id) => g.cards[id]!).find((c) => c.cardChoice)!;
+    expect(trigger.cardChoice!.options).toEqual([topId]);
+    g = act(g, "p1", { type: "chooseCards", cardId: trigger.instanceId, cardIds: [topId] });
+    g = resolveAll(g);
+    expect(g.cards[topId]!.zone).toBe("battlefield");
+    expect(g.cards[topId]!.tapped).toBe(true);
+    // Un autre Élémental : la carte du dessus n'est pas un terrain, elle va en main.
+    const hand = g.players.p1!.zones.hand.length;
+    [g] = cast(g, big("Élémental", 1, "Elemental"));
+    expect(g.stack).toHaveLength(0);
+    expect(g.players.p1!.zones.hand.length).toBe(hand);
+    // Un non-Élémental ne déclenche pas Risen Reef.
+    [g] = cast(g, big("Ours", 1));
+    expect(g.players.p1!.zones.hand.length).toBe(hand - 1);
+  });
+
+  it("Cream of the Crop : une des X cartes reste dessus, le reste dessous", () => {
+    let g = toMain(newTestGame(2));
+    [g] = put(g, "p1", real("Cream of the Crop"));
+    const library = g.players.p1!.zones.library.length;
+    let id: string;
+    [g, id] = inHand(g, "p1", big("Gros", 3));
+    g = mana(g, "p1", "G");
+    g = act(g, "p1", { type: "castSpell", cardId: id });
+    g = resolveAll(g);
+    const trigger = g.stack.map((s) => g.cards[s]!).find((c) => c.ability?.awaitingDecision)!;
+    g = act(g, "p1", { type: "decideOptional", cardId: trigger.instanceId, accept: true });
+    const choice = g.cards[trigger.instanceId]!.cardChoice!;
+    expect(choice.options).toHaveLength(3);
+    const keep = choice.options[2]!;
+    const keepName = g.cardData[g.cards[keep]!.cardId]!.name;
+    g = act(g, "p1", { type: "chooseCards", cardId: trigger.instanceId, cardIds: [keep] });
+    g = resolveAll(g);
+    expect(g.players.p1!.zones.library).toHaveLength(library);
+    expect(g.cardData[g.cards[g.players.p1!.zones.library[0]!]!.cardId]!.name).toBe(keepName);
+  });
+
+  it("Selvala : le contrôleur pioche si la créature a la plus grande force", () => {
+    let g = toMain(newTestGame(2));
+    [g] = put(g, "p1", real("Selvala, Heart of the Wilds"));
+    const hand = g.players.p1!.zones.hand.length;
+    [g] = cast(g, big("Gros", 5));
+    expect(g.players.p1!.zones.hand.length).toBe(hand);
+    [g] = cast(g, big("Petit", 1));
+    expect(g.players.p1!.zones.hand.length).toBe(hand - 1);
+    for (const name of ["Elemental Bond", "Risen Reef", "Cream of the Crop", "Selvala, Heart of the Wilds"]) expect(cardSupport(real(name)).level, name).toBe("full");
   });
 });

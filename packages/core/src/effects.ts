@@ -132,6 +132,12 @@ type EffectBase =
   | { type: "returnSelf" }
   /** « ~ gets +1/+1 until end of turn. » */
   | { type: "pumpSelf"; power: number; toughness: number }
+  /** Risen Reef : la carte du dessus, sur le champ de bataille engagée si c'est un terrain (au choix), sinon en main. */
+  | { type: "topLandOrHand" }
+  /** Cream of the Crop : regarder les X cartes du dessus (X : force de la créature arrivée), en garder une dessus, le reste dessous. */
+  | { type: "lookTopKeepOne" }
+  /** Selvala : le contrôleur de la créature arrivée pioche si sa force est la plus grande. */
+  | { type: "drawIfGreatestPower" }
   /** « Put a +1/+1 counter on target Elemental you control. » */
   | { type: "counterTarget"; target: number; kind: string; count: number }
   /** « Put a +1/+1 counter on each Plant creature you control. » */
