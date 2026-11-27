@@ -72,9 +72,11 @@ describe("Lecture des effets", () => {
     ]);
     expect(parse("Add {B}{B}{B}.").effects).toEqual([{ type: "mana", mana: ["B", "B", "B"] }]);
     expect(parse("Scry 2, then draw two cards. You lose 2 life.")).toMatchObject({
-      effects: [{ type: "draw" }, { type: "life" }],
-      unknown: ["Scry 2"],
+      effects: [{ type: "scry", count: 2 }, { type: "draw" }, { type: "life" }],
+      unknown: [],
     });
+    // Un regard après d'autres effets reste à faire à la main.
+    expect(parse("Draw a card, then scry 1.")).toMatchObject({ effects: [{ type: "draw" }], unknown: ["scry 1."] });
     expect(parse("Lightning Bolt deals 3 damage to any target.", "Lightning Bolt")).toMatchObject({
       targets: [{ label: "n'importe quelle cible", player: true }],
       effects: [{ type: "damage", amount: 3 }],
@@ -137,7 +139,9 @@ describe("Détail par capacité", () => {
       ["Célérité", "auto"],
     ]);
     const bones = abilityReport(spell("Read the Bones", "Scry 2, then draw two cards. You lose 2 life.", "Sorcery"));
-    expect(bones).toEqual([expect.objectContaining({ status: "partial", manual: ["Scry 2"] })]);
+    expect(bones).toEqual([expect.objectContaining({ status: "auto" })]);
+    const opt = abilityReport(spell("Opt", "Draw a card, then scry 1.", "Instant"));
+    expect(opt).toEqual([expect.objectContaining({ status: "partial" })]);
   });
 });
 

@@ -56,7 +56,7 @@ export interface SpellFilter {
  * Un nombre : fixe, X (choisi au lancement), ou « that much » d'une capacité
  * déclenchée (la quantité de l'événement : PV gagnés ou perdus).
  */
-export type Amount = number | "X" | "-X" | "event" | "-event" | "dealt" | "hand" | "given" | "devotion" | "-devotion" | "lost";
+export type Amount = number | "X" | "-X" | "event" | "-event" | "dealt" | "hand" | "given" | "devotion" | "-devotion" | "lost" | "-lostThisTurn";
 
 /** Qui subit l'effet : « you », une cible, ou le joueur de l'événement déclencheur (« that player », « they »). */
 export type Who = "you" | "opponents" | "all" | "event" | { target: number } | { controllerOf: number };
@@ -98,7 +98,11 @@ export type Effect =
   /** « You lose life equal to that permanent's mana value. » (valeur de mana de la cible n° `target`) */
   | { type: "loseLifeManaValue"; target: number }
   /** Peer into the Abyss : piocher la moitié de sa bibliothèque et perdre la moitié de ses PV (arrondi au supérieur). */
-  | { type: "halfLibraryHalfLife"; who: Who };
+  | { type: "halfLibraryHalfLife"; who: Who }
+  /** Teferi's Puzzle Box : mettre sa main au-dessous de sa bibliothèque, puis piocher autant de cartes. */
+  | { type: "wheelHand"; who: Who }
+  /** « Scry 2 » : le contrôleur range les cartes du dessus avant le reste de la résolution (seulement en premier effet). */
+  | { type: "scry"; count: number };
 
 export interface TokenSpec {
   power: string;
@@ -265,6 +269,7 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
   }
   if (/^you gain life equal to the damage dealt this way$/i.test(s)) return [{ type: "life", who: "you", amount: "dealt" }];
   if (/^you gain life equal to the life lost this way$/i.test(s)) return [{ type: "life", who: "you", amount: "lost" }];
+  if (/^each opponent loses life equal to the life they lost this turn$/i.test(s)) return [{ type: "life", who: "opponents", amount: "-lostThisTurn" }];
   if (/^each opponent loses X life, where X is your devotion to black$/i.test(s)) return [{ type: "life", who: "opponents", amount: "-devotion" }];
   if (/^you lose life equal to that permanent's mana value$/i.test(s) && lastTarget() >= 0) return [{ type: "loseLifeManaValue", target: lastTarget() }];
   if (/^target player draws cards equal to half the number of cards in their library and loses half their life$/i.test(s)) {
@@ -382,6 +387,7 @@ export function parseSpellEffects(oracleText: string, cardName: string): SpellEf
     .map((s) => s.trim())
     .filter(Boolean);
 
+  let wheel: "event" | "all" | null = null;
   for (const sentence of sentences) {
     const s = sentence.replace(/\.$/, "");
     if (HARMLESS.some((re) => re.test(sentence))) continue;
@@ -392,6 +398,26 @@ export function parseSpellEffects(oracleText: string, cardName: string): SpellEf
     if (sacrificed) {
       result.sacrifice = { ...sacrificed, controller: "you" };
       continue;
+    }
+    if ((m = new RegExp(`^scry ${NUM}$`, "i").exec(s))) {
+      // Le regard n'est géré qu'avant les autres effets (la résolution attend le choix du joueur).
+      const n = amount(m[1]!);
+      if (result.effects.length === 0 && typeof n === "number") result.effects.push({ type: "scry", count: n });
+      else result.unknown.push(sentence);
+      continue;
+    }
+    if (/^(?:that player|each player) puts the cards in (?:their|his or her) hand on the bottom of (?:their|his or her) library in any order$/i.test(s)) {
+      wheel = /^each/i.test(s) ? "all" : "event";
+      continue;
+    }
+    if (wheel && /^(?:they |that player )?draws? that many cards$/i.test(s)) {
+      result.effects.push({ type: "wheelHand", who: wheel });
+      wheel = null;
+      continue;
+    }
+    if (wheel) {
+      result.unknown.push("puts the cards in their hand on the bottom of their library");
+      wheel = null;
     }
     const triggered = parseTriggerSentence(s, target, () => result.targets.length - 1);
     if (triggered) {
@@ -480,6 +506,7 @@ export function parseSpellEffects(oracleText: string, cardName: string): SpellEf
       result.unknown.push(sentence);
     }
   }
+  if (wheel) result.unknown.push("puts the cards in their hand on the bottom of their library");
   return result;
 }
 
@@ -606,12 +633,13 @@ export function spellEffectsOf(g: GameState, card: CardInstance, faceIndex = car
 }
 
 /** Valeur d'un nombre d'effet, avec la valeur de X choisie au lancement. */
-export function resolveAmount(a: Amount, x: number, eventAmount = 0, context: { dealt?: number; hand?: number; given?: number; devotion?: number; lost?: number } = {}): number {
+export function resolveAmount(a: Amount, x: number, eventAmount = 0, context: { dealt?: number; hand?: number; given?: number; devotion?: number; lost?: number; lostThisTurn?: number } = {}): number {
   if (a === "dealt") return context.dealt ?? 0;
   if (a === "given") return context.given ?? 0;
   if (a === "devotion") return context.devotion ?? 0;
   if (a === "-devotion") return -(context.devotion ?? 0);
   if (a === "lost") return context.lost ?? 0;
+  if (a === "-lostThisTurn") return -(context.lostThisTurn ?? 0);
   if (a === "hand") return context.hand ?? 0;
   if (a === "X") return x;
   if (a === "-X") return -x;

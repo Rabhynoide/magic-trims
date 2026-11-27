@@ -90,6 +90,8 @@ export type GameAction =
     }
   /** Répond à une capacité facultative (« you may ») sur la pile ; `choice` : le permanent choisi (sacrifice). */
   | { type: "decideOptional"; cardId: CardInstanceId; accept: boolean; choice?: CardInstanceId }
+  /** Regard : les cartes gardées au-dessus (dans l'ordre, la première en haut) et celles mises au-dessous. */
+  | { type: "scry"; cardId: CardInstanceId; top: CardInstanceId[]; bottom: CardInstanceId[] }
   /** Choisit les cibles d'une capacité déclenchée qu'on contrôle, sur la pile. */
   | { type: "chooseTargets"; cardId: CardInstanceId; targets: Target[] }
   /** Déclare les attaquants (étape des attaquants), chacun vers un joueur adverse. Une liste vide : pas d'attaque. */

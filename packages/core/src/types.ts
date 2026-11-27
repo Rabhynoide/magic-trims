@@ -172,6 +172,8 @@ export interface CardInstance {
   grants?: string[];
   /** Capacités activées « une fois par tour » déjà utilisées (loyauté comprise) : le tour et leurs index. */
   usedAbilities?: { turn: number; indices: number[] };
+  /** Sort ou capacité sur la pile qui commence par un regard : `done` une fois les cartes rangées. */
+  scry?: { count: number; done?: boolean };
   /**
    * Sort lancé par le moteur (et non posé à la main sur la pile) : ses cibles,
    * dans l'ordre des cibles du texte. Ses effets s'appliquent à la résolution.
@@ -235,6 +237,8 @@ export interface PlayerState {
    * après ses mulligans (règle 103.5) : la partie n'avance pas avant.
    */
   mulliganBottom: number;
+  /** Points de vie perdus ce tour (Wound Reflection). */
+  lifeLost?: { turn: number; amount: number };
   /** Sorts lancés ce tour (Moderation…). */
   spellsCast?: { turn: number; count: number };
   /** Terrains joués ce tour (un seul par tour, règle 305.2). */

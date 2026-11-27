@@ -51,6 +51,12 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
     return { type: "decideOptional", cardId: deciding.instanceId, accept: false };
   }
 
+  // Son regard : il garde tout au-dessus.
+  const scrying = g.stack.map((id) => g.cards[id]!).find((c) => c.scry && !c.scry.done && c.controllerId === botId);
+  if (scrying) {
+    return { type: "scry", cardId: scrying.instanceId, top: g.players[botId]!.zones.library.slice(0, scrying.scry!.count), bottom: [] };
+  }
+
   // Le bot ne répond jamais : il passe la priorité (pile non vide, ou avant
   // qu'un autre joueur avance dans son tour) et attend sinon.
   if (g.priority) {
