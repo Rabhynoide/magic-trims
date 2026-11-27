@@ -101,6 +101,13 @@ export const ui = {
       t.resolve(chosen);
     } else set({ targeting: { ...t, chosen } });
   },
+  /** « up to one target » : ne pas choisir les cibles restantes. */
+  skipTargets() {
+    const t = state.targeting;
+    if (!t) return;
+    set({ targeting: null });
+    t.resolve(t.chosen);
+  },
   cancelTargeting() {
     state.targeting?.resolve(null);
     set({ targeting: null });

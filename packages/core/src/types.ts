@@ -156,6 +156,10 @@ export interface CardInstance {
   isCommander: boolean;
   /** Carte à laquelle celle-ci est attachée (aura, équipement). */
   attachedTo?: CardInstanceId;
+  /** Aura qui enchante un joueur (Paradox Haze). */
+  attachedPlayer?: PlayerId;
+  /** Carte d'origine quand une aura la transforme (Darksteel Mutation, Witness Protection). */
+  originalCardId?: string;
   /** Joueurs qui ont vu cette carte alors qu'elle était cachée (révélée). */
   revealedTo: PlayerId[];
   /** Arrivée (ou changée de contrôleur) depuis le début du dernier tour de son contrôleur : mal d'invocation. */
@@ -175,7 +179,8 @@ export interface CardInstance {
   /** Capacités déclenchées données jusqu'à la fin du tour (texte « When ~ dies, … »). */
   grantedTriggers?: string[];
   /** Choix de cartes en attente à la résolution (recherche, main révélée) : effet n° `index`. */
-  cardChoice?: { index: number; options: CardInstanceId[]; min: number; max: number; label: string; playerId?: PlayerId };
+  /** `perPlayer` : une carte au plus par joueur (contrôleur) — The Eternal Wanderer. */
+  cardChoice?: { index: number; options: CardInstanceId[]; min: number; max: number; label: string; playerId?: PlayerId; perPlayer?: boolean };
   /** Cartes choisies pour chaque effet (par son index). */
   choices?: Record<number, CardInstanceId[]>;
   /** Sort ou capacité modale sur la pile : les modes choisis (absents tant que le contrôleur n'a pas choisi). */
@@ -184,6 +189,8 @@ export interface CardInstance {
   chapter?: number;
   /** Sort lancé pour son coût alternatif (Baleful Mastery). */
   alternative?: boolean;
+  /** Lancé depuis la main (Approach of the Second Sun). */
+  castFromHand?: boolean;
   /** Sort ou capacité sur la pile qui commence par un regard : `done` une fois les cartes rangées. */
   scry?: { count: number; done?: boolean };
   /**
@@ -266,6 +273,8 @@ export interface PlayerState {
   drawsThisTurn?: { turn: number; count: number };
   /** Sorts lancés ce tour (Moderation…). */
   spellsCast?: { turn: number; count: number };
+  /** Noms des sorts lancés pendant la partie (Approach of the Second Sun). */
+  castNames?: string[];
   /** Terrains joués ce tour (un seul par tour, règle 305.2). */
   landsPlayed: number;
   /** Réserve de mana ; elle se vide à la fin de chaque étape (règle 500.4). */
@@ -352,6 +361,8 @@ export interface GameState {
   cardData: Record<string, CardData>;
   /** Mana en plus quand on engage un terrain de ce type, jusqu'à la fin du tour (Bubbling Muck). */
   manaBonuses?: { turn: number; subtype: string; mana: ManaType }[];
+  /** Cartes exilées à rendre au début de la prochaine étape de fin d'un joueur (The Eternal Wanderer). */
+  delayedReturns?: { cardId: CardInstanceId; playerId: PlayerId }[];
   /**
    * Équipes. En chacun pour soi, chaque joueur est seul dans son équipe.
    * L'ordre des joueurs à l'intérieur d'une équipe suit l'ordre du tour.
@@ -380,6 +391,9 @@ export interface GameState {
     step: TurnStep;
     /** Jets de dé planaire déjà faits ce tour (le suivant coûte autant de mana générique). */
     planarDieRolls: number;
+    /** Étapes d'entretien supplémentaires à venir (Paradox Haze), et entretiens déjà commencés ce tour. */
+    extraUpkeeps?: number;
+    upkeeps?: number;
   };
   /** État du générateur aléatoire (mélanges), pour des parties rejouables. */
   rngState: number;

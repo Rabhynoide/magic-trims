@@ -195,7 +195,7 @@ describe("Deck Zedruu : prison et restrictions", () => {
 
   it("Ghostly Prison, Propaganda et la plupart des cartes du deck sont gérées", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "" })).level);
-    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(67);
+    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(78);
   });
 });
 
@@ -216,7 +216,16 @@ describe("Deck Zedruu : blessures modifiées et effets simples", () => {
     let g = toMain(newTestGame(3));
     let bolt: string, bolt2: string;
     [g] = put(g, "p1", real("Pyromancer's Swath"));
+    // Glacial Chasm fait sacrifier un terrain en arrivant : il en faut un autre.
+    let plateau: string;
+    [g, plateau] = put(g, "p3", real("Plateau"));
     [g] = put(g, "p3", real("Glacial Chasm"));
+    g = resolveAll(g);
+    const sac = g.stack.at(-1)!;
+    expect(g.cards[sac]!.cardChoice?.options).toContain(plateau);
+    g = act(g, "p3", { type: "chooseCards", cardId: sac, cardIds: [plateau] });
+    g = resolveAll(g);
+    expect(g.players.p3!.zones.graveyard).toContain(plateau);
     [g, bolt] = inHand(g, "p1", fakeCard("Shock", { typeLine: "Instant", oracleText: "Shock deals 2 damage to any target.", manaCost: "{R}" }), 1);
     [g, bolt2] = inHand(g, "p1", fakeCard("Shock", { typeLine: "Instant", oracleText: "Shock deals 2 damage to any target.", manaCost: "{R}" }), 2);
     g = mana(g, "p1", "RR");
@@ -513,5 +522,223 @@ describe("Deck Zedruu : échanges de contrôle sous condition", () => {
     for (const name of ["Daring Thief", "Djinn of Infinite Deceits", "Modify Memory", "Role Reversal", "Puca's Mischief"]) {
       expect(cardSupport(real(name)).level, name).toBe("full");
     }
+  });
+});
+
+describe("Deck Zedruu : artefacts qu'on donne", () => {
+  it("Jinxed Choker change de camp à l'étape de fin avec un marqueur, puis blesse son contrôleur", () => {
+    let g = toMain(newTestGame(2));
+    let choker: string;
+    [g, choker] = put(g, "p1", real("Jinxed Choker"));
+    g = act(g, "p1", { type: "nextStep", to: "end" });
+    g = resolveAll(g);
+    expect(g.cards[choker]!.controllerId).toBe("p2");
+    expect(g.cards[choker]!.counters["charge"]).toBe(1);
+    g = endTurn(g, "p1");
+    g = resolveAll(g);
+    expect(g.players.p2!.life).toBe(39);
+    // {3} : ajouter ou retirer un marqueur (au choix, à la résolution).
+    g = act(g, "p2", { type: "nextStep", to: "main1" });
+    g = mana(g, "p2", "CCC");
+    g = act(g, "p2", { type: "activateAbility", cardId: choker, index: 0 });
+    g = act(g, "p2", { type: "passPriority" });
+    g = act(g, "p1", { type: "passPriority" });
+    const ability = g.stack.at(-1)!;
+    g = act(g, "p2", { type: "chooseModes", cardId: ability, modes: [1] });
+    expect(g.cards[choker]!.counters["charge"]).toBeUndefined();
+  });
+
+  it("Crown of Doom : +2/+0 aux créatures qui attaquent son contrôleur ; on ne peut pas la rendre à son propriétaire", () => {
+    let g = toMain(newTestGame(2));
+    let crown: string, bear1: string;
+    [g, crown] = put(g, "p1", real("Crown of Doom"));
+    g = mana(g, "p1", "CC");
+    expect(refuse(g, "p1", { type: "activateAbility", cardId: crown, index: 0, targets: [{ kind: "player", id: "p1" }] })).toBeTruthy();
+    g = act(g, "p1", { type: "activateAbility", cardId: crown, index: 0, targets: [{ kind: "player", id: "p2" }] });
+    g = resolveAll(g);
+    expect(g.cards[crown]!.controllerId).toBe("p2");
+    [g, bear1] = put(g, "p1", bear("A"), 1);
+    g = act(g, "p1", { type: "nextStep", to: "declareAttackers" });
+    g = act(g, "p1", { type: "declareAttackers", attackers: [{ cardId: bear1, defender: "p2" }] });
+    g = resolveAll(g);
+    expect(creatureStats(g, g.cards[bear1]!).power).toBe(4);
+  });
+
+  it("Rust Elemental : sans autre artefact, il s'engage et on perd 4 PV", () => {
+    let g = toMain(newTestGame(2));
+    let rust: string;
+    [g, rust] = put(g, "p1", real("Rust Elemental"));
+    g = endTurn(g, "p1");
+    g = endTurn(g, "p2");
+    g = resolveAll(g);
+    expect(g.cards[rust]!.tapped).toBe(true);
+    expect(g.players.p1!.life).toBe(36);
+  });
+
+  it("Bronze Bombshell explose chez le joueur qui la reçoit", () => {
+    let g = toMain(newTestGame(2));
+    let bomb: string, offering: string;
+    [g, bomb] = put(g, "p1", real("Bronze Bombshell"));
+    [g, offering] = inHand(g, "p1", real("Harmless Offering"), 1);
+    g = mana(g, "p1", "RCC");
+    g = act(g, "p1", { type: "castSpell", cardId: offering, targets: [{ kind: "player", id: "p2" }, { kind: "card", id: bomb }] });
+    g = resolveAll(g);
+    expect(g.players.p1!.zones.graveyard).toContain(bomb);
+    expect(g.players.p2!.life).toBe(33);
+    for (const name of ["Jinxed Choker", "Crown of Doom", "Rust Elemental", "Bronze Bombshell"]) {
+      expect(cardSupport(real(name)).level, name).toBe("full");
+    }
+  });
+});
+
+describe("Deck Zedruu : Chaos Warp et Approach of the Second Sun", () => {
+  it("Chaos Warp mélange le permanent dans la bibliothèque de son propriétaire, puis révèle la carte du dessus", () => {
+    let g = toMain(newTestGame(2));
+    let target: string, warp: string;
+    [g, target] = put(g, "p2", bear("B"));
+    [g, warp] = inHand(g, "p1", real("Chaos Warp"));
+    g = mana(g, "p1", "RCC");
+    const library = g.players.p2!.zones.library.length;
+    g = act(g, "p1", { type: "castSpell", cardId: warp, targets: [{ kind: "card", id: target }] });
+    g = resolveAll(g);
+    expect(g.log.some((l) => /révèle/.test(l.message))).toBe(true);
+    const onBattlefield = g.players.p2!.zones.battlefield.length;
+    expect(g.players.p2!.zones.library.length + onBattlefield).toBe(library + 1);
+  });
+
+  it("Approach of the Second Sun : la première fois 7 PV et 7e carte de la bibliothèque, la seconde fois la victoire", () => {
+    let g = toMain(newTestGame(2));
+    let first: string, second: string;
+    [g, first] = inHand(g, "p1", real("Approach of the Second Sun"));
+    [g, second] = inHand(g, "p1", real("Approach of the Second Sun"), 1);
+    g = mana(g, "p1", "WCCCCCC");
+    g = act(g, "p1", { type: "castSpell", cardId: first });
+    g = resolveAll(g);
+    expect(g.players.p1!.life).toBe(47);
+    const seventh = g.cards[g.players.p1!.zones.library[6]!]!;
+    expect(g.cardData[seventh.cardId]!.name).toBe("Approach of the Second Sun");
+    g = mana(g, "p1", "WCCCCCC");
+    g = act(g, "p1", { type: "castSpell", cardId: second });
+    g = resolveAll(g);
+    expect(g.players.p2!.lostReason).toMatch(/Approach/);
+    for (const name of ["Chaos Warp", "Approach of the Second Sun"]) expect(cardSupport(real(name)).level, name).toBe("full");
+  });
+});
+
+describe("Deck Zedruu : Wedding Ring", () => {
+  it("lancée, elle donne une copie à un adversaire ; ses pioches et gains de PV pendant son tour profitent au lanceur", () => {
+    let g = toMain(newTestGame(2));
+    let ring: string;
+    [g, ring] = inHand(g, "p1", real("Wedding Ring"));
+    g = mana(g, "p1", "WWCC");
+    g = act(g, "p1", { type: "castSpell", cardId: ring });
+    g = resolveAll(g);
+    const copy = g.players.p2!.zones.battlefield.find((id) => g.cards[id]!.isToken);
+    expect(copy && g.cardData[g.cards[copy]!.cardId]!.name).toBe("Wedding Ring");
+    const hand = g.players.p1!.zones.hand.length;
+    g = endTurn(g, "p1");
+    // Pioche de p2 pendant son tour : p1 pioche aussi.
+    g = act(g, "p2", { type: "nextStep", to: "main1" });
+    g = resolveAll(g);
+    expect(g.players.p1!.zones.hand.length).toBe(hand + 1);
+    for (const name of ["Wedding Ring"]) expect(cardSupport(real(name)).level, name).toBe("full");
+  });
+});
+
+describe("Deck Zedruu : auras qui transforment", () => {
+  it("Darksteel Mutation : insecte artefact 0/1 indestructible sans ses capacités ; Witness Protection : 1/1 renommé", () => {
+    let g = toMain(newTestGame(2));
+    let big: string, other: string, mutation: string, witness: string;
+    [g, big] = put(g, "p2", fakeCard("Ange", { typeLine: "Creature — Angel", power: "4", toughness: "4", oracleText: "Flying", keywords: ["Flying"] }));
+    [g, other] = put(g, "p2", bear("Ours"), 1);
+    [g, mutation] = inHand(g, "p1", real("Darksteel Mutation"));
+    [g, witness] = inHand(g, "p1", real("Witness Protection"), 1);
+    g = mana(g, "p1", "WCU");
+    g = act(g, "p1", { type: "castSpell", cardId: mutation, targets: [{ kind: "card", id: big }] });
+    g = resolveAll(g);
+    expect(creatureStats(g, g.cards[big]!)).toEqual({ power: 0, toughness: 1 });
+    expect(hasKeyword(g, g.cards[big]!, "Indestructible")).toBe(true);
+    expect(hasKeyword(g, g.cards[big]!, "Flying")).toBe(false);
+    g = act(g, "p1", { type: "castSpell", cardId: witness, targets: [{ kind: "card", id: other }] });
+    g = resolveAll(g);
+    expect(g.cardData[g.cards[other]!.cardId]!.name).toBe("Legitimate Businessperson");
+    expect(creatureStats(g, g.cards[other]!)).toEqual({ power: 1, toughness: 1 });
+    // L'aura partie, la créature redevient elle-même.
+    g = act(g, "p1", { type: "moveCard", cardId: mutation, to: "graveyard", force: true });
+    expect(creatureStats(g, g.cards[big]!)).toEqual({ power: 4, toughness: 4 });
+  });
+
+  it("Paradox Haze donne une étape d'entretien supplémentaire au joueur enchanté", () => {
+    let g = toMain(newTestGame(2));
+    let haze: string, rhystic: string;
+    [g, haze] = inHand(g, "p1", real("Paradox Haze"));
+    g = mana(g, "p1", "UCC");
+    g = act(g, "p1", { type: "castSpell", cardId: haze, targets: [{ kind: "player", id: "p1" }] });
+    g = resolveAll(g);
+    expect(g.cards[haze]!.attachedPlayer).toBe("p1");
+    // Une capacité d'entretien qui compte les entretiens : Zedruu pioche à chacun.
+    [g, rhystic] = put(g, "p1", real("Zedruu the Greathearted"), 0);
+    g = endTurn(g, "p1");
+    g = endTurn(g, "p2");
+    g = resolveAll(g);
+    g = act(g, "p1", { type: "nextStep" });
+    g = resolveAll(g);
+    expect(g.turn.step).toBe("upkeep");
+    expect(g.turn.upkeeps).toBe(2);
+    g = act(g, "p1", { type: "nextStep" });
+    g = resolveAll(g);
+    expect(g.turn.step).toBe("draw");
+    void rhystic;
+    for (const name of ["Darksteel Mutation", "Witness Protection", "Paradox Haze"]) expect(cardSupport(real(name)).level, name).toBe("full");
+  });
+});
+
+describe("Deck Zedruu : The Eternal Wanderer", () => {
+  it("+1 exile jusqu'à une cible, qui revient à la fin du tour de son propriétaire ; −4 ne laisse qu'une créature par joueur", () => {
+    let g = toMain(newTestGame(2));
+    let pw: string, a: string, b: string, c: string;
+    [g, pw] = put(g, "p1", real("The Eternal Wanderer"));
+    g = act(g, "p1", { type: "adjustCardCounter", cardId: pw, kind: "loyauté", delta: 5 });
+    [g, a] = put(g, "p2", bear("A"), 0);
+    [g, b] = put(g, "p2", bear("B"), 0);
+    [g, c] = put(g, "p1", bear("C"), 0);
+    // +1 sans cible : permis (« up to one »).
+    g = act(g, "p1", { type: "activateAbility", cardId: pw, index: 0, targets: [] });
+    g = resolveAll(g);
+    g = endTurn(g, "p1");
+    g = act(g, "p2", { type: "nextStep", to: "main1" });
+    g = resolveAll(g);
+    g = act(g, "p2", { type: "passTurn" });
+    g = resolveAll(g);
+    g = act(g, "p1", { type: "nextStep", to: "main1" });
+    g = act(g, "p1", { type: "activateAbility", cardId: pw, index: 0, targets: [{ kind: "card", id: a }] });
+    g = resolveAll(g);
+    expect(g.players.p2!.zones.exile.length).toBe(1);
+    g = endTurn(g, "p1");
+    g = act(g, "p2", { type: "nextStep", to: "end" });
+    g = resolveAll(g);
+    expect(g.players.p2!.zones.battlefield.length).toBe(2);
+    expect(g.players.p2!.zones.exile.length).toBe(0);
+    void b;
+    void c;
+    for (const name of ["The Eternal Wanderer"]) expect(cardSupport(real(name)).level, name).toBe("full");
+  });
+
+  it("−4 : on garde une créature par joueur", () => {
+    let g = toMain(newTestGame(2));
+    let pw: string, a: string, b: string, c: string;
+    [g, pw] = put(g, "p1", real("The Eternal Wanderer"));
+    [g, a] = put(g, "p2", bear("A"), 0);
+    [g, b] = put(g, "p2", bear("B"), 0);
+    [g, c] = put(g, "p1", bear("C"), 0);
+    g = act(g, "p1", { type: "activateAbility", cardId: pw, index: 2 });
+    g = resolveAll(g);
+    const ability = g.stack.at(-1)!;
+    expect(refuse(g, "p1", { type: "chooseCards", cardId: ability, cardIds: [a, b] })).toMatch(/une seule/);
+    g = act(g, "p1", { type: "chooseCards", cardId: ability, cardIds: [a, c] });
+    g = resolveAll(g);
+    expect(g.players.p2!.zones.graveyard).toContain(b);
+    expect(g.players.p2!.zones.battlefield).toContain(a);
+    expect(g.players.p1!.zones.battlefield).toContain(c);
   });
 });

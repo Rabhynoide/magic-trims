@@ -38,6 +38,10 @@ export interface TargetSpec {
   hand?: boolean;
   /** Une carte dans un cimetière (« target creature card from your graveyard »). */
   graveyard?: GraveyardFilter;
+  /** « target player other than ~'s owner » (Crown of Doom). */
+  notOwner?: boolean;
+  /** « up to one target » : la cible peut être omise. */
+  upTo?: boolean;
 }
 
 export interface GraveyardFilter {
@@ -103,7 +107,10 @@ export type Effect =
   | { type: "draw"; who: Who; count: Amount }
   | { type: "destroy"; target: number }
   | { type: "destroyAll"; filter: PermanentFilter }
-  | { type: "exile"; target: number }
+  /** `returnAtEnd` : revient sous le contrôle de son propriétaire au début de sa prochaine étape de fin. */
+  | { type: "exile"; target: number; returnAtEnd?: boolean }
+  /** The Eternal Wanderer −4 : chaque joueur garde la créature choisie et sacrifie les autres. */
+  | { type: "keepOnePerPlayer" }
   | { type: "exileAll"; filter: PermanentFilter }
   | { type: "bounce"; target: number }
   | { type: "damage"; target: number | "event" | "you"; amount: Amount }
@@ -125,11 +132,25 @@ export type Effect =
   /** Équiper : attache la source à la cible. */
   | { type: "attach"; target: number }
   /** « Sacrifice a creature » (au choix du contrôleur, à la résolution). */
-  | { type: "sacrifice"; filter: PermanentFilter }
+  | { type: "sacrifice"; filter: PermanentFilter; another?: boolean; orElse?: Effect[] }
+  /** « tap ~ ». */
+  | { type: "tapSelf" }
+  /** Jinxed Choker : « deals damage to you equal to the number of charge counters on it ». */
+  | { type: "selfCounterDamage"; kind: string }
+  /** « it gets +2/+0 until end of turn » : la créature de l'événement (Crown of Doom). */
+  | { type: "pumpEvent"; power: number; toughness: number }
   /** « Target opponent gains control of target permanent you control » ; `permanent` : une cible, ou la source. */
   | { type: "gainControl"; permanent: number | "self"; player: number }
   /** « Exchange control of target land you control and target land an opponent controls. » */
   | { type: "exchangeControl"; a: number; b: number; relation?: ExchangeRelation }
+  /** Chaos Warp : le propriétaire mélange le permanent dans sa bibliothèque ; `revealPermanent` : puis révèle et met en jeu un permanent. */
+  | { type: "shuffleIntoLibrary"; target: number; revealPermanent?: boolean }
+  /** Paradox Haze : « that player gets an additional upkeep step after this step ». */
+  | { type: "extraUpkeep" }
+  /** Wedding Ring : « target opponent creates a token that's a copy of it ». */
+  | { type: "copyToken"; player: number }
+  /** Approach of the Second Sun. */
+  | { type: "approach"; position: number; life: number }
   /** Modify Memory : « If you control neither creature, draw three cards. » */
   | { type: "drawIfNeither"; a: number; b: number; count: number }
   /** « If you have 40 or more life, you win the game. » */
@@ -158,7 +179,7 @@ export type Effect =
   | { type: "chooseDiscard"; who: Who; types: string[] }
   | { type: "discardHand"; who: Who }
   /** « Sacrifice ~. » */
-  | { type: "sacrificeSelf" }
+  | { type: "sacrificeSelf"; thenDamage?: number }
   /** « Flip a coin. If you lose the flip, ~ deals 3 damage to you. » */
   | { type: "coinFlipDamage"; amount: number }
   /** « Shuffle ~ and your graveyard into their owner's library. » */
@@ -385,10 +406,19 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
     ];
   }
   if ((m = new RegExp(`^~ deals ${NUM} damage to you$`, "i").exec(s))) return [{ type: "damage", target: "you", amount: amount(m[1]!) }];
-  if ((m = /^(target opponent|target player|an opponent) gains control of (~|it|target (.+))$/i.exec(s))) {
+  if ((m = /^(target opponent|target player other than ~'s owner|target player|an opponent) gains control of (~|it|target (.+?))(?: and puts an? (\w+) counter on it)?$/i.exec(s))) {
     const who = m[1]!.toLowerCase();
-    const player = who === "an opponent" ? target({ label: "adversaire", player: true, opponent: true, choice: true }) : target(playerTarget(who));
-    if (!m[3]) return [{ type: "gainControl", permanent: "self", player }];
+    const player =
+      who === "an opponent"
+        ? target({ label: "adversaire", player: true, opponent: true, choice: true })
+        : /other than/.test(who)
+          ? target({ label: "joueur autre que le propriétaire", player: true, notOwner: true })
+          : target(playerTarget(who));
+    if (!m[3]) {
+      const counter: Effect[] = m[4] ? [{ type: "counterSelf", kind: counterKind(m[4]), count: 1 }] : [];
+      return [{ type: "gainControl", permanent: "self", player }, ...counter];
+    }
+    if (m[4]) return null;
     const filter = parsePermanentFilter(m[3]);
     if (!filter) return null;
     return [{ type: "gainControl", permanent: target({ label: permanentLabel(filter), permanent: filter }), player }];
@@ -449,10 +479,33 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
     const filter = parsePermanentFilter(m[1]!);
     if (filter) return [{ type: "sacrifice", filter: { ...filter, controller: "you" } }];
   }
-  if ((m = new RegExp(`^put ${NUM} (\\+1/\\+1|-1/-1) counters? on ~$`, "i").exec(s))) {
-    return [{ type: "counterSelf", kind: m[2]!, count: amount(m[1]!) as number }];
+  if ((m = new RegExp(`^put ${NUM} (\\+1/\\+1|-1/-1|\\w+) counters? on ~$`, "i").exec(s))) {
+    return [{ type: "counterSelf", kind: counterKind(m[2]!), count: amount(m[1]!) as number }];
   }
+  if ((m = /^~ deals damage to you equal to the number of (\w+) counters on it$/i.exec(s))) {
+    return [{ type: "selfCounterDamage", kind: counterKind(m[1]!) }];
+  }
+  if ((m = /^it gets \+(\d+)\/\+(\d+) until end of turn$/i.exec(s))) {
+    return [{ type: "pumpEvent", power: parseInt(m[1]!, 10), toughness: parseInt(m[2]!, 10) }];
+  }
+  if ((m = /^sacrifice another (.+)$/i.exec(s))) {
+    const filter = parsePermanentFilter(m[1]!);
+    if (filter) return [{ type: "sacrifice", filter: { ...filter, controller: "you" }, another: true }];
+  }
+  if (/^tap ~$/i.test(s)) return [{ type: "tapSelf" }];
+  if ((m = /^(target opponent|target player) creates a token that's a copy of (?:it|~)$/i.exec(s))) {
+    return [{ type: "copyToken", player: target(playerTarget(m[1]!)) }];
+  }
+  if (/^that player gets an additional upkeep step after this step$/i.test(s)) return [{ type: "extraUpkeep" }];
+  // Bronze Bombshell : « that player sacrifices it. »
+  if (/^that player sacrifices (?:it|~)$/i.test(s)) return [{ type: "sacrificeSelf" }];
   return null;
+}
+
+/** Nom d'un type de marqueur, comme l'affiche la table (« charge », « âge »…). */
+const COUNTER_KINDS: Record<string, string> = { age: "âge", lore: "savoir", loyalty: "loyauté", charge: "charge", time: "temps", oil: "huile", stun: "étourdissement" };
+function counterKind(word: string): string {
+  return COUNTER_KINDS[word.toLowerCase()] ?? word.toLowerCase();
 }
 
 /** Cibles de blessures : « any target », « target creature or planeswalker »… */
@@ -525,6 +578,9 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     .filter(Boolean);
 
   let wheel: "event" | "all" | null = null;
+  let revealing: Extract<Effect, { type: "shuffleIntoLibrary" }> | null = null;
+  let approach = false;
+  let keepOne = false;
   for (const sentence of sentences) {
     let s = sentence.replace(/\.$/, "");
     if (HARMLESS.some((re) => re.test(sentence))) continue;
@@ -622,6 +678,74 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       result.unknown.push("puts the cards in their hand on the bottom of their library");
       wheel = null;
     }
+    // Rust Elemental : « If you can't, tap ~ and you lose 4 life. » (après « sacrifice another artifact »).
+    const prev = result.effects.at(-1);
+    if ((m = /^if you can't, (.+)$/i.exec(s)) && prev?.type === "sacrifice" && !prev.orElse) {
+      const parts = m[1]!.split(/ and (?=you |tap |~ )/i).map((p) => parseSpellEffects(p.charAt(0).toUpperCase() + p.slice(1), "~"));
+      if (parts.every((p) => p.unknown.length === 0 && p.targets.length === 0 && p.effects.length > 0)) {
+        prev.orElse = parts.flatMap((p) => p.effects);
+        continue;
+      }
+    }
+    // Chaos Warp.
+    if ((m = /^the owner of target (.+?) shuffles it into their library$/i.exec(s))) {
+      const filter = parsePermanentFilter(m[1]!);
+      if (filter) {
+        result.effects.push({ type: "shuffleIntoLibrary", target: target({ label: permanentLabel(filter), permanent: filter }) });
+        continue;
+      }
+    }
+    if (/^reveals the top card of their library$/i.test(s) && prev?.type === "shuffleIntoLibrary" && !prev.revealPermanent) {
+      revealing = prev;
+      continue;
+    }
+    if (/^if it's a permanent card, they put it onto the battlefield$/i.test(s) && revealing) {
+      revealing.revealPermanent = true;
+      revealing = null;
+      continue;
+    }
+    // Approach of the Second Sun.
+    if (/^if ~ was cast from your hand and you've cast another spell named ~ this game, you win the game$/i.test(s)) {
+      approach = true;
+      continue;
+    }
+    if (approach && (m = new RegExp(`^otherwise, put ~ into its owner's library seventh from the top and you gain ${NUM} life$`, "i").exec(s))) {
+      result.effects.push({ type: "approach", position: 7, life: amount(m[1]!) as number });
+      approach = false;
+      continue;
+    }
+    // The Eternal Wanderer : « Return that card to the battlefield under its owner's control at the beginning of that player's next end step. »
+    if (/^return that card to the battlefield under its owner's control at the beginning of that player's next end step$/i.test(s) && prev?.type === "exile" && !prev.returnAtEnd) {
+      prev.returnAtEnd = true;
+      continue;
+    }
+    if (/^for each player, choose a creature that player controls$/i.test(s)) {
+      keepOne = true;
+      continue;
+    }
+    if (keepOne && /^each player sacrifices all creatures they control not chosen this way$/i.test(s)) {
+      result.effects.push({ type: "keepOnePerPlayer" });
+      keepOne = false;
+      continue;
+    }
+    // Bronze Bombshell : « If the player does, ~ deals 7 damage to the player. »
+    if ((m = /^if the player does, ~ deals (\d+) damage to the player$/i.exec(s)) && prev?.type === "sacrificeSelf" && !prev.thenDamage) {
+      prev.thenDamage = parseInt(m[1]!, 10);
+      continue;
+    }
+    // Jinxed Choker : « Put a charge counter on ~ or remove one from it. »
+    if ((m = /^put an? (\w+) counter on ~ or remove one from it$/i.exec(s)) && result.effects.length === 0 && !result.modes) {
+      const kind = counterKind(m[1]!);
+      result.modes = {
+        min: 1,
+        max: 1,
+        list: [
+          { label: `Ajouter un marqueur ${kind}`, effects: [{ type: "counterSelf", kind, count: 1 }] },
+          { label: `Retirer un marqueur ${kind}`, effects: [{ type: "counterSelf", kind, count: -1 }] },
+        ],
+      };
+      continue;
+    }
     const triggered = parseTriggerSentence(s, target, () => result.targets.length - 1);
     if (triggered) {
       result.effects.push(...triggered);
@@ -644,13 +768,13 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       result.effects.push({ type: "draw", who: "you", count: amount(m[1]!) });
     } else if ((m = new RegExp(`^target player draws ${NUM} cards?$`, "i").exec(s))) {
       result.effects.push({ type: "draw", who: { target: target({ label: "joueur", player: true }) }, count: amount(m[1]!) });
-    } else if ((m = /^(destroy|exile) target (.+)$/i.exec(s))) {
-      const filter = parsePermanentFilter(m[2]!);
+    } else if ((m = /^(destroy|exile) (up to one )?target (.+)$/i.exec(s))) {
+      const filter = parsePermanentFilter(m[3]!);
       if (!filter) {
         result.unknown.push(sentence);
         continue;
       }
-      const t = target({ label: permanentLabel(filter), permanent: filter });
+      const t = target({ label: permanentLabel(filter), permanent: filter, ...(m[2] ? { upTo: true } : {}) });
       result.effects.push({ type: m[1]!.toLowerCase() === "destroy" ? "destroy" : "exile", target: t });
     } else if ((m = /^(destroy|exile) all (.+)$/i.exec(s))) {
       const filter = parsePermanentFilter(m[2]!);
@@ -810,6 +934,11 @@ export function isLegalTarget(g: GameState, spec: TargetSpec, target: Target, ca
     const p = g.players[target.id];
     if (!spec.player || !p || p.hasConceded) return false;
     if (!spec.choice && playerHasShroud(g, p.id)) return false;
+    if (spec.notOwner && sourceId) {
+      const src = g.cards[sourceId];
+      const perm = src?.ability ? g.cards[src.ability.sourceId] : src;
+      if (perm && perm.ownerId === p.id) return false;
+    }
     return !spec.opponent || (p.id !== casterId && !areTeammates(g, p.id, casterId));
   }
   const card = g.cards[target.id];
@@ -907,7 +1036,7 @@ function permanentLineStatus(line: string, typeLine: string, name: string): Line
   if (activated) {
     const title = activated.equip ? "Équipement" : activated.cost.loyalty !== undefined ? "Capacité de loyauté" : activated.mana ? "Capacité de mana" : "Capacité activée";
     const { effects, unknown } = activated.effects;
-    if (unknown.length === 0 && effects.length > 0) return { title, status: "auto" };
+    if (unknown.length === 0 && (effects.length > 0 || activated.effects.modes)) return { title, status: "auto" };
     // Le coût est payé par le moteur ; l'effet (ou une partie) reste à faire à la main.
     return { title, status: "partial", manual: unknown };
   }

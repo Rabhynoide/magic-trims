@@ -40,6 +40,7 @@ import {
   modifyDamage,
   skipsDrawStep,
   staticsOf,
+  type StaticAbility,
   type DamageSource,
 } from "./statics.js";
 import { canAttack, canBlock, cantAttack, cantBlock, creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatState } from "./combat.js";
@@ -430,7 +431,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     }
     // Une aura enchante ce qu'on choisit en la lançant (« Enchant creature you control »).
     const auraSpec = g.settings.enforceRules && !effects ? auraTarget(typeLine, faceData?.oracleText ?? data.oracleText) : null;
-    const aura = auraSpec?.permanent ? auraSpec : null;
+    const aura = auraSpec?.permanent || auraSpec?.player ? auraSpec : null;
     if (aura && (chosen.length !== 1 || !isLegalTarget(g, aura, chosen[0]!, actor.id, card.instanceId))) {
       throw new ActionError(`Choisis ce que l'aura enchante : un(e) ${aura.label}.`);
     }
@@ -456,7 +457,10 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     }
 
     actor.spellsCast = { turn: g.turn.number, count: castThisTurn + 1 };
+    actor.castNames = [...(actor.castNames ?? []), faceData?.name ?? data.name];
+    const fromHand = card.zone === "hand";
     const cast = moveCardTo(g, cardId, "stack", "top");
+    if (fromHand) cast.castFromHand = true;
     emit(g, { type: "cast", playerId: actor.id, cardId: cast.instanceId, typeLine });
     cast.faceIndex = faceIndex;
     if (alternative) cast.alternative = true;
@@ -763,6 +767,9 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     if (chosen.length < pending.min || chosen.length > pending.max || chosen.some((id) => !pending.options.includes(id))) {
       throw new ActionError(pending.min === pending.max ? `Choisis ${plural(pending.max, "carte")} parmi celles proposées.` : `Choisis au plus ${plural(pending.max, "carte")} parmi celles proposées.`);
     }
+    if (pending.perPlayer && new Set(chosen.map((id) => g.cards[id]!.controllerId)).size !== chosen.length) {
+      throw new ActionError("Choisis une seule créature par joueur.");
+    }
     card.choices = { ...(card.choices ?? {}), [pending.index]: chosen };
     delete card.cardChoice;
     if (card.ability) resolveAbility(g, card);
@@ -993,6 +1000,11 @@ export function moveCardTo(
 ): CardInstance {
   const card = getCard(g, cardId);
   const from = card.zone;
+  // Une créature transformée par une aura retrouve sa vraie carte en quittant le champ de bataille.
+  if (card.originalCardId) {
+    card.cardId = card.originalCardId;
+    delete card.originalCardId;
+  }
   const wasPublic = isVisibleToAll(card);
   removeFromZone(g, card);
   // Une capacité qui quitte la pile (résolue, contrée, retirée) disparaît.
@@ -1066,6 +1078,7 @@ export function moveCardTo(
     card.tapped = false;
     card.counters = {};
     delete card.attachedTo;
+    delete card.attachedPlayer;
     for (const other of Object.values(g.cards)) {
       if (other.attachedTo !== card.instanceId) continue;
       delete other.attachedTo;
@@ -1094,6 +1107,7 @@ export function moveCardTo(
     delete card.scry;
     delete card.modes;
     delete card.alternative;
+    delete card.castFromHand;
   }
   card.controllerId = to === "battlefield" || to === "stack" ? (options.controllerId ?? card.controllerId) : card.ownerId;
   if (from === "battlefield" && to !== "battlefield") card.controllerId = card.ownerId;
@@ -1120,7 +1134,7 @@ export function moveCardTo(
   }
   insertAt(zoneList(g, card), id, to, position);
   if (dies) emit(g, dies);
-  if (to === "battlefield" && from !== "battlefield") emitEnters(g, g.cards[id]!);
+  if (to === "battlefield" && from !== "battlefield") emitEnters(g, g.cards[id]!, from === "stack");
   return g.cards[id]!;
 }
 
@@ -1325,8 +1339,14 @@ function emit(g: GameState, event: TriggerEvent): void {
   (g.events ??= []).push(event);
 }
 
-function emitEnters(g: GameState, card: CardInstance): void {
-  emit(g, { type: "enters", cardId: card.instanceId, controllerId: card.controllerId, creature: !card.faceDown && isCreature(g, card) });
+function emitEnters(g: GameState, card: CardInstance, cast = false): void {
+  emit(g, {
+    type: "enters",
+    cardId: card.instanceId,
+    controllerId: card.controllerId,
+    creature: !card.faceDown && isCreature(g, card),
+    ...(cast ? { cast } : {}),
+  });
 }
 
 /** Les capacités déclenchées « une fois par tour » sont notées dans `usedAbilities` à partir de cet index. */
@@ -1441,6 +1461,8 @@ function flushTriggers(g: GameState): boolean {
     if (ev.type === "dies" || ev.type === "leaves") {
       instance.ability.eventCardId = ev.cardId;
       instance.ability.eventZone = ev.type === "dies" ? "graveyard" : ev.to;
+    } else if (ev.type === "attacks") {
+      instance.ability.eventCardId = ev.cardId;
     }
     if ("playerId" in ev) instance.ability.eventPlayerId = ev.playerId;
     if ("amount" in ev) instance.ability.eventAmount = ev.amount;
@@ -1671,7 +1693,11 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         const c = card(effect.target);
         if (!c) break;
         const name = cardName(g, c);
-        moveCardTo(g, c.instanceId, effect.type === "exile" ? "exile" : "hand", "top");
+        const moved = moveCardTo(g, c.instanceId, effect.type === "exile" ? "exile" : "hand", "top");
+        if (effect.type === "exile" && effect.returnAtEnd && !moved.isToken) {
+          (g.delayedReturns ??= []).push({ cardId: moved.instanceId, playerId: moved.ownerId });
+          log(g, null, `${name} reviendra au début de la prochaine étape de fin de ${g.players[moved.ownerId]!.name}.`);
+        }
         log(g, null, effect.type === "exile" ? `${name} est exilé(e).` : `${name} retourne dans la main de son propriétaire.`);
         break;
       }
@@ -1779,8 +1805,11 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         const self2 = ability ? g.cards[ability.sourceId] : undefined;
         if (self2?.zone === "battlefield") {
           const name = cardName(g, self2);
+          const victim = self2.controllerId;
           moveCardTo(g, self2.instanceId, "graveyard", "top");
-          log(g, null, `${g.players[self2.controllerId]?.name ?? caster.name} sacrifie ${name}.`);
+          log(g, null, `${g.players[victim]?.name ?? caster.name} sacrifie ${name}.`);
+          // Bronze Bombshell : « If the player does, ~ deals 7 damage to the player. »
+          if (effect.thenDamage) dealt += dealDamage(g, name, { kind: "player", id: victim }, effect.thenDamage, damageFrom);
         }
         break;
       }
@@ -1891,6 +1920,74 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         log(g, null, `${cardName(g, c)} gagne « ${effect.text} » jusqu'à la fin du tour.`);
         break;
       }
+      case "keepOnePerPlayer": {
+        const kept = new Set(source.choices?.[effects.indexOf(effect)] ?? []);
+        for (const p of g.turnOrder.map((id) => g.players[id]!).filter((p) => !p.hasConceded)) {
+          const doomed = p.zones.battlefield.map((id) => g.cards[id]!).filter((c) => isCreature(g, c) && !kept.has(c.instanceId));
+          for (const c of doomed) moveCardTo(g, c.instanceId, "graveyard", "top");
+          if (doomed.length > 0) log(g, null, `${p.name} sacrifie ${doomed.map((c) => cardName(g, c)).join(", ")}.`);
+        }
+        break;
+      }
+      case "extraUpkeep":
+        g.turn.extraUpkeeps = (g.turn.extraUpkeeps ?? 0) + 1;
+        log(g, null, `${g.players[g.turn.activePlayerId]!.name} aura une étape d'entretien supplémentaire.`);
+        break;
+      case "copyToken": {
+        const t = targets[effect.player];
+        const self3 = ability ? g.cards[ability.sourceId] : undefined;
+        if (!t || t.kind !== "player" || !self3) break;
+        const owner = g.players[t.id]!;
+        const instance = newInstance(g, self3.cardId, owner.id, "battlefield");
+        instance.faceIndex = self3.faceIndex;
+        instance.isToken = true;
+        instance.summoningSick = true;
+        owner.zones.battlefield.push(instance.instanceId);
+        emitEnters(g, instance);
+        log(g, null, `${owner.name} crée un jeton copie de ${cardName(g, self3)}.`);
+        break;
+      }
+      case "shuffleIntoLibrary": {
+        const c = card(effect.target);
+        if (!c) break;
+        const owner = g.players[c.ownerId]!;
+        const name = cardName(g, c);
+        moveCardTo(g, c.instanceId, "library", "top");
+        g.rngState = shuffleInPlace(owner.zones.library, g.rngState);
+        log(g, null, `${owner.name} mélange ${name} dans sa bibliothèque.`);
+        if (!effect.revealPermanent) break;
+        const topId = owner.zones.library[0];
+        if (!topId) break;
+        const top = g.cards[topId]!;
+        addRevealed(top, g.turnOrder);
+        const topName = cardName(g, top);
+        const typeLine = g.cardData[top.cardId]?.faces?.[0]?.typeLine ?? g.cardData[top.cardId]?.typeLine ?? "";
+        if (/\b(Artifact|Creature|Enchantment|Land|Planeswalker|Battle)\b/.test(typeLine)) {
+          moveCardTo(g, topId, "battlefield", "top", { controllerId: owner.id });
+          log(g, null, `${owner.name} révèle ${topName} et le met sur le champ de bataille.`);
+        } else {
+          log(g, null, `${owner.name} révèle ${topName} (pas un permanent).`);
+        }
+        break;
+      }
+      case "approach": {
+        const name = cardName(g, source);
+        const castCount = (caster.castNames ?? []).filter((n) => n === name).length;
+        if (source.castFromHand && castCount >= 2) {
+          const losers = opponentsOf(g, caster.id);
+          for (const p of losers) p.lostReason = `${caster.name} gagne avec ${name}`;
+          log(g, null, `${caster.name} gagne la partie grâce à ${name} !`);
+          leaveGame(g, losers);
+          break;
+        }
+        if (source.zone === "stack") {
+          const owner = g.players[source.ownerId]!;
+          moveCardTo(g, source.instanceId, "library", Math.min(effect.position - 1, owner.zones.library.length));
+          log(g, null, `${name} va en ${effect.position}e position de la bibliothèque de ${owner.name}.`);
+        }
+        changeLife(g, caster.id, effect.life);
+        break;
+      }
       case "drawIfNeither": {
         const a = card(effect.a);
         const b = card(effect.b);
@@ -1915,10 +2012,24 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
       }
       case "counterSelf": {
         if (!self || self.zone !== "battlefield") break;
-        self.counters[effect.kind] = (self.counters[effect.kind] ?? 0) + effect.count;
-        log(g, null, `${cardName(g, self)} reçoit ${plural(effect.count, `marqueur ${effect.kind}`, `marqueurs ${effect.kind}`)}.`);
+        const value = Math.max(0, (self.counters[effect.kind] ?? 0) + effect.count);
+        if (value === 0) delete self.counters[effect.kind];
+        else self.counters[effect.kind] = value;
+        const n = Math.abs(effect.count);
+        log(g, null, `${cardName(g, self)} ${effect.count >= 0 ? "reçoit" : "perd"} ${plural(n, `marqueur ${effect.kind}`, `marqueurs ${effect.kind}`)}.`);
         break;
       }
+      case "selfCounterDamage": {
+        const n = self?.counters[effect.kind] ?? 0;
+        if (self && n > 0) dealt += dealDamage(g, sourceName, { kind: "player", id: caster.id }, n, damageFrom);
+        break;
+      }
+      case "tapSelf":
+        if (self?.zone === "battlefield" && !self.tapped) {
+          self.tapped = true;
+          log(g, null, `${cardName(g, self)} s'engage.`);
+        }
+        break;
       case "token": {
         const n = amountOf(effect.count);
         const { token } = effect;
@@ -1985,12 +2096,14 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         log(g, null, `${name} retourne du cimetière dans la main de ${g.players[self.ownerId]!.name}.`);
         break;
       }
+      case "pumpEvent":
       case "pumpSelf": {
-        if (!self || self.zone !== "battlefield") break;
-        const boost = self.ptBoost ?? { power: 0, toughness: 0 };
-        self.ptBoost = { power: boost.power + effect.power, toughness: boost.toughness + effect.toughness };
+        const pumped = effect.type === "pumpSelf" ? (ability ? g.cards[ability.sourceId] : undefined) : ability?.eventCardId ? g.cards[ability.eventCardId] : undefined;
+        if (!pumped || pumped.zone !== "battlefield") break;
+        const boost = pumped.ptBoost ?? { power: 0, toughness: 0 };
+        pumped.ptBoost = { power: boost.power + effect.power, toughness: boost.toughness + effect.toughness };
         const sign = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
-        log(g, null, `${cardName(g, self)} reçoit ${sign(effect.power)}/${sign(effect.toughness)} jusqu'à la fin du tour.`);
+        log(g, null, `${cardName(g, pumped)} reçoit ${sign(effect.power)}/${sign(effect.toughness)} jusqu'à la fin du tour.`);
         break;
       }
       case "grantAll": {
@@ -2048,8 +2161,16 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         break;
       }
       case "sacrifice": {
-        const chosen = ability?.choice ? g.cards[ability.choice] : undefined;
-        if (!chosen || chosen.zone !== "battlefield" || chosen.controllerId !== caster.id || !matchesPermanent(g, chosen, effect.filter, caster.id)) break;
+        const picked = source.choices?.[effects.indexOf(effect)]?.[0];
+        const chosenId = ability?.choice ?? picked;
+        const chosen = chosenId ? g.cards[chosenId] : undefined;
+        const valid = (c: CardInstance | undefined): c is CardInstance =>
+          !!c && c.zone === "battlefield" && c.controllerId === caster.id && matchesPermanent(g, c, effect.filter, caster.id) && !(effect.another && c.instanceId === ability?.sourceId);
+        if (!valid(chosen)) {
+          // Rust Elemental : « If you can't, tap ~ and you lose 4 life. »
+          if (effect.orElse && !caster.zones.battlefield.some((id) => valid(g.cards[id]))) applySpellEffects(g, source, effect.orElse, targets, legal);
+          break;
+        }
         const name = cardName(g, chosen);
         moveCardTo(g, chosen.instanceId, "graveyard", "top");
         log(g, null, `${caster.name} sacrifie ${name}.`);
@@ -2085,8 +2206,37 @@ function startScry(g: GameState, card: CardInstance, effects: SpellEffects): boo
 function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], targets: Target[], legal: boolean[]): boolean {
   const controller = g.players[card.controllerId]!;
   for (const [index, effect] of effects.entries()) {
-    if (effect.type !== "search" && effect.type !== "chooseDiscard") continue;
     if (card.choices?.[index]) continue;
+    // The Eternal Wanderer −4 : une créature par joueur, choisie par le contrôleur de la capacité.
+    if (effect.type === "keepOnePerPlayer") {
+      const options = g.turnOrder
+        .map((id) => g.players[id]!)
+        .filter((p) => !p.hasConceded)
+        .flatMap((p) => p.zones.battlefield.filter((id) => isCreature(g, g.cards[id]!)));
+      const owners = new Set(options.map((id) => g.cards[id]!.controllerId));
+      if (options.length === owners.size) {
+        card.choices = { ...(card.choices ?? {}), [index]: options };
+        continue;
+      }
+      card.cardChoice = { index, options, min: owners.size, max: owners.size, label: "Choisis une créature par joueur (les autres seront sacrifiées)", perPlayer: true };
+      log(g, null, `${controller.name} choisit une créature par joueur pour ${cardName(g, card)}.`);
+      return true;
+    }
+    // Sacrifice obligatoire (« sacrifice another artifact ») : le contrôleur choisit dans la fenêtre commune.
+    if (effect.type === "sacrifice" && !card.ability?.choice) {
+      const sourceId = card.ability?.sourceId;
+      const options = controller.zones.battlefield.filter(
+        (id) => matchesPermanent(g, g.cards[id]!, effect.filter, controller.id) && !(effect.another && id === sourceId),
+      );
+      if (options.length <= 1) {
+        card.choices = { ...(card.choices ?? {}), [index]: options };
+        continue;
+      }
+      card.cardChoice = { index, options, min: 1, max: 1, label: `Choisis un(e) ${permanentLabel(effect.filter)} à sacrifier` };
+      log(g, null, `${controller.name} choisit quoi sacrifier pour ${cardName(g, card)}.`);
+      return true;
+    }
+    if (effect.type !== "search" && effect.type !== "chooseDiscard") continue;
     const typeOk = (id: CardInstanceId, types: string[]) => {
       const data = g.cardData[g.cards[id]!.cardId];
       const typeLine = (data?.faces?.[0]?.typeLine ?? data?.typeLine ?? "").toLowerCase();
@@ -2189,6 +2339,9 @@ function resolveTop(g: GameState, stackId?: CardInstanceId): void {
     if (host?.kind === "card") {
       entered.attachedTo = host.id;
       log(g, null, `${name} enchante ${targetName(g, host)}.`);
+    } else if (host?.kind === "player") {
+      entered.attachedPlayer = host.id;
+      log(g, null, `${name} enchante ${targetName(g, host)}.`);
     }
     const data = g.cardData[card.cardId];
     const manual = data && !card.faceDown && cardSupport(data).level !== "full";
@@ -2237,6 +2390,7 @@ function setController(g: GameState, card: CardInstance, playerId: PlayerId): vo
   }
   g.players[playerId]!.zones.battlefield.push(card.instanceId);
   log(g, null, `${g.players[playerId]!.name} prend le contrôle de ${cardName(g, card)}.`);
+  emit(g, { type: "controlChanged", cardId: card.instanceId, controllerId: playerId });
 }
 
 /** Payer des points de vie (une perte de points de vie). */
@@ -2263,6 +2417,13 @@ const PERMANENT_TYPES = ["artifact", "battle", "creature", "enchantment", "land"
 const CARD_TYPE_WORDS = [...PERMANENT_TYPES, "instant", "sorcery", "kindred", "tribal"];
 
 /** Condition entre deux permanents échangés (Role Reversal, Daring Thief, Puca's Mischief, Modify Memory). */
+/** Nombre de cibles obligatoires : les dernières « up to one target » peuvent manquer. */
+function requiredTargets(specs: { upTo?: boolean }[]): number {
+  let n = specs.length;
+  while (n > 0 && specs[n - 1]!.upTo) n--;
+  return n;
+}
+
 function exchangeRelationHolds(g: GameState, a: CardInstance, b: CardInstance, relation: ExchangeRelation): boolean {
   const typesOf = (c: CardInstance, list: string[]) => {
     const data = g.cardData[c.cardId];
@@ -2336,11 +2497,11 @@ function activateAbility(
     }
   }
   const specs = ability.effects.targets;
-  if (targets.length !== specs.length) {
+  if (targets.length !== specs.length && !(targets.length >= requiredTargets(specs) && targets.length < specs.length)) {
     throw new ActionError(`Choisis ${specs.map((t) => `une cible (${t.label})`).join(", puis ")}.`);
   }
-  specs.forEach((spec, i) => {
-    if (!isLegalTarget(g, spec, targets[i]!, actor.id, card.instanceId)) throw new ActionError(`Cible invalide : il faut un(e) ${spec.label}.`);
+  targets.forEach((t, i) => {
+    if (!isLegalTarget(g, specs[i]!, t, actor.id, card.instanceId)) throw new ActionError(`Cible invalide : il faut un(e) ${specs[i]!.label}.`);
   });
   const anyColor = ability.effects.effects.some((e) => e.type === "manaAny");
   if (anyColor && (!color || !isManaType(color) || color === "C")) throw new ActionError("Choisis la couleur du mana.");
@@ -2603,6 +2764,7 @@ function advanceTo(g: GameState, target: TurnStep): TurnStep {
  * de combat n'ont pas lieu (règle 508.8).
  */
 function followingStep(g: GameState): TurnStep {
+  if (g.turn.step === "upkeep" && (g.turn.extraUpkeeps ?? 0) > 0) return "upkeep";
   if (g.turn.step === "declareAttackers" && noAttack(g)) return "endCombat";
   return TURN_STEPS[stepIndex(g.turn.step) + 1]!;
 }
@@ -2807,9 +2969,59 @@ function evaluateOutcomeOver(g: GameState): boolean {
  * plus rien ne change. Les blessures mortelles s'appliquent toujours ; le
  * reste seulement quand l'hôte fait respecter les règles.
  */
+/**
+ * Darksteel Mutation, Witness Protection : la créature enchantée prend d'autres données de carte
+ * (sans capacités, autres types et caractéristiques) tant que l'aura est attachée.
+ */
+function applyTransformations(g: GameState): void {
+  const wanted = new Map<CardInstanceId, { auraDataId: string; becomes: Extract<StaticAbility, { kind: "becomes" }> }>();
+  for (const pid of g.turnOrder) {
+    for (const id of g.players[pid]!.zones.battlefield) {
+      const aura = g.cards[id]!;
+      if (!aura.attachedTo) continue;
+      const becomes = staticsOf(g, aura).find((s) => s.kind === "becomes");
+      if (becomes && becomes.kind === "becomes") wanted.set(aura.attachedTo, { auraDataId: aura.cardId, becomes });
+    }
+  }
+  for (const pid of g.turnOrder) {
+    for (const id of g.players[pid]!.zones.battlefield) {
+      const card = g.cards[id]!;
+      const original = card.originalCardId ?? card.cardId;
+      const want = wanted.get(id);
+      const targetId = want ? `${original}#${want.auraDataId}` : original;
+      if (card.cardId === targetId) continue;
+      if (want && !g.cardData[targetId]) {
+        const base = g.cardData[original]!;
+        const b = want.becomes;
+        g.cardData[targetId] = {
+          ...base,
+          id: targetId,
+          name: b.name ?? base.faces?.[card.faceIndex]?.name ?? base.name,
+          typeLine: b.typeLine,
+          oracleText: b.keywords.join(", "),
+          keywords: b.keywords,
+          power: b.power,
+          toughness: b.toughness,
+          colors: b.colors ?? base.colors,
+          faces: undefined,
+        } as CardData;
+      }
+      if (want) {
+        card.originalCardId = original;
+        card.cardId = targetId;
+      } else {
+        card.cardId = original;
+        delete card.originalCardId;
+      }
+      log(g, null, want ? `${cardName(g, card)} est transformé(e) par une aura.` : `${cardName(g, card)} retrouve ses caractéristiques.`);
+    }
+  }
+}
+
 function checkStateBasedActions(g: GameState): void {
   for (let guard = 0; guard < 20; guard++) {
     const before = g.log.length;
+    if (g.settings.enforceRules) applyTransformations(g);
     destroyLethal(g);
     if (g.settings.enforceRules) {
       // Défaites : points de vie, poison, blessures de commandant, pioche dans une bibliothèque vide.
@@ -2930,6 +3142,8 @@ function startTurn(g: GameState, playerId: PlayerId): void {
   g.turn.number += 1;
   g.turn.activePlayerId = playerId;
   g.turn.planarDieRolls = 0;
+  delete g.turn.extraUpkeeps;
+  delete g.turn.upkeeps;
   for (const p of Object.values(g.players)) p.landsPlayed = 0;
   g.combat = null;
   // Les permanents des joueurs actifs ne sont plus « malades » (règle 302.6).
@@ -2943,7 +3157,25 @@ function startTurn(g: GameState, playerId: PlayerId): void {
 
 /** Entre dans une étape et fait ses actions obligatoires (actions de tour). */
 function enterStep(g: GameState, step: TurnStep): void {
+  if (step === "upkeep") {
+    if (g.turn.step === "upkeep") {
+      g.turn.extraUpkeeps = Math.max(0, (g.turn.extraUpkeeps ?? 0) - 1);
+      log(g, null, "Étape d'entretien supplémentaire.");
+    }
+    g.turn.upkeeps = (g.turn.upkeeps ?? 0) + 1;
+  }
   g.turn.step = step;
+  // The Eternal Wanderer : les cartes exilées reviennent au début de l'étape de fin de leur propriétaire.
+  if (step === "end" && g.delayedReturns?.length) {
+    const due = g.delayedReturns.filter((r) => isActivePlayer(g, r.playerId));
+    g.delayedReturns = g.delayedReturns.filter((r) => !due.includes(r));
+    for (const r of due) {
+      const c = g.cards[r.cardId];
+      if (!c || c.zone !== "exile") continue;
+      moveCardTo(g, c.instanceId, "battlefield", "top", { controllerId: c.ownerId });
+      log(g, null, `${cardName(g, c)} revient sur le champ de bataille.`);
+    }
+  }
   if (step === "upkeep" || step === "draw" || step === "main1" || step === "end") {
     for (const p of activePlayers(g)) emit(g, { type: "step", step, playerId: p.id });
   }

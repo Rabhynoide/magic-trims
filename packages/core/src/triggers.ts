@@ -13,12 +13,13 @@ import { parseActivatedLine, type ActivatedAbility } from "./activated.js";
 import { parseSpellEffects, selfToTilde, type SpellEffects } from "./effects.js";
 import { joinModes } from "./text.js";
 import { parseStaticLine, type StaticAbility } from "./statics.js";
-import { areTeammates } from "./modes.js";
+import { areTeammates, isActivePlayer } from "./modes.js";
 import type { TurnStep } from "./turn.js";
 import type { CardData, CardInstanceId, GameState, PlayerId, StackAbility, Zone } from "./types.js";
 
 export type TriggerEvent =
-  | { type: "enters"; cardId: CardInstanceId; controllerId: PlayerId; creature: boolean }
+  /** `cast` : le permanent arrive depuis la pile (il a été lancé). */
+  | { type: "enters"; cardId: CardInstanceId; controllerId: PlayerId; creature: boolean; cast?: boolean }
   /** `granted` : capacités données à la créature jusqu'à la fin du tour (Malakir Rebirth). */
   | { type: "dies"; cardId: CardInstanceId; controllerId: PlayerId; dataId: string; faceIndex: number; isToken: boolean; granted?: string[] }
   /** `nth` : combientième carte piochée par ce joueur ce tour-ci. */
@@ -31,6 +32,8 @@ export type TriggerEvent =
   | { type: "attacks"; cardId: CardInstanceId }
   | { type: "blocks"; cardId: CardInstanceId }
   | { type: "exploits"; cardId: CardInstanceId }
+  /** Un permanent change de contrôleur. */
+  | { type: "controlChanged"; cardId: CardInstanceId; controllerId: PlayerId }
   /** Un permanent engagé se dégage. */
   | { type: "untapped"; cardId: CardInstanceId }
   /** Un permanent subit des blessures (Body of Knowledge). */
@@ -55,15 +58,20 @@ export type TriggerEvent =
 type Whose = "you" | "opponent" | "any";
 
 export type TriggerCondition =
-  | { on: "enters"; self: boolean; another: boolean; creature: boolean; whose: Whose }
+  /** `ifCast` : « When ~ enters, if it was cast, … » (Wedding Ring). */
+  | { on: "enters"; self: boolean; another: boolean; creature: boolean; whose: Whose; ifCast?: boolean }
   /** `batched` : « one or more … die » se déclenche une fois par action, quel que soit le nombre de morts. */
   | { on: "dies"; self: boolean; others: boolean; whose: Whose; batched?: boolean }
   /** `nth` : « draw your second card each turn ». */
-  | { on: "draw" | "lifeGain" | "lifeLoss" | "landPlayed"; whose: Whose; nth?: number }
-  | { on: "step"; step: "upkeep" | "draw" | "main1" | "end"; whose: Whose }
+  /** `controlsSameName` : « an opponent who controls an artifact named ~ » ; `theirTurn` : « during their turn ». */
+  | { on: "draw" | "lifeGain" | "lifeLoss" | "landPlayed"; whose: Whose; nth?: number; controlsSameName?: boolean; theirTurn?: boolean }
+  /** `enchanted` : « enchanted player's upkeep » (aura sur un joueur) ; `first` : « first upkeep each turn ». */
+  | { on: "step"; step: "upkeep" | "draw" | "main1" | "end"; whose: Whose; enchanted?: boolean; first?: boolean }
   | { on: "cast"; whose: Whose; types: string[]; notTypes: string[] }
   /** « Whenever ~ attacks », « … blocks », « … attacks or blocks ». */
-  | { on: "combat"; attacks: boolean; blocks: boolean }
+  | { on: "combat"; attacks: boolean; blocks: boolean; anyCreature?: boolean; defender?: "you" }
+  /** Bronze Bombshell : « When a player other than ~'s owner controls it ». */
+  | { on: "controlledByNonOwner" }
   /** « When ~ exploits a creature ». */
   | { on: "exploits" }
   /** « Whenever ~ becomes untapped ». */
@@ -118,7 +126,14 @@ function whose(text: string): Whose | null {
 
 /** Lit la condition d'une capacité déclenchée (sans « When »/« Whenever »/« At »). */
 export function parseTriggerCondition(text: string): TriggerCondition | null {
-  const t = text.trim();
+  let t = text.trim();
+  // Wedding Ring : « an opponent who controls an artifact named ~ draws a card during their turn ».
+  const named = /^an opponent who controls an? (?:artifact|permanent|creature|enchantment) named ~ (draws a card|gains life) during their turn$/i.exec(t);
+  if (named) {
+    const base = parseTriggerCondition(`an opponent ${named[1]}`);
+    if (base && (base.on === "draw" || base.on === "lifeGain")) return { ...base, controlsSameName: true, theirTurn: true };
+    return null;
+  }
   let m: RegExpExecArray | null;
   if (/^~ enters(?: the battlefield)?$/i.test(t)) {
     return { on: "enters", self: true, another: false, creature: false, whose: "you" };
@@ -165,6 +180,8 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   }
   if (/^~ exploits a creature$/i.test(t)) return { on: "exploits" };
   if (/^~ becomes untapped$/i.test(t)) return { on: "untapped" };
+  if (/^a creature attacks you(?: or a planeswalker you control)?$/i.test(t)) return { on: "combat", attacks: true, blocks: false, anyCreature: true, defender: "you" };
+  if (/^a player other than ~'s owner controls it$/i.test(t)) return { on: "controlledByNonOwner" };
   if (/^~ is dealt damage$/i.test(t)) return { on: "damaged" };
   if ((m = /^(~|a creature|a creature you control|a creature an opponent controls) deals combat damage to (a player|an opponent|one of your opponents|you)$/i.exec(t))) {
     const who = m[1]!.toLowerCase();
@@ -185,6 +202,8 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   if ((m = /^the beginning of (your|each|each player's|each opponent's) (?:first|precombat) main phase$/i.exec(t))) {
     return { on: "step", step: "main1", whose: whose(m[1]!)! };
   }
+  if (/^the beginning of enchanted player's first upkeep each turn$/i.test(t)) return { on: "step", step: "upkeep", whose: "any", enchanted: true, first: true };
+  if (/^the beginning of enchanted player's upkeep$/i.test(t)) return { on: "step", step: "upkeep", whose: "any", enchanted: true };
   if ((m = /^the beginning of (your|each|each player's|each opponent's) (upkeep|draw step|end step)$/i.exec(t))) {
     const step = m[2]!.toLowerCase().startsWith("upkeep") ? "upkeep" : m[2]!.toLowerCase().startsWith("draw") ? "draw" : "end";
     return { on: "step", step, whose: whose(m[1]!)! };
@@ -311,6 +330,11 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         body = body.replace(/\s*This ability triggers only once each turn\.?$/i, "");
       }
       let ifUntapped = false;
+      const wasCast = /^if it was cast, (.+)$/i.exec(body);
+      if (wasCast && condition?.on === "enters") {
+        condition.ifCast = true;
+        body = wasCast[1]!;
+      }
       const untapped = /^if ~ is untapped, (.+)$/i.exec(body);
       if (untapped) {
         ifUntapped = true;
@@ -388,9 +412,19 @@ export function conditionMatches(
   source: { instanceId: CardInstanceId; controllerId: PlayerId },
 ): boolean {
   const c = condition;
+  // Wedding Ring : « an opponent who controls an artifact named ~ draws a card during their turn ».
+  if ((c.on === "draw" || c.on === "lifeGain") && (event.type === "draw" || event.type === "lifeGain")) {
+    if (c.theirTurn && !isActivePlayer(g, event.playerId)) return false;
+    if (c.controlsSameName) {
+      const name = g.cardData[g.cards[source.instanceId]?.cardId ?? ""]?.name;
+      const controls = g.players[event.playerId]?.zones.battlefield.some((id) => g.cardData[g.cards[id]!.cardId]?.name === name);
+      if (!name || !controls) return false;
+    }
+  }
   switch (event.type) {
     case "enters":
       if (c.on !== "enters") return false;
+      if (c.ifCast && !event.cast) return false;
       if (c.self) return event.cardId === source.instanceId;
       if (c.another && event.cardId === source.instanceId) return false;
       if (c.creature && !event.creature) return false;
@@ -400,7 +434,10 @@ export function conditionMatches(
       if (event.cardId === source.instanceId) return c.self;
       return c.others && whoseMatches(g, c.whose, source.controllerId, event.controllerId);
     case "step":
-      return c.on === "step" && c.step === event.step && whoseMatches(g, c.whose, source.controllerId, event.playerId);
+      if (c.on !== "step" || c.step !== event.step) return false;
+      if (c.enchanted && g.cards[source.instanceId]?.attachedPlayer !== event.playerId) return false;
+      if (c.first && (g.turn.upkeeps ?? 1) > 1) return false;
+      return whoseMatches(g, c.whose, source.controllerId, event.playerId);
     case "cast": {
       if (c.on !== "cast" || !whoseMatches(g, c.whose, source.controllerId, event.playerId)) return false;
       const type = event.typeLine.toLowerCase();
@@ -409,7 +446,11 @@ export function conditionMatches(
     }
     case "attacks":
     case "blocks":
-      return c.on === "combat" && (event.type === "attacks" ? c.attacks : c.blocks) && event.cardId === source.instanceId;
+      if (c.on !== "combat" || !(event.type === "attacks" ? c.attacks : c.blocks)) return false;
+      if (c.defender === "you" && g.combat?.attackers[event.cardId] !== source.controllerId) return false;
+      return c.anyCreature ? true : event.cardId === source.instanceId;
+    case "controlChanged":
+      return c.on === "controlledByNonOwner" && event.cardId === source.instanceId && g.cards[source.instanceId]?.ownerId !== event.controllerId;
     case "exploits":
       return c.on === "exploits" && event.cardId === source.instanceId;
     case "untapped":
