@@ -70,7 +70,7 @@ export type TriggerCondition =
   | { on: "draw" | "lifeGain" | "lifeLoss" | "landPlayed"; whose: Whose; nth?: number; controlsSameName?: boolean; theirTurn?: boolean }
   /** `enchanted` : « enchanted player's upkeep » (aura sur un joueur) ; `first` : « first upkeep each turn ». */
   | { on: "step"; step: "upkeep" | "draw" | "main1" | "end"; whose: Whose; enchanted?: boolean; first?: boolean }
-  | { on: "cast"; whose: Whose; types: string[]; notTypes: string[] }
+  | { on: "cast"; whose: Whose; types: string[]; notTypes: string[]; self?: boolean }
   /** « Whenever ~ attacks », « … blocks », « … attacks or blocks ». */
   | { on: "combat"; attacks: boolean; blocks: boolean; anyCreature?: boolean; defender?: "you" }
   /** « Whenever you sacrifice a nontoken Elemental » : `subtype` (ou type), `nontoken`. */
@@ -178,6 +178,7 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   if ((m = /^(you|an opponent|a player) gains? life$/i.exec(t))) return { on: "lifeGain", whose: whose(m[1]!)! };
   if ((m = /^(you|an opponent|a player) loses? life$/i.exec(t))) return { on: "lifeLoss", whose: whose(m[1]!)! };
   if ((m = /^(you|an opponent|a player) plays? a land$/i.exec(t))) return { on: "landPlayed", whose: whose(m[1]!)! };
+  if (/^you cast ~$/i.test(t)) return { on: "cast", whose: "you", types: [], notTypes: [], self: true };
   if ((m = /^(you|an opponent|a player) casts? an? (?:(creature|noncreature|artifact|enchantment|instant|sorcery|instant or sorcery) )?spell$/i.exec(t))) {
     const type = (m[2] ?? "").toLowerCase();
     return {
@@ -304,6 +305,18 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
     if (abilityWord) tilde = tilde.slice(abilityWord[0].length);
     if (/^exploit$/i.test(line)) {
       result.triggers.push(EXPLOIT);
+      continue;
+    }
+    // Annihilateur N : le joueur défenseur sacrifie N permanents.
+    const annihilator = /^Annihilator (\d+)$/i.exec(line);
+    if (annihilator) {
+      result.triggers.push({
+        text: line,
+        condition: { on: "combat", attacks: true, blocks: false },
+        effects: { targets: [], effects: [{ type: "defenderSacrifices", count: parseInt(annihilator[1]!, 10) }], unknown: [] },
+        ifUntapped: false,
+        optional: false,
+      });
       continue;
     }
     // Entretien cumulatif : un marqueur d'âge, puis payer autant de fois le coût ou sacrifier.
@@ -487,6 +500,7 @@ export function conditionMatches(
       return whoseMatches(g, c.whose, source.controllerId, event.playerId);
     case "cast": {
       if (c.on !== "cast" || !whoseMatches(g, c.whose, source.controllerId, event.playerId)) return false;
+      if (c.self) return event.cardId === source.instanceId;
       const type = event.typeLine.toLowerCase();
       const has = (t: string) => new RegExp(`\\b${t}\\b`).test(type);
       return (c.types.length === 0 || c.types.some(has)) && !c.notTypes.some(has);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { GameAction } from "../src/actions.js";
 import { chooseBotAction } from "../src/bot.js";
-import { creatureStats, hasKeyword } from "../src/combat.js";
+import { canBlock, creatureStats, hasKeyword } from "../src/combat.js";
 import { cardSupport } from "../src/effects.js";
 import { applyAction } from "../src/reducer.js";
 import type { CardData, GameState } from "../src/types.js";
@@ -213,7 +213,7 @@ describe("Deck Ashling : recherches de terrains", () => {
 describe("Deck Ashling : bilan", () => {
   it("compte les cartes entièrement gérées", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "", manaCost: c.manaCost ?? "" })).level);
-    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(70);
+    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(73);
   });
 });
 
@@ -565,5 +565,79 @@ describe("Deck Ashling : créatures qui arrivent", () => {
     [g] = cast(g, big("Petit", 1));
     expect(g.players.p1!.zones.hand.length).toBe(hand - 1);
     for (const name of ["Elemental Bond", "Risen Reef", "Cream of the Crop", "Selvala, Heart of the Wilds"]) expect(cardSupport(real(name)).level, name).toBe("full");
+  });
+});
+
+describe("Deck Ashling : mots-clés", () => {
+  const creature = (name: string, colors: string[], typeLine = "Creature — Beast", extra: Partial<CardData> = {}) =>
+    fakeCard(name, { typeLine, power: "2", toughness: "2", manaCost: "{1}", colors, ...extra });
+
+  it("Shriekmaw : peur, et ne détruit pas une créature noire ni un artefact", () => {
+    let g = toMain(newTestGame(2));
+    let maw: string, green: string, black: string, golem: string, victim: string;
+    [g, maw] = put(g, "p1", real("Shriekmaw", { colors: ["B"] }));
+    g = resolveAll(g);
+    [g, green] = put(g, "p2", creature("Vert", ["G"]));
+    [g, black] = put(g, "p2", creature("Noir", ["B"]), 1);
+    [g, golem] = put(g, "p2", creature("Golem", [], "Artifact Creature — Golem"), 2);
+    expect(canBlock(g, g.cards[green]!, g.cards[maw]!)).toBe(false);
+    expect(canBlock(g, g.cards[black]!, g.cards[maw]!)).toBe(true);
+    expect(canBlock(g, g.cards[golem]!, g.cards[maw]!)).toBe(true);
+    // En arrivant : seule la créature verte est une cible valable (choisie d'office).
+    [g, victim] = inHand(g, "p1", real("Shriekmaw", { colors: ["B"] }));
+    g = mana(g, "p1", "BBBBB");
+    g = act(g, "p1", { type: "castSpell", cardId: victim });
+    g = resolveAll(g);
+    expect(g.cards[green]!.zone).toBe("graveyard");
+    expect(g.cards[black]!.zone).toBe("battlefield");
+    expect(g.cards[golem]!.zone).toBe("battlefield");
+  });
+
+  it("Animar : protection contre le blanc et le noir, réduction par marqueur", () => {
+    let g = toMain(newTestGame(2));
+    let animar: string, white: string, red: string, spell: string, bolt: string;
+    [g, animar] = put(g, "p1", real("Animar, Soul of Elements", { colors: ["U", "R", "G"] }));
+    [g, white] = put(g, "p2", creature("Blanc", ["W"]));
+    [g, red] = put(g, "p2", creature("Rouge", ["R"]), 1);
+    expect(canBlock(g, g.cards[white]!, g.cards[animar]!)).toBe(false);
+    expect(canBlock(g, g.cards[red]!, g.cards[animar]!)).toBe(true);
+    // Un sort noir ne peut pas le cibler.
+    [g, bolt] = inHand(g, "p2", fakeCard("Meurtre", { typeLine: "Instant", manaCost: "{B}", colors: ["B"], oracleText: "Destroy target creature." }));
+    g = mana(g, "p2", "B");
+    expect(() => act(g, "p2", { type: "castSpell", cardId: bolt, targets: [{ kind: "card", id: animar }] })).toThrow();
+    // Marqueurs : un sort de créature lancé en met un, et les suivants coûtent moins.
+    [g, spell] = inHand(g, "p1", creature("Ours", ["G"], "Creature — Bear", { manaCost: "{1}{G}" }));
+    g = mana(g, "p1", "GC");
+    g = act(g, "p1", { type: "castSpell", cardId: spell });
+    g = resolveAll(g);
+    expect(g.cards[animar]!.counters["+1/+1"]).toBe(1);
+    [g, spell] = inHand(g, "p1", creature("Ours 2", ["G"], "Creature — Bear", { manaCost: "{1}{G}" }));
+    g = mana(g, "p1", "G");
+    g = act(g, "p1", { type: "castSpell", cardId: spell });
+    expect(g.cards[spell]!.zone).toBe("stack");
+  });
+
+  it("Nulldrifter : pioche au lancement, annihilateur 1 en attaquant", () => {
+    let g = toMain(newTestGame(2));
+    let drifter: string, land: string;
+    [g, land] = put(g, "p2", basic("Forest"));
+    [g] = put(g, "p2", basic("Island"), 1);
+    [g, drifter] = inHand(g, "p1", real("Nulldrifter", { colors: [] }));
+    g = mana(g, "p1", "CCCCCCC");
+    const hand = g.players.p1!.zones.hand.length;
+    g = act(g, "p1", { type: "castSpell", cardId: drifter });
+    g = resolveAll(g);
+    expect(g.cards[drifter]!.zone).toBe("battlefield");
+    expect(g.players.p1!.zones.hand.length).toBe(hand - 1 + 2);
+    delete g.cards[drifter]!.summoningSick;
+    g = act(g, "p1", { type: "nextStep", to: "declareAttackers" });
+    g = act(g, "p1", { type: "declareAttackers", attackers: [{ cardId: drifter, defender: "p2" }] });
+    g = resolveAll(g);
+    const trigger = g.stack.map((id) => g.cards[id]!).find((c) => c.cardChoice)!;
+    expect(trigger.cardChoice!.playerId).toBe("p2");
+    g = act(g, "p2", { type: "chooseCards", cardId: trigger.instanceId, cardIds: [land] });
+    g = resolveAll(g);
+    expect(g.cards[land]!.zone).toBe("graveyard");
+    for (const name of ["Shriekmaw", "Nulldrifter", "Animar, Soul of Elements"]) expect(cardSupport(real(name)).level, name).toBe("full");
   });
 });

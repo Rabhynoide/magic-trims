@@ -342,6 +342,7 @@ function canTargetCard(view: GameView, spec: TargetSpec, card: CardView, sourceI
       {
         ...(instance && spec.permanent.maxTotalPT !== undefined ? creatureStats(g, instance) : {}),
         typeLine,
+        colors: card.hidden || card.faceDown ? [] : (data?.colors ?? []),
         controllerId: card.controllerId,
         tapped: card.tapped,
         attacking: Boolean(view.combat?.attackers[id]),

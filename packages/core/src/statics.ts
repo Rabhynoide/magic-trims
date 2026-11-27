@@ -7,6 +7,7 @@
  */
 import { areTeammates } from "./modes.js";
 import { keywordList, NUMBER_WORDS, oracleLines, selfToTilde } from "./text.js";
+import { protectedFrom } from "./combat.js";
 import type { CardData, CardInstance, GameState, PlayerId } from "./types.js";
 
 export type StaticAbility =
@@ -21,7 +22,7 @@ export type StaticAbility =
    * `chosenType` : seulement le type choisi en arrivant (Herald's Horn, Cloud Key) ; `everyone` : les sorts de tous
    * les joueurs (Urza's Incubator) ; `colored` : réduit le mana coloré (Morophon : {W}{U}{B}{R}{G}).
    */
-  | { kind: "costReduction"; amount: number; colors: string[]; types: string[]; notTypes: string[]; chosenType?: boolean; everyone?: boolean; colored?: string; anyColor?: boolean }
+  | { kind: "costReduction"; amount: number; colors: string[]; types: string[]; notTypes: string[]; chosenType?: boolean; everyone?: boolean; colored?: string; anyColor?: boolean; perCounter?: string }
   /** « As ~ enters, choose a creature type » (ou un type de carte : Cloud Key). */
   | { kind: "chooseType"; what: "creature" | "card" | "color" }
   /** Utopia Sprawl, Fertile Ground : le terrain enchanté produit un mana de plus (de la couleur choisie, ou au choix). */
@@ -190,6 +191,10 @@ export function parseStaticLine(line: string): StaticAbility | null {
       ...(everyone ? { everyone } : {}),
       ...(colored ? { colored } : {}),
     };
+  }
+  // Animar : « Creature spells you cast cost {1} less to cast for each +1/+1 counter on ~. »
+  if ((m = /^(creature )?spells you cast cost \{(\d+)\} less to cast for each (\+1\/\+1) counter on ~$/i.exec(l))) {
+    return { kind: "costReduction", amount: parseInt(m[2]!, 10), colors: [], types: m[1] ? ["creature"] : [], notTypes: [], perCounter: m[3]! };
   }
   if (/^this effect reduces only the amount of colored mana you pay$/i.test(l)) return { kind: "restriction" };
   // Goblin Anarchomancer : « Each spell you cast that's red or green costs {1} less to cast. »
@@ -408,7 +413,7 @@ export function costReductions(g: GameState, playerId: PlayerId, spell: { typeLi
           const isCardType = ["artifact", "creature", "enchantment", "instant", "sorcery"].includes(chosen.toLowerCase());
           if (isCardType ? !has(chosen.toLowerCase()) : !typeLineHasCreatureType(spell.typeLine, spell.oracleText ?? "", chosen)) continue;
         }
-        generic += s.amount;
+        generic += s.perCounter ? s.amount * (source.counters[s.perCounter] ?? 0) : s.amount;
         if (s.colored) colored.push(...[...s.colored.matchAll(/\{([WUBRG])\}/g)].map((x) => x[1]!));
       }
     }
@@ -455,6 +460,8 @@ export interface DamageSource {
   /** La créature qui inflige des blessures de combat. */
   creature?: CardInstance;
   combat: boolean;
+  /** Couleurs de la source (pour la protection). */
+  colors?: string[];
 }
 
 /**
@@ -464,6 +471,8 @@ export interface DamageSource {
  */
 export function modifyDamage(g: GameState, source: DamageSource, target: { player?: PlayerId; card?: CardInstance }, amount: number): number {
   if (amount <= 0) return 0;
+  // Protection contre une couleur : les blessures de cette couleur sont prévenues.
+  if (target.card && source.colors?.length && protectedFrom(g, target.card, source.colors)) return 0;
   let n = amount;
   // + 2 pour un éphémère ou un rituel (avant le double : l'ordre est au choix du joueur, on prend le plus fort).
   if (source.spell) {

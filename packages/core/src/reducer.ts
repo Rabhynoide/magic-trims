@@ -56,7 +56,7 @@ import {
   hasCreatureType,
   typeLineHasCreatureType,
 } from "./statics.js";
-import { canAttack, canBlock, cantAttack, cantBlock, creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatState } from "./combat.js";
+import { canAttack, canBlock, cantAttack, cantBlock, colorsOf, creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatState } from "./combat.js";
 import { MAX_HAND_SIZE, STEP_LABELS, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
 import {
   HIDDEN_ORDERED_ZONES,
@@ -1470,7 +1470,7 @@ function flushTriggers(g: GameState): boolean {
     .map((id) => g.cards[id]!)
     .filter((c) => !c.faceDown);
   for (const event of events) {
-    type Source = { card: CardInstance; dataId: string; faceIndex: number; granted?: string[] };
+    type Source = { card: CardInstance; dataId: string; faceIndex: number; granted?: string[]; spell?: boolean };
     const sources: Source[] = permanents.map((c) => ({
       card: c,
       dataId: c.cardId,
@@ -1487,6 +1487,11 @@ function flushTriggers(g: GameState): boolean {
         ...(event.granted ? { granted: event.granted } : {}),
       });
     }
+    // « When you cast this spell » : le sort lui-même, sur la pile.
+    if (event.type === "cast") {
+      const spell = g.cards[event.cardId];
+      if (spell?.zone === "stack") sources.push({ card: spell, dataId: spell.cardId, faceIndex: spell.faceIndex, spell: true });
+    }
     // Les auras attachées au permanent parti regardent en arrière aussi (Kaya's Ghostform).
     if (event.type === "leaves") {
       for (const a of event.auras ?? []) {
@@ -1495,7 +1500,7 @@ function flushTriggers(g: GameState): boolean {
         sources.push({ card: { ...aura, controllerId: a.controllerId }, dataId: a.dataId, faceIndex: a.faceIndex });
       }
     }
-    for (const { card, dataId, faceIndex, granted } of sources) {
+    for (const { card, dataId, faceIndex, granted, spell } of sources) {
       const own = abilitiesOf(g.cardData[dataId], faceIndex).triggers.map((trigger, index) => ({ trigger, index, grantedText: undefined as string | undefined }));
       const sourceName = g.cardData[dataId]?.faces?.[faceIndex]?.name ?? g.cardData[dataId]?.name ?? "?";
       const given = (granted ?? []).flatMap((text, i) => {
@@ -1503,6 +1508,7 @@ function flushTriggers(g: GameState): boolean {
         return trigger ? [{ trigger, index: GRANTED_KEY + i, grantedText: text }] : [];
       });
       [...own, ...given].forEach(({ trigger, index, grantedText }) => {
+        if (spell && !(trigger.condition.on === "cast" && trigger.condition.self)) return;
         if (!conditionMatches(g, trigger.condition, event, card)) return;
         if (trigger.ifUntapped && card.tapped) return;
         if (trigger.onlyIf && !triggerConditionHolds(g, trigger.onlyIf, card.controllerId)) return;
@@ -1710,7 +1716,12 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
   const eventAmount = ability?.eventAmount ?? 0;
   const eventPlayer = ability?.eventPlayerId ? g.players[ability.eventPlayerId] : undefined;
   // D'où viennent les blessures : un éphémère ou un rituel, ou un permanent (pour les effets qui les modifient).
-  const damageFrom: DamageSource = { controllerId: caster.id, spell: !ability && /\b(Instant|Sorcery)\b/.test(currentTypeLine(g, source)), combat: false };
+  const damageFrom: DamageSource = {
+    controllerId: caster.id,
+    spell: !ability && /\b(Instant|Sorcery)\b/.test(currentTypeLine(g, source)),
+    combat: false,
+    colors: g.cardData[source.cardId]?.colors ?? [],
+  };
   let dealt = 0;
   const given = () =>
     Object.values(g.cards).filter((c) => c.zone === "battlefield" && c.ownerId === caster.id && opponentsOf(g, caster.id).some((p) => p.id === c.controllerId)).length;
@@ -2119,6 +2130,17 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         }
         break;
       }
+      case "defenderSacrifices": {
+        for (const id of source.choices?.[effects.indexOf(effect)] ?? []) {
+          const c = g.cards[id];
+          if (!c || c.zone !== "battlefield") continue;
+          const name = cardName(g, c);
+          const who = g.players[c.controllerId]!.name;
+          sacrificePermanent(g, c);
+          log(g, null, `${who} sacrifie ${name}.`);
+        }
+        break;
+      }
       case "topLandOrHand": {
         const top = caster.zones.library[0];
         if (!top) break;
@@ -2402,6 +2424,20 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
       }
       card.cardChoice = { index, options, min: 1, max: 1, label: `Choisis un(e) ${permanentLabel(effect.filter)} à sacrifier` };
       log(g, null, `${controller.name} choisit quoi sacrifier pour ${cardName(g, card)}.`);
+      return true;
+    }
+    // Annihilateur : le joueur défenseur choisit ses permanents à sacrifier.
+    if (effect.type === "defenderSacrifices") {
+      const attacker = card.ability?.eventCardId;
+      const defenderId = attacker ? g.combat?.attackers[attacker] : undefined;
+      const defender = defenderId ? g.players[defenderId] : undefined;
+      const options = defender && !defender.hasConceded ? [...defender.zones.battlefield] : [];
+      if (!defender || options.length <= effect.count) {
+        card.choices = { ...(card.choices ?? {}), [index]: options };
+        continue;
+      }
+      card.cardChoice = { index, options, min: effect.count, max: effect.count, label: `Choisis ${plural(effect.count, "permanent")} à sacrifier`, playerId: defender.id };
+      log(g, null, `${defender.name} choisit ${plural(effect.count, "permanent")} à sacrifier.`);
       return true;
     }
     // Risen Reef : un terrain du dessus peut aller sur le champ de bataille (sinon en main).
@@ -3218,7 +3254,7 @@ function applyCombatHit(
   // Prévention et blessures doublées (Statecraft, Glacial Chasm, Goldnight Castigator…).
   const modified = modifyDamage(
     g,
-    { controllerId: source.controllerId, spell: false, creature: source, combat: true },
+    { controllerId: source.controllerId, spell: false, creature: source, combat: true, colors: colorsOf(g, source) },
     hit.card ? { card: g.cards[hit.card] } : { player: hit.player },
     hit.amount,
   );

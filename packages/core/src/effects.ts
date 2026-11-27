@@ -7,7 +7,7 @@
  * vie, créer des jetons, contrer un sort. Ce qu'il ne reconnaît pas reste à
  * appliquer à la main, et le journal le rappelle.
  */
-import { COMBAT_KEYWORDS, creatureStats, hasKeyword } from "./combat.js";
+import { COMBAT_KEYWORDS, creatureStats, hasKeyword, protectedFrom } from "./combat.js";
 import { manaOptions } from "./mana.js";
 import { parsePermanentAbilities } from "./triggers.js";
 import { areTeammates } from "./modes.js";
@@ -85,6 +85,8 @@ export interface PermanentFilter {
   maxTotalPT?: number;
   /** Un sous-type (« Enchant Forest »). */
   subtype?: string;
+  /** « nonblack » : aucune de ces couleurs. */
+  notColors?: string[];
 }
 
 /** Condition entre les deux permanents échangés, vérifiée à la résolution. */
@@ -132,6 +134,8 @@ type EffectBase =
   | { type: "returnSelf" }
   /** « ~ gets +1/+1 until end of turn. » */
   | { type: "pumpSelf"; power: number; toughness: number }
+  /** Annihilateur : le joueur que la créature attaque sacrifie des permanents de son choix. */
+  | { type: "defenderSacrifices"; count: number }
   /** Risen Reef : la carte du dessus, sur le champ de bataille engagée si c'est un terrain (au choix), sinon en main. */
   | { type: "topLandOrHand" }
   /** Cream of the Crop : regarder les X cartes du dessus (X : force de la créature arrivée), en garder une dessus, le reste dessous. */
@@ -297,6 +301,19 @@ function parsePermanentFilter(text: string): PermanentFilter | null {
       filter.controller = controller;
     }
   }
+  // « nonartifact, nonblack creature » : des adjectifs, pas une liste de choix.
+  const adjectives = /^((?:non[a-z]+, )+non[a-z]+) (creature|permanent|artifact|enchantment|land)$/.exec(t);
+  if (adjectives) {
+    const noun = adjectives[2]!;
+    const out: PermanentFilter = { ...filter, types: noun === "permanent" ? [] : [noun] };
+    for (const w of adjectives[1]!.split(", ")) {
+      const word = w.slice(3);
+      if (COLORS[word]) (out.notColors ??= []).push(COLORS[word]!);
+      else if (CARD_TYPES.includes(word)) out.notTypes.push(word);
+      else return null;
+    }
+    return out;
+  }
   const basic = /^(plains|island|swamp|mountain|forest)$/.exec(t);
   if (basic) return { ...filter, types: ["land"], subtype: basic[1]!.charAt(0).toUpperCase() + basic[1]!.slice(1) };
   const state = /^(attacking|blocking|tapped|untapped) /.exec(t);
@@ -346,6 +363,7 @@ export function permanentLabel(f: PermanentFilter): string {
   };
   let label = f.subtype ? (f.types.includes("creature") ? `créature ${f.subtype}` : f.subtype) : f.types.length > 0 ? f.types.map((t) => labels[t]).join(" ou ") : "permanent";
   if (f.notTypes.length > 0) label += ` non-${f.notTypes.map((t) => labels[t]).join(", non-")}`;
+  if (f.notColors?.length) label += ` non-${f.notColors.map((c) => ({ W: "blanche", U: "bleue", B: "noire", R: "rouge", G: "verte" })[c] ?? c).join(", non-")}`;
   if (f.state) label += { attacking: " attaquant(e)", blocking: " bloqueur(se)", tapped: " engagé(e)", untapped: " dégagé(e)" }[f.state];
   if (f.controller === "you") label += " que tu contrôles";
   if (f.controller === "notYou") label += " d'un adversaire";
@@ -993,6 +1011,7 @@ export interface PermanentFacts {
   blocking: boolean;
   /** Force et endurance actuelles (pour « total power and toughness »). */
   power?: number;
+  colors?: string[];
   toughness?: number;
 }
 
@@ -1005,6 +1024,7 @@ export function permanentMatches(facts: PermanentFacts, filter: PermanentFilter,
   if (filter.state === "attacking" && !facts.attacking) return false;
   if (filter.state === "blocking" && !facts.blocking) return false;
   if (filter.maxTotalPT !== undefined && (facts.power ?? 0) + (facts.toughness ?? 0) > filter.maxTotalPT) return false;
+  if (filter.notColors?.some((c) => facts.colors?.includes(c))) return false;
   if (filter.subtype && !new RegExp(`\\b${filter.subtype}\\b`).test(facts.typeLine.split("—")[1] ?? "")) return false;
   return true;
 }
@@ -1021,6 +1041,7 @@ export function matchesPermanent(g: GameState, card: CardInstance, filter: Perma
     {
       ...(stats ?? {}),
       typeLine: card.faceDown ? "Creature" : faceData(g, card).typeLine,
+      colors: card.faceDown ? [] : (g.cardData[card.cardId]?.colors ?? []),
       controllerId: card.controllerId,
       tapped: card.tapped,
       attacking: !!g.combat?.attackers[card.instanceId],
@@ -1055,6 +1076,9 @@ export function isLegalTarget(g: GameState, spec: TargetSpec, target: Target, ca
     if (hasKeyword(g, card, "Hexproof") && card.controllerId !== casterId && !areTeammates(g, card.controllerId, casterId)) {
       return false;
     }
+    // Protection contre une couleur : pas ciblé par les sorts et capacités de cette couleur.
+    const src = sourceId ? g.cards[sourceId] : undefined;
+    if (src && protectedFrom(g, card, g.cardData[src.cardId]?.colors ?? [])) return false;
     return true;
   }
   if (card.zone === "stack") {
@@ -1173,7 +1197,8 @@ function faceSupport(typeLine: string, oracleText: string, name: string): { know
     const line = raw.replace(/\([^)]*\)/g, "").trim();
     if (!line) continue;
     const parts = line.split(/,\s*/).map((p) => p.trim().toLowerCase());
-    if (parts.every((p) => HANDLED_KEYWORDS.has(p))) {
+    const isProtection = (p: string) => /^protection from (white|blue|black|red|green)(?:,? and from (white|blue|black|red|green))*$/.test(p);
+    if (parts.every((p) => HANDLED_KEYWORDS.has(p) || isProtection(p))) {
       known++;
       continue;
     }
@@ -1234,6 +1259,8 @@ export const KEYWORD_HELP: Record<string, { name: string; help: string }> = {
   "read ahead": { name: "Lecture anticipée", help: "En lançant la saga, tu choisis le chapitre de départ ; les chapitres sautés ne se déclenchent pas." },
   exploit: { name: "Exploitation", help: "En arrivant, tu peux sacrifier une créature (le moteur te le demande)." },
   flash: { name: "Flash", help: "Peut se lancer à tout moment où l'on a la priorité." },
+  fear: { name: "Peur", help: "Ne peut être bloquée que par des créatures-artefacts et/ou noires." },
+  annihilator: { name: "Annihilateur", help: "Quand elle attaque, le joueur défenseur sacrifie autant de permanents." },
   evoke: { name: "Évocation", help: "Peut se lancer pour son coût d'évocation ; elle est alors sacrifiée en arrivant." },
   changeling: { name: "Changelin", help: "Cette carte a tous les types de créature." },
 };
