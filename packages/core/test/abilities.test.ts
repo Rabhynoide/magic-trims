@@ -288,10 +288,84 @@ describe("Effets statiques", () => {
   });
 });
 
+describe("Cartes Sheoldred restantes", () => {
+  it("Gray Merchant : chaque adversaire perd sa dévotion au noir, et tu gagnes autant", () => {
+    let g = toMain(newTestGame(3));
+    let merchant: string;
+    [g] = put(g, "p1", real("Knight of Dusk's Shadow", { manaCost: "{1}{B}" }));
+    [g, merchant] = inHand(g, "p1", real("Gray Merchant of Asphodel"), 1);
+    g = mana(g, "p1", "BBBBB");
+    g = act(g, "p1", { type: "castSpell", cardId: merchant });
+    g = resolveAll(g);
+    // Dévotion : {B}{B} du Merchant + {B} du Knight = 3.
+    expect(g.players.p2!.life).toBe(37);
+    expect(g.players.p3!.life).toBe(37);
+    expect(g.players.p1!.life).toBe(46);
+  });
+
+  it("Cut Down ne vise qu'une créature de force + endurance 5 ou moins", () => {
+    let g = toMain(newTestGame(2));
+    let small: string, big: string, cut: string;
+    [g, small] = put(g, "p2", fakeCard("Ours", { typeLine: "Creature — Bear", power: "2", toughness: "2" }));
+    [g, big] = put(g, "p2", real("Sheoldred, the Apocalypse"), 1);
+    [g, cut] = inHand(g, "p1", real("Cut Down"));
+    g = mana(g, "p1", "B");
+    expect(refuse(g, "p1", { type: "castSpell", cardId: cut, targets: [{ kind: "card", id: big }] })).toMatch(/Cible invalide/);
+    g = act(g, "p1", { type: "castSpell", cardId: cut, targets: [{ kind: "card", id: small }] });
+    g = resolveAll(g);
+    expect(g.cards[small]!.zone).toBe("graveyard");
+  });
+
+  it("Feed the Swarm fait perdre la valeur de mana du permanent détruit", () => {
+    let g = toMain(newTestGame(2));
+    let victim: string, swarm: string;
+    [g, victim] = put(g, "p2", real("Sheoldred, the Apocalypse", { manaValue: 4 }));
+    [g, swarm] = inHand(g, "p1", real("Feed the Swarm"));
+    g = mana(g, "p1", "BB");
+    g = act(g, "p1", { type: "castSpell", cardId: swarm, targets: [{ kind: "card", id: victim }] });
+    g = resolveAll(g);
+    expect(g.cards[victim]!.zone).toBe("graveyard");
+    expect(g.players.p1!.life).toBe(36);
+  });
+
+  it("Morbid Opportunist : une seule pioche par tour, même si plusieurs créatures meurent", () => {
+    let g = toMain(newTestGame(2));
+    let a: string, b: string, c: string;
+    [g] = put(g, "p1", real("Morbid Opportunist"));
+    [g, a] = put(g, "p2", fakeCard("A", { typeLine: "Creature — Bear", power: "2", toughness: "2" }), 0);
+    [g, b] = put(g, "p2", fakeCard("B", { typeLine: "Creature — Bear", power: "2", toughness: "2" }), 0);
+    [g, c] = put(g, "p2", fakeCard("C", { typeLine: "Creature — Bear", power: "2", toughness: "2" }), 0);
+    const hand = g.players.p1!.zones.hand.length;
+    g = act(g, "p2", { type: "moveCard", cardId: a, to: "graveyard" });
+    g = resolveAll(g);
+    g = act(g, "p2", { type: "moveCard", cardId: b, to: "graveyard" });
+    g = resolveAll(g);
+    expect(g.players.p1!.zones.hand.length).toBe(hand + 1);
+    g = act(g, "p1", { type: "passTurn" });
+    g = act(g, "p2", { type: "moveCard", cardId: c, to: "graveyard" });
+    g = resolveAll(g);
+    expect(g.players.p1!.zones.hand.length).toBe(hand + 2);
+  });
+
+  it("Peer into the Abyss : la moitié de la bibliothèque et des PV, arrondies au supérieur", () => {
+    let g = toMain(newTestGame(2));
+    let peer: string;
+    [g, peer] = inHand(g, "p1", real("Peer into the Abyss"));
+    g = mana(g, "p1", "BBBBBBB");
+    g = act(g, "p1", { type: "adjustLife", playerId: "p2", delta: -1 });
+    const library = g.players.p2!.zones.library.length;
+    const hand = g.players.p2!.zones.hand.length;
+    g = act(g, "p1", { type: "castSpell", cardId: peer, targets: [{ kind: "player", id: "p2" }] });
+    g = resolveAll(g);
+    expect(g.players.p2!.zones.hand.length).toBe(hand + Math.ceil(library / 2));
+    expect(g.players.p2!.life).toBe(19);
+  });
+});
+
 describe("Deck Sheoldred", () => {
   it("la plupart des cartes sont gérées en entier", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "" })).level);
     const full = levels.filter((l) => l === "full").length;
-    expect(full).toBeGreaterThanOrEqual(47);
+    expect(full).toBeGreaterThanOrEqual(52);
   });
 });

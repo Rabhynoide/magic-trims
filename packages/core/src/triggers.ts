@@ -35,7 +35,8 @@ type Whose = "you" | "opponent" | "any";
 
 export type TriggerCondition =
   | { on: "enters"; self: boolean; another: boolean; creature: boolean; whose: Whose }
-  | { on: "dies"; self: boolean; others: boolean; whose: Whose }
+  /** `batched` : « one or more … die » se déclenche une fois par action, quel que soit le nombre de morts. */
+  | { on: "dies"; self: boolean; others: boolean; whose: Whose; batched?: boolean }
   | { on: "draw" | "lifeGain" | "lifeLoss" | "landPlayed"; whose: Whose }
   | { on: "step"; step: "upkeep" | "draw" | "end"; whose: Whose }
   | { on: "cast"; whose: Whose; types: string[]; notTypes: string[] }
@@ -57,6 +58,8 @@ export interface TriggeredAbility {
   optional: boolean;
   /** « You may pay {1}. If you do, … » : le mana à payer pour accepter. */
   payMana?: string;
+  /** « This ability triggers only once each turn. » */
+  oncePerTurn?: boolean;
 }
 
 export interface PermanentAbilities {
@@ -94,6 +97,10 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
     };
   }
   if (/^~ dies$/i.test(t)) return { on: "dies", self: true, others: false, whose: "you" };
+  if ((m = /^one or more other creatures( you control| an opponent controls)? die$/i.exec(t))) {
+    const controls = (m[1] ?? "").trim().toLowerCase();
+    return { on: "dies", self: false, others: true, whose: controls === "you control" ? "you" : controls ? "opponent" : "any", batched: true };
+  }
   if ((m = /^(~ or another|another|a) creature( you control| an opponent controls)? dies$/i.exec(t))) {
     const controls = (m[2] ?? "").trim().toLowerCase();
     const who: Whose = controls === "you control" ? "you" : controls ? "opponent" : "any";
@@ -166,6 +173,11 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
     if (m) {
       const condition = parseTriggerCondition(m[2]!);
       let body = m[3]!;
+      let oncePerTurn = false;
+      if (/\s*This ability triggers only once each turn\.?$/i.test(body)) {
+        oncePerTurn = true;
+        body = body.replace(/\s*This ability triggers only once each turn\.?$/i, "");
+      }
       let ifUntapped = false;
       const untapped = /^if ~ is untapped, (.+)$/i.exec(body);
       if (untapped) {
@@ -184,6 +196,7 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         ifUntapped,
         optional: parsed.optional,
         ...(parsed.payMana ? { payMana: parsed.payMana } : {}),
+        ...(oncePerTurn ? { oncePerTurn } : {}),
       });
       continue;
     }

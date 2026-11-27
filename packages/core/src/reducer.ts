@@ -1131,6 +1131,9 @@ function emitEnters(g: GameState, card: CardInstance): void {
   emit(g, { type: "enters", cardId: card.instanceId, controllerId: card.controllerId, creature: !card.faceDown && isCreature(g, card) });
 }
 
+/** Les capacités déclenchées « une fois par tour » sont notées dans `usedAbilities` à partir de cet index. */
+const TRIGGER_KEY = 1000;
+
 /** Au plus autant de capacités déclenchées par action : garde-fou contre les boucles sans fin. */
 const MAX_TRIGGERS_PER_ACTION = 50;
 
@@ -1164,6 +1167,15 @@ function flushTriggers(g: GameState): boolean {
       abilitiesOf(g.cardData[dataId], faceIndex).triggers.forEach((trigger, index) => {
         if (!conditionMatches(g, trigger.condition, event, card)) return;
         if (trigger.ifUntapped && card.tapped) return;
+        // « One or more … » et « only once each turn » : une seule fois pour cette action (et ce tour).
+        const once = trigger.oncePerTurn || (trigger.condition.on === "dies" && trigger.condition.batched);
+        if (once && pending.some((p) => p.source.instanceId === card.instanceId && p.index === index)) return;
+        if (trigger.oncePerTurn) {
+          const live = g.cards[card.instanceId];
+          const used = live?.usedAbilities?.turn === g.turn.number ? live.usedAbilities.indices : [];
+          if (used.includes(TRIGGER_KEY + index)) return;
+          if (live) live.usedAbilities = { turn: g.turn.number, indices: [...used, TRIGGER_KEY + index] };
+        }
         pending.push({ source: card, dataId, faceIndex, index, controllerId: card.controllerId, event });
       });
     }
@@ -1313,8 +1325,25 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
   let dealt = 0;
   const given = () =>
     Object.values(g.cards).filter((c) => c.zone === "battlefield" && c.ownerId === caster.id && opponentsOf(g, caster.id).some((p) => p.id === c.controllerId)).length;
+  let lost = 0;
+  // Dévotion au noir : les {B} des coûts des permanents qu'on contrôle (hybrides compris).
+  const devotion = () =>
+    caster.zones.battlefield
+      .map((id) => g.cards[id]!)
+      .filter((c) => !c.faceDown)
+      .reduce((n, c) => {
+        const data = g.cardData[c.cardId];
+        const cost = data?.faces?.[c.faceIndex]?.manaCost || data?.manaCost || "";
+        return n + [...cost.matchAll(/\{([^}]+)\}/g)].filter((m) => m[1]!.toUpperCase().split("/").includes("B")).length;
+      }, 0);
   const amountOf = (a: Parameters<typeof resolveAmount>[0]) =>
-    resolveAmount(a, x, eventAmount, { dealt, hand: caster.zones.hand.length, given: a === "given" ? given() : 0 });
+    resolveAmount(a, x, eventAmount, {
+      dealt,
+      lost,
+      hand: caster.zones.hand.length,
+      given: a === "given" ? given() : 0,
+      devotion: a === "devotion" || a === "-devotion" ? devotion() : 0,
+    });
   // Contrôleurs des cibles au début de la résolution (« its controller » après « destroy target creature »).
   const controllers = targets.map((t) => (t.kind === "card" ? g.cards[t.id]?.controllerId : undefined));
   const self = ability ? g.cards[ability.sourceId] : undefined;
@@ -1396,7 +1425,25 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
       }
       case "life": {
         const n = amountOf(effect.amount);
-        for (const p of whoOf(effect.who)) changeLife(g, p.id, n);
+        for (const p of whoOf(effect.who)) {
+          changeLife(g, p.id, n);
+          if (n < 0) lost += -n;
+        }
+        break;
+      }
+      case "loseLifeManaValue": {
+        const t = targets[effect.target];
+        const target = t?.kind === "card" ? g.cards[t.id] : undefined;
+        const mv = target ? (g.cardData[target.cardId]?.manaValue ?? 0) : 0;
+        if (mv > 0) changeLife(g, caster.id, -mv);
+        break;
+      }
+      case "halfLibraryHalfLife": {
+        for (const p of whoOf(effect.who)) {
+          drawCards(g, p, Math.ceil(p.zones.library.length / 2));
+          const loss = Math.ceil(Math.max(0, p.life) / 2);
+          if (loss > 0) changeLife(g, p.id, -loss);
+        }
         break;
       }
       case "counterSelf": {
