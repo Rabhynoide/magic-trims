@@ -1393,6 +1393,29 @@ textarea:focus {
   background: var(--bg-sunken);
   border: 1px solid var(--border);
 }
+.combat-panel .attack-targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.combat-panel .attack-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.combat-panel .attack-target.active {
+  border-color: var(--danger);
+  color: var(--danger);
+  font-weight: 600;
+}
+.combat-panel .attack-target-count {
+  font-size: 11px;
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--danger);
+  color: var(--bg-elevated);
+}
 .combat-panel .hint {
   color: var(--text-dim);
   font-size: 13px;
