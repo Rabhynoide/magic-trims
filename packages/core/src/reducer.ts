@@ -136,6 +136,21 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     log(g, actor.id, `${actor.name} garde sa main et met ${plural(count, "carte")} au-dessous de sa bibliothèque.`);
   },
 
+  discardToHandSize(g, actor, { cardIds }) {
+    const count = handSizeDiscards(g, actor.id);
+    if (count === 0) throw new ActionError("Tu n'as pas de cartes à défausser pour la taille maximale de main.");
+    if (new Set(cardIds).size !== cardIds.length || cardIds.length !== count) {
+      throw new ActionError(`Choisis exactement ${plural(count, "carte")} de ta main à défausser.`);
+    }
+    for (const id of cardIds) {
+      if (!actor.zones.hand.includes(id)) throw new ActionError("Choisis des cartes de ta main.");
+    }
+    for (const id of cardIds) moveCardTo(g, id, "graveyard", "top");
+    log(g, actor.id, `${actor.name} défausse ${plural(count, "carte")} (taille maximale de main).`);
+    // Le joueur passait son tour : une fois tout le monde à 7 cartes, le tour suivant commence.
+    if (activePlayers(g).every((p) => handSizeDiscards(g, p.id) === 0)) passTurn(g, actor);
+  },
+
   moveTopOfLibrary(g, actor, { count, to, faceDown }) {
     assertCount(count);
     const moved: CardInstance[] = [];
@@ -615,6 +630,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     assertStackEmpty(g);
     assertMulligansDone(g);
     assertNoResponseWindow(g);
+    assertHandSizeRespected(g);
     if (to === undefined && g.turn.step === "cleanup") return advanceTurn(g, actor, { type: "passTurn" });
     if (to !== undefined && !isTurnStep(to)) throw new ActionError("Étape inconnue.");
     const target = to ?? TURN_STEPS[stepIndex(g.turn.step) + 1]!;
@@ -629,6 +645,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     assertStackEmpty(g);
     assertMulligansDone(g);
     assertNoResponseWindow(g);
+    assertHandSizeRespected(g);
     if (nextActivePlayer(g, g.turn.activePlayerId) === null) throw new ActionError("Plus aucun joueur en lice.");
     advanceTurn(g, actor, { type: "passTurn" });
   },
@@ -1165,6 +1182,15 @@ function nextActivePlayer(g: GameState, from: PlayerId): PlayerId | null {
     if (!g.players[candidate]!.hasConceded) return candidate;
   }
   return null;
+}
+
+/** Au nettoyage, le tour ne passe pas tant que le joueur actif a trop de cartes en main. */
+function assertHandSizeRespected(g: GameState): void {
+  const waiting = activePlayers(g).filter((p) => handSizeDiscards(g, p.id) > 0);
+  if (waiting.length === 0) return;
+  throw new ActionError(
+    `${names(waiting)} ${waiting.length > 1 ? "doivent" : "doit"} d'abord défausser jusqu'à ${MAX_HAND_SIZE} cartes en main.`,
+  );
 }
 
 /** Tant qu'un joueur n'a pas fini son mulligan, la partie n'avance pas. */
@@ -2341,6 +2367,9 @@ function passTurn(g: GameState, actor: PlayerState): void {
     logWaitingBlockers(g);
     return;
   }
+  // Trop de cartes en main : le tour s'arrête au nettoyage le temps de choisir les défausses (règle 514.1)
+  // (le rappel du nettoyage dit déjà combien de cartes défausser).
+  if (activePlayers(g).some((p) => handSizeDiscards(g, p.id) > 0)) return;
   startTurn(g, next);
 }
 
@@ -2780,6 +2809,19 @@ function enterStep(g: GameState, step: TurnStep): void {
       }
       break;
   }
+}
+
+/**
+ * Cartes que le joueur doit encore défausser à l'étape de nettoyage pour
+ * revenir à la taille maximale de main (règle 514.1). Le tour ne passe pas
+ * avant. Sans « actions du tour automatiques », rien n'est imposé ; défausser
+ * à la main (glisser au cimetière) compte aussi.
+ */
+export function handSizeDiscards(g: GameState, playerId: PlayerId): number {
+  if (!g.settings.autoTurnActions || g.turn.step !== "cleanup") return 0;
+  const player = activePlayers(g).find((p) => p.id === playerId);
+  if (!player || player.lostReason || hasNoMaxHandSize(g, playerId)) return 0;
+  return Math.max(0, player.zones.hand.length - MAX_HAND_SIZE);
 }
 
 /**

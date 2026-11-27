@@ -5,7 +5,7 @@ import { evaluateOutcome } from "../src/modes.js";
 import { applyAction } from "../src/reducer.js";
 import { parsePermanentAbilities } from "../src/triggers.js";
 import type { CardData, GameState } from "../src/types.js";
-import { fakeCard, newTestGame } from "./helpers.js";
+import { fakeCard, newTestGame, endTurn } from "./helpers.js";
 
 function act(g: GameState, actorId: string, action: GameAction): GameState {
   const r = applyAction(g, { actorId, action });
@@ -150,8 +150,8 @@ describe("Capacités déclenchées", () => {
   it("Phyrexian Arena à l'entretien : le tour s'arrête à l'entretien le temps de résoudre", () => {
     let g = newTestGame(2);
     [g] = put(g, "p1", PHYREXIAN_ARENA);
-    g = act(g, "p1", { type: "passTurn" });
-    g = act(g, "p2", { type: "passTurn" });
+    g = endTurn(g, "p1");
+    g = endTurn(g, "p2");
     expect(g.turn).toMatchObject({ activePlayerId: "p1", step: "upkeep" });
     expect(g.stack).toHaveLength(1);
     expect(refuse(g, "p1", { type: "nextStep" })).toMatch(/pile n'est pas vide/);
@@ -165,11 +165,11 @@ describe("Capacités déclenchées", () => {
     let g = newTestGame(2);
     let mine: string;
     [g, mine] = put(g, "p1", HOWLING_MINE);
-    g = act(g, "p1", { type: "passTurn" });
+    g = endTurn(g, "p1");
     // La pioche d'Alice déclenche d'abord la mine : le tour s'arrête à son étape de pioche.
     expect(g.turn).toMatchObject({ activePlayerId: "p1", step: "draw" });
     g = resolveAll(g);
-    g = act(g, "p1", { type: "passTurn" });
+    g = endTurn(g, "p1");
     expect(g.turn).toMatchObject({ activePlayerId: "p2", step: "upkeep" });
     let hand = g.players.p2!.zones.hand.length;
     g = act(g, "p2", { type: "nextStep" });
@@ -177,7 +177,7 @@ describe("Capacités déclenchées", () => {
     g = resolveAll(g);
     expect(g.players.p2!.zones.hand.length).toBe(hand + 2);
     g = act(g, "p1", { type: "setTapped", cardIds: [mine], tapped: true });
-    g = act(g, "p2", { type: "passTurn" });
+    g = endTurn(g, "p2");
     // Le dégagement de p1 remet la mine dégagée : on la réengage à l'entretien.
     g = act(g, "p1", { type: "setTapped", cardIds: [mine], tapped: true });
     hand = g.players.p1!.zones.hand.length;

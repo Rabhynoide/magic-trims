@@ -1100,20 +1100,23 @@ function Hand(props: { view: GameView }) {
   const me = view.players[view.viewerId]!;
   const drop = useDrop({ zone: "hand", playerId: view.viewerId }, view);
   // Après un mulligan : choisir les cartes à mettre au-dessous de la bibliothèque.
+  // Au nettoyage : choisir les cartes à défausser pour revenir à 7 en main.
   const toBottom = me.mulliganBottom ?? 0;
+  const toDiscard = toBottom > 0 ? 0 : (me.handSizeDiscards ?? 0);
+  const toChoose = toBottom || toDiscard;
   const [chosen, setChosen] = useState<string[]>([]);
-  useEffect(() => setChosen([]), [toBottom, me.mulligans]);
+  useEffect(() => setChosen([]), [toBottom, toDiscard, me.mulligans, view.turn.number]);
   const toggle = (id: string) =>
     setChosen((list) =>
-      list.includes(id) ? list.filter((x) => x !== id) : list.length < toBottom ? [...list, id] : list,
+      list.includes(id) ? list.filter((x) => x !== id) : list.length < toChoose ? [...list, id] : list,
     );
+  const cardsWord = toChoose > 1 ? `les ${toChoose} cartes` : "la carte";
   return (
     <div className={`hand ${drop.className}`} {...drop.handlers}>
       {toBottom > 0 ? (
         <div className="mulligan-bar">
           <span>
-            Mulligan : clique sur {toBottom > 1 ? `les ${toBottom} cartes` : "la carte"} à mettre au-dessous de ta
-            bibliothèque ({chosen.length}/{toBottom}).
+            Mulligan : clique sur {cardsWord} à mettre au-dessous de ta bibliothèque ({chosen.length}/{toBottom}).
           </span>
           <button
             className="primary"
@@ -1121,6 +1124,20 @@ function Hand(props: { view: GameView }) {
             onClick={() => void act({ type: "bottomMulligan", cardIds: chosen })}
           >
             Garder cette main
+          </button>
+        </div>
+      ) : toDiscard > 0 ? (
+        <div className="mulligan-bar">
+          <span>
+            Fin du tour : tu as plus de 7 cartes en main. Clique sur {cardsWord} à défausser ({chosen.length}/
+            {toDiscard}).
+          </span>
+          <button
+            className="primary"
+            disabled={chosen.length !== toDiscard}
+            onClick={() => void act({ type: "discardToHandSize", cardIds: chosen })}
+          >
+            Défausser
           </button>
         </div>
       ) : (
@@ -1135,7 +1152,7 @@ function Hand(props: { view: GameView }) {
             size="medium"
             draggable={toBottom === 0}
             onMenu={(e) => openCardMenu(e, view, c)}
-            {...(toBottom > 0 && c.instanceId
+            {...(toChoose > 0 && c.instanceId
               ? { selected: chosen.includes(c.instanceId), onSelect: () => toggle(c.instanceId!) }
               : { onDoubleClick: (e: React.MouseEvent) => playCard(e, view, c) })}
           />
