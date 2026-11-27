@@ -58,6 +58,12 @@ export type StaticAbility =
       unlessReveal?: string;
       /** Overgrown Tomb : dégagé si l'on paie ce nombre de points de vie. */
       unlessLife?: number;
+      /** Port Town : dégagé si l'on révèle un terrain d'un de ces types (Plains, Island). */
+      unlessRevealLand?: string[];
+      /** Bountiful Promenade : dégagé si l'on a au moins ce nombre d'adversaires. */
+      unlessOpponents?: number;
+      /** Arena of Glory, Luxury Suite… : dégagé si les adversaires contrôlent au moins ce nombre de terrains. */
+      unlessOpponentLands?: number;
       /** Dragonskull Summit : dégagé si l'on contrôle un terrain d'un de ces types (Swamp, Mountain). */
       unlessControl?: string[];
       /** Blackcleave Cliffs : dégagé si l'on contrôle au plus ce nombre d'autres terrains. */
@@ -327,6 +333,18 @@ export function parseStaticLine(line: string): StaticAbility | null {
   if ((m = /^you may play (an|one|two|three) additional lands? on each of your turns$/i.exec(l))) {
     const n = m[1]!.toLowerCase() === "an" ? 1 : NUMBER_WORDS[m[1]!.toLowerCase()];
     if (n) return { kind: "extraLandPlays", count: n };
+  }
+  if ((m = /^as ~ enters, you may reveal an? (\w+) or (\w+) card from your hand\. if you don't, (?:~|it) enters tapped$/i.exec(l))) {
+    const cap = (w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+    return { kind: "entersTapped", unlessRevealLand: [cap(m[1]!), cap(m[2]!)] };
+  }
+  if ((m = /^~ enters tapped unless you have (\w+) or more opponents$/i.exec(l))) {
+    const n = NUMBER_WORDS[m[1]!.toLowerCase()] ?? parseInt(m[1]!, 10);
+    if (Number.isInteger(n)) return { kind: "entersTapped", unlessOpponents: n };
+  }
+  if ((m = /^~ enters tapped unless your opponents control (\w+) or more lands$/i.exec(l))) {
+    const n = NUMBER_WORDS[m[1]!.toLowerCase()] ?? parseInt(m[1]!, 10);
+    if (Number.isInteger(n)) return { kind: "entersTapped", unlessOpponentLands: n };
   }
   if ((m = /^as ~ enters, you may reveal an? (\w+) card from your hand\. if you don't, (?:~|it) enters tapped$/i.exec(l))) {
     return { kind: "entersTapped", unlessReveal: m[1]!.charAt(0).toUpperCase() + m[1]!.slice(1).toLowerCase() };
@@ -606,6 +624,11 @@ export function entersUntappedChoice(g: GameState, playerId: PlayerId, card: Car
     const subtype = s.unlessReveal;
     const possible = g.players[playerId]!.zones.hand.some((id) => id !== card.instanceId && typeLineHasCreatureType(handTypeLine(g, id), g.cardData[g.cards[id]!.cardId]?.oracleText ?? "", subtype));
     return { reveal: subtype, possible };
+  }
+  if (s.unlessRevealLand) {
+    const types = s.unlessRevealLand;
+    const possible = g.players[playerId]!.zones.hand.some((id) => id !== card.instanceId && types.some((t) => new RegExp(`\\b${t}\\b`).test(handTypeLine(g, id))));
+    return { reveal: types.join(" ou "), possible };
   }
   if (s.unlessLife) return { life: s.unlessLife, possible: g.players[playerId]!.life >= s.unlessLife };
   return null;

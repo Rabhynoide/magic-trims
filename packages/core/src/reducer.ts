@@ -3260,6 +3260,15 @@ function entersUntapped(g: GameState, card: CardInstance, choice: boolean): bool
     const basics = player.zones.battlefield.filter((id) => id !== card.instanceId && /\bBasic\b/.test(g.cardData[g.cards[id]!.cardId]?.typeLine ?? "")).length;
     return basics >= s.unlessBasics;
   }
+  if (s.unlessOpponents !== undefined) {
+    return g.turnOrder.filter((id) => id !== player.id && !g.players[id]!.hasConceded && !areTeammates(g, id, player.id)).length >= s.unlessOpponents;
+  }
+  if (s.unlessOpponentLands !== undefined) {
+    const lands = g.turnOrder
+      .filter((id) => id !== player.id && !g.players[id]!.hasConceded && !areTeammates(g, id, player.id))
+      .reduce((n, id) => n + g.players[id]!.zones.battlefield.filter((c) => /\bLand\b/.test(currentTypeLine(g, g.cards[c]!))).length, 0);
+    return lands >= s.unlessOpponentLands;
+  }
   if (s.unlessControl) {
     const types = s.unlessControl;
     return player.zones.battlefield.some((id) => id !== card.instanceId && types.some((t) => new RegExp(`\\b${t}\\b`).test(currentTypeLine(g, g.cards[id]!))));
@@ -3277,7 +3286,8 @@ function entersUntapped(g: GameState, card: CardInstance, choice: boolean): bool
     return true;
   }
   if (offer.reveal) {
-    const shown = player.zones.hand.find((id) => id !== card.instanceId && typeLineHasCreatureType(g.cardData[g.cards[id]!.cardId]?.typeLine ?? "", g.cardData[g.cards[id]!.cardId]?.oracleText ?? "", offer.reveal!));
+    const lands = s.unlessRevealLand;
+    const shown = player.zones.hand.find((id) => id !== card.instanceId && (lands ? lands.some((t) => new RegExp(`\\b${t}\\b`).test(g.cardData[g.cards[id]!.cardId]?.typeLine ?? "")) : typeLineHasCreatureType(g.cardData[g.cards[id]!.cardId]?.typeLine ?? "", g.cardData[g.cards[id]!.cardId]?.oracleText ?? "", offer.reveal!)));
     if (shown) log(g, player.id, `${player.name} révèle ${cardName(g, g.cards[shown]!)} : ${cardName(g, card)} arrive dégagé.`);
     return true;
   }

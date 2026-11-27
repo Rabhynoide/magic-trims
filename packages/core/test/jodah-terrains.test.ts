@@ -181,3 +181,50 @@ describe("Deck Jodah : terrains engagés et terrains en plus", () => {
     expect(g.stack.length).toBe(0);
   });
 });
+
+describe("Terrains « arrive engagé sauf si » : autres variantes (#88)", () => {
+  const promenade = fakeCard("Bountiful Promenade", { typeLine: "Land", oracleText: "This land enters tapped unless you have two or more opponents.\n{T}: Add {G} or {W}." });
+  const portTown = fakeCard("Port Town", { typeLine: "Land", oracleText: "As this land enters, you may reveal a Plains or Island card from your hand. If you don't, this land enters tapped.\n{T}: Add {W} or {U}." });
+  const island = fakeCard("Island", { typeLine: "Basic Land — Island", oracleText: "({T}: Add {U}.)" });
+  const fastLand = fakeCard("Blackcleave Cliffs", { typeLine: "Land", oracleText: "This land enters tapped unless you control two or fewer other lands.\n{T}: Add {B} or {R}." });
+
+  it("sont toutes gérées", () => {
+    for (const c of [promenade, portTown, fastLand]) expect(cardSupport(c), c.name).toEqual({ level: "full", unknown: [] });
+    expect(cardSupport(fakeCard("Luxury Suite", { typeLine: "Land", oracleText: "This land enters tapped unless your opponents control eight or more lands.\n{T}: Add {B} or {R}." })).level).toBe("full");
+  });
+
+  it("Bountiful Promenade : dégagé à 3 joueurs, engagé en duel", () => {
+    for (const [players, tapped] of [[3, false], [2, true]] as const) {
+      let g = toMain(newTestGame(players));
+      let id: string;
+      [g, id] = inHand(g, "p1", promenade);
+      g = act(g, "p1", { type: "playLand", cardId: id });
+      expect(g.cards[g.players.p1!.zones.battlefield.at(-1)!]!.tapped, `${players} joueurs`).toBe(tapped);
+    }
+  });
+
+  it("Port Town : dégagé en révélant une Île, sinon engagé", () => {
+    let g = toMain(newTestGame(2));
+    for (let n = 1; n < g.players.p1!.zones.hand.length; n++) [g] = inHand(g, "p1", bear, n);
+    let id: string;
+    [g, id] = inHand(g, "p1", portTown);
+    expect(refuse(g, "p1", { type: "playLand", cardId: id, untap: true })).toMatch(/Plains ou Island/);
+    [g] = inHand(g, "p1", island, 1);
+    g = act(g, "p1", { type: "playLand", cardId: id, untap: true });
+    expect(g.cards[g.players.p1!.zones.battlefield.at(-1)!]!.tapped).toBe(false);
+  });
+
+  it("Blackcleave Cliffs : dégagé avec deux autres terrains, engagé avec trois", () => {
+    let g = toMain(newTestGame(2));
+    [g] = put(g, "p1", forest, 1);
+    [g] = put(g, "p1", forest, 1);
+    let id: string;
+    [g, id] = inHand(g, "p1", fastLand);
+    g = act(g, "p1", { type: "playLand", cardId: id });
+    expect(g.cards[g.players.p1!.zones.battlefield.at(-1)!]!.tapped).toBe(false);
+    g = toMain(endTurn(endTurn(g, "p1"), "p2"));
+    [g, id] = inHand(g, "p1", fastLand);
+    g = act(g, "p1", { type: "playLand", cardId: id });
+    expect(g.cards[g.players.p1!.zones.battlefield.at(-1)!]!.tapped).toBe(true);
+  });
+});
