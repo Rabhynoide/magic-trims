@@ -2,9 +2,12 @@ import { useMemo, useState, type ReactNode } from "react";
 import {
   deckColorIdentity,
   deckLegalityByMode,
+  deckSupport,
+  deckSupportPercent,
   GAME_MODES,
   isDeckLegal,
   type DeckIssue,
+  type DeckSupport,
   type GameModeType,
   type ResolvedDeck,
   type SharedDeck,
@@ -156,6 +159,12 @@ export function DeckBrowser(props: Props) {
                 <th>Nom</th>
                 <th>Couleurs</th>
                 <th>Format</th>
+                <th
+                  className="deck-auto-col"
+                  title="Part des cartes que le moteur gère entièrement en mode automatique (détail au survol de chaque valeur)"
+                >
+                  Auto
+                </th>
                 {MODES.map((m) => (
                   <th
                     key={m}
@@ -200,6 +209,7 @@ function DeckRow(props: {
 }) {
   const { deck, onSelect } = props;
   const legality = useMemo(() => deckLegalityByMode(deck.deck, MODES), [deck.deck]);
+  const support = useMemo(() => deckSupport(deck.deck), [deck.deck]);
   const colors = deckColorIdentity(deck.deck);
   const commanders = deck.deck.commanders.map((c) => c.name).join(" & ");
   const cardCount = deck.deck.commanders.length + deck.deck.cards.reduce((n, c) => n + c.quantity, 0);
@@ -220,6 +230,9 @@ function DeckRow(props: {
       <td className="deck-format">
         Commander
         {cardCount !== 100 && <span className="badge badge-warn">{cardCount} cartes</span>}
+      </td>
+      <td className="deck-auto-col">
+        <SupportMark support={support} />
       </td>
       {MODES.map((m) => (
         <td key={m} className={`deck-mode-col ${m === props.currentMode ? "current" : ""}`}>
@@ -244,6 +257,40 @@ function LegalityMark(props: { issues: DeckIssue[]; mode: GameModeType }) {
   return (
     <span className={`legal-mark ${legal ? "ok" : "ko"}`} title={title} aria-label={title}>
       {legal ? "✓" : "✗"}
+    </span>
+  );
+}
+
+/** Noms de cartes pour l'infobulle, sans la rendre interminable. */
+function nameList(names: string[], max = 12): string {
+  const shown = names.slice(0, max).map((n) => `    ${n}`);
+  if (names.length > max) shown.push(`    … et ${names.length - max} autres`);
+  return shown.join("\n");
+}
+
+/** Pourcentage de cartes entièrement gérées par le moteur, avec le détail au survol. */
+export function SupportMark(props: { support: DeckSupport }) {
+  const s = props.support;
+  const percent = deckSupportPercent(s);
+  if (percent === null) {
+    return (
+      <span className="support-mark none" title="Cartes du deck inconnues">
+        —
+      </span>
+    );
+  }
+  const withPartial = Math.floor(((s.full + s.partial) / s.total) * 100);
+  const lines = [
+    `${percent} % des cartes sont entièrement gérées par le moteur.`,
+    `✓ ${s.full} automatiques sur ${s.total}`,
+  ];
+  if (s.partial > 0) lines.push(`½ ${s.partial} en partie (${withPartial} % avec elles) :`, nameList(s.partialNames));
+  if (s.manual > 0) lines.push(`✋ ${s.manual} à la main :`, nameList(s.manualNames));
+  const title = lines.join("\n");
+  const level = percent >= 95 ? "high" : percent >= 80 ? "mid" : "low";
+  return (
+    <span className={`support-mark ${level}`} title={title} aria-label={title}>
+      {percent} %
     </span>
   );
 }

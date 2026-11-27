@@ -27,6 +27,7 @@ export * from "./deck/archidekt.js";
 export * from "./deck/scryfall.js";
 export * from "./deck/resolve.js";
 export * from "./deck/validate.js";
+export * from "./deck/support.js";
 export * from "./protocol.js";
 export * from "./client.js";
 export * from "./central.js";
