@@ -191,6 +191,8 @@ type EffectBase =
   | { type: "keepOnePerPlayer" }
   | { type: "exileAll"; filter: PermanentFilter }
   | { type: "bounce"; target: number }
+  /** « Return each nonland permanent you don't control to its owner's hand » (Cyclonic Rift surchargé). */
+  | { type: "bounceAll"; filter: PermanentFilter }
   | { type: "damage"; target: number | "event" | "you"; amount: Amount }
   | { type: "damageEach"; who: "opponents" | "players" | "creatures" | "yourOtherCreatures"; amount: Amount }
   | { type: "life"; who: Who; amount: Amount }
@@ -333,6 +335,8 @@ export interface SpellEffects {
   sacrifice?: PermanentFilter;
   /** Coût alternatif (« You may pay {1}{B} rather than pay this spell's mana cost »). */
   alternativeCost?: string;
+  /** Le coût alternatif est une surcharge : « target » devient « each » (Cyclonic Rift). */
+  overload?: boolean;
   /** Coût supplémentaire : payer X PV (Toxic Deluge), X choisi en lançant le sort. */
   payLifeX?: boolean;
   /** « Cast this spell only during combat on an opponent's turn » (Wake the Dead). */
@@ -847,7 +851,31 @@ function parseToken(text: string): TokenSpec | null {
 }
 
 /** Lit les effets d'un éphémère ou d'un rituel. */
+/** Coût de surcharge (« Overload {6}{U} »), s'il y en a un. */
+export function overloadCost(oracleText: string): string | undefined {
+  return /^overload ((?:\{[^}]+\})+)/im.exec(oracleText)?.[1];
+}
+
+/**
+ * Le texte du sort lancé avec surcharge : sans la ligne de surcharge,
+ * « target » remplacé par « each » (règle 702.96b).
+ */
+export function overloadedText(oracleText: string): string {
+  return oracleText
+    .split("\n")
+    .filter((line) => !/^overload \{/i.test(line))
+    .join("\n")
+    .replace(/\btarget\b/g, "each")
+    .replace(/\bTarget\b/g, "Each");
+}
+
 export function parseSpellEffects(oracleText: string, cardName: string, options: { alternative?: boolean } = {}): SpellEffects {
+  // Surcharge : le coût alternatif change le texte du sort, qui n'a alors plus de cible.
+  const overload = overloadCost(oracleText);
+  if (overload) {
+    const parsed = parseSpellEffects(options.alternative ? overloadedText(oracleText) : oracleText.split("\n").filter((l) => !/^overload \{/i.test(l)).join("\n"), cardName);
+    return { ...parsed, alternativeCost: overload, overload: true };
+  }
   // « Choose one or more — • Sell Contraband — Create a Treasure token. … • … »
   // Akroma's Will : « Choose one. If you control a commander as you cast this spell, you may choose both instead. • … »
   const modal = /^(.*?)\bchoose (one|two|three|one or more|any number)(?: ?(?:—|-)|(\. if you control a commander as you cast (?:this spell|~), you may choose both instead\.))\s*(•.+)$/is.exec(
@@ -1265,13 +1293,20 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     } else if (/^target opponent chooses a permanent they control at random and sacrifices it$/i.test(s)) {
       result.effects.push({ type: "randomSacrificeLoop", player: target({ label: "adversaire", player: true, opponent: true }) });
       followUps.push(/^if a nonland permanent is sacrificed this way, repeat this process$/i);
-    } else if ((m = /^(destroy|exile) all (.+)$/i.exec(s))) {
+    } else if ((m = /^(destroy|exile) (?:all|each) (.+)$/i.exec(s))) {
       const filter = parsePermanentFilter(m[2]!.replace(/^(\w+) and (\w+)$/, "$1 or $2"));
       if (!filter) {
         result.unknown.push(sentence);
         continue;
       }
       result.effects.push({ type: m[1]!.toLowerCase() === "destroy" ? "destroyAll" : "exileAll", filter });
+    } else if ((m = /^return (?:each|all) (.+?) to (?:its|their) owners?'s? hands?$/i.exec(s))) {
+      const filter = parsePermanentFilter(m[1]!);
+      if (!filter) {
+        result.unknown.push(sentence);
+        continue;
+      }
+      result.effects.push({ type: "bounceAll", filter });
     } else if ((m = /^return target (.+?) to its owner's hand$/i.exec(s))) {
       const filter = parsePermanentFilter(m[1]!);
       if (!filter) {
@@ -1650,9 +1685,11 @@ function permanentLineStatus(line: string, typeLine: string, name: string): Line
 function faceSupport(typeLine: string, oracleText: string, name: string): { known: number; unknown: string[] } {
   if (/\b(Instant|Sorcery)\b/.test(typeLine)) {
     const parsed = parseSpellEffects(oracleText, name, { alternative: true });
+    // Surcharge : le sort doit être géré avec et sans.
+    const normal = parsed.overload ? parseSpellEffects(oracleText, name) : null;
     return {
       known: parsed.effects.length + (parsed.sacrifice ? 1 : 0) + (parsed.alternativeCost ? 1 : 0) + (parsed.modes?.list.length ?? 0),
-      unknown: parsed.unknown,
+      unknown: normal ? [...new Set([...normal.unknown, ...parsed.unknown])] : parsed.unknown,
     };
   }
   let known = 0;
@@ -1747,6 +1784,7 @@ export function abilityReport(data: CardData, faceIndex = 0): AbilityReportItem[
   const name = face?.name ?? data.name;
   const items: AbilityReportItem[] = [];
   const spell = /\b(Instant|Sorcery)\b/.test(typeLine);
+  const overload = spell && overloadCost(oracleText) !== undefined;
   for (const raw of joinModes(oracleText).split("\n")) {
     const line = raw.replace(/\([^)]*\)/g, "").trim();
     if (!line) continue;
@@ -1768,11 +1806,18 @@ export function abilityReport(data: CardData, faceIndex = 0): AbilityReportItem[
       continue;
     }
     if (spell) {
+      if (overload && /^overload \{/i.test(line)) {
+        items.push({ title: "Surcharge", text: `${line} : peut se lancer pour ce coût ; « cible » devient alors « chaque ».`, status: "auto" });
+        continue;
+      }
       const parsed = parseSpellEffects(line, name, { alternative: true });
+      // Surcharge : la ligne doit aussi marcher avec « each » à la place de « target ».
+      const over = overload ? parseSpellEffects(overloadedText(line), name) : null;
+      const unknown = over ? [...new Set([...parsed.unknown, ...over.unknown])] : parsed.unknown;
       const known = parsed.effects.length + (parsed.sacrifice ? 1 : 0) + (parsed.alternativeCost ? 1 : 0) + (parsed.modes?.list.length ?? 0);
-      const status = known === 0 ? "manual" : parsed.unknown.length === 0 ? "auto" : "partial";
+      const status = known === 0 ? "manual" : unknown.length === 0 ? "auto" : "partial";
       const title = parsed.alternativeCost && parsed.effects.length === 0 ? "Coût alternatif" : parsed.sacrifice && parsed.effects.length === 0 ? "Coût supplémentaire" : "Effet du sort";
-      items.push({ title, text: line, status, ...(status === "partial" ? { manual: parsed.unknown } : {}) });
+      items.push({ title, text: line, status, ...(status === "partial" ? { manual: unknown } : {}) });
       continue;
     }
     const st = permanentLineStatus(line, typeLine, name);
