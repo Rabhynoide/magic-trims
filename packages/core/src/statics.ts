@@ -29,15 +29,22 @@ export type StaticAbility =
   | { kind: "auraManaBonus"; color: "chosen" | "any" }
   /** Herald's Horn : à l'entretien, la carte du dessus en main si c'est une créature du type choisi. */
   | { kind: "heraldsHorn" }
-  /** « Equipped creature has haste and shroud. », « Enchanted creature gets +2/+2. » */
-  | { kind: "attached"; keywords: string[]; power: number; toughness: number }
-  /** « Creatures you control get +1/+1. », « Other creatures you control have flying. » */
-  /** `subtype` : seulement ce type de créature (« Other Elemental creatures you control »), ou le type choisi. */
-  | { kind: "anthem"; others: boolean; keywords: string[]; power: number; toughness: number; subtype?: string; chosenType?: boolean }
+  /**
+   * « Equipped creature has haste and shroud. », « Enchanted creature gets +2/+2. »
+   * `perCount` : le bonus est multiplié par ce nombre (« gets +1/+1 for each artifact you control »).
+   */
+  | { kind: "attached"; keywords: string[]; power: number; toughness: number; perCount?: CountSpec }
+  /**
+   * Seigneurs : « Creatures you control get +1/+1. », « Other Zombies you control have vigilance. »,
+   * « Legendary creatures you control get +X/+X, where X is… » (Jodah). Le bonus s'applique aux
+   * permanents qui correspondent à l'un des `filters` ; `player` : mots-clés donnés au contrôleur
+   * (Shalai : « You, planeswalkers you control, and other creatures you control have hexproof. »).
+   */
+  | { kind: "anthem"; filters: PermFilter[]; keywords: string[]; power: number; toughness: number; perCount?: CountSpec; player?: string[] }
   /** « ~'s power and toughness are each equal to the number of cards in your hand. » */
-  | { kind: "ptEqualsHand" }
-  /** Faeburrow Elder : « gets +1/+1 for each color among permanents you control ». */
-  | { kind: "ptPerColor" }
+  | { kind: "ptEquals"; count: CountSpec }
+  /** Faeburrow Elder, Sisay : « ~ gets +1/+1 for each color among (other legendary) permanents you control ». */
+  | { kind: "selfPump"; power: number; toughness: number; count: CountSpec }
   /** Yarok (`entering`), Twinflame Travelers (`subtype`) : les capacités déclenchées se déclenchent une fois de plus. */
   | { kind: "triggerDoubler"; entering?: boolean; subtype?: string }
   /** « Players have no maximum hand size. » */
@@ -88,28 +95,202 @@ export type StaticAbility =
    */
   | { kind: "becomes"; typeLine: string; power: string; toughness: string; keywords: string[]; colors?: string[]; name?: string };
 
+/** Quels permanents un effet statique touche ou compte (« other legendary creatures you control »). */
+export interface PermFilter {
+  /** Types de carte exigés, tous à la fois (« artifact creatures ») ; vide : tout permanent. */
+  types: string[];
+  /** Types de carte exclus (« nonland permanents »). */
+  notTypes?: string[];
+  /** Pas la source elle-même. */
+  others?: boolean;
+  legendary?: boolean;
+  nonlegendary?: boolean;
+  token?: boolean;
+  nontoken?: boolean;
+  commander?: boolean;
+  /** Ce type de créature (ou de permanent : « Equipment »). */
+  subtype?: string;
+  /** Le type choisi en arrivant par la source. */
+  chosenType?: boolean;
+  /** L'une de ces couleurs. */
+  colors?: string[];
+  /** À qui sont les permanents (par rapport au contrôleur de la source). */
+  whose: "you" | "opponents" | "all";
+}
+
+/** Un nombre lu dans le texte : « for each … », « where X is the number of … ». */
+export type CountSpec =
+  | { kind: "permanents"; filter: PermFilter }
+  /** « color among permanents you control » */
+  | { kind: "colors"; filter: PermFilter }
+  /** « cards in your hand » */
+  | { kind: "hand" }
+  /** « (creature) cards in your graveyard » */
+  | { kind: "graveyard"; types: string[]; whose: "you" | "all" };
+
 const COLOR_WORDS: Record<string, string> = { white: "W", blue: "U", black: "B", red: "R", green: "G" };
+const PERMANENT_TYPES = ["creature", "artifact", "enchantment", "land", "planeswalker", "battle"];
+/** Pluriels irréguliers des types de créature. */
+const IRREGULAR_PLURALS: Record<string, string> = { elves: "Elf", dwarves: "Dwarf", wolves: "Wolf", werewolves: "Werewolf", fungi: "Fungus", homunculi: "Homunculus", mice: "Mouse", octopi: "Octopus" };
+
+function capitalize(w: string): string {
+  return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+}
+
+/** « Zombies » → « Zombie », « Elves » → « Elf », « Sphinxes » → « Sphinx ». */
+function singularSubtype(word: string): string {
+  const low = word.toLowerCase();
+  if (IRREGULAR_PLURALS[low]) return IRREGULAR_PLURALS[low]!;
+  if (/(x|ch|sh)es$/.test(low)) return capitalize(low.slice(0, -2));
+  if (/s$/.test(low) && !/ss$/.test(low)) return capitalize(low.slice(0, -1));
+  return capitalize(low);
+}
+
+/** Un mot qui ne peut pas être un type de créature : on renonce plutôt que de deviner. */
+const NOT_SUBTYPES = /^(attacking|blocking|tapped|untapped|enchanted|equipped|modified|multicolored|colorless|monocolored|face-down|cards?|spells?|players?|opponents?|that|with|without|each|all|another|target)$/i;
+
+/**
+ * « other legendary creatures », « Horses », « nonland permanents », « creature token » :
+ * le groupe nominal devant « you control ». `whose` est fixé par l'appelant.
+ */
+function parsePermanentGroup(text: string, whose: PermFilter["whose"]): PermFilter | null {
+  let words = text.trim().split(/\s+/);
+  const filter: PermFilter = { types: [], whose };
+  if (words[0] && /^(other|another)$/i.test(words[0])) {
+    filter.others = true;
+    words = words.slice(1);
+  }
+  if (words.length === 0) return null;
+  const noun = words[words.length - 1]!;
+  const low = noun.toLowerCase();
+  const nounType = low.replace(/s$/, "");
+  if (PERMANENT_TYPES.includes(nounType)) filter.types.push(nounType);
+  else if (low === "permanents" || low === "permanent") {
+    /* tout permanent */
+  } else if (low === "tokens" || low === "token") filter.token = true;
+  else if (/^[A-Z]/.test(noun) && !NOT_SUBTYPES.test(noun)) filter.subtype = singularSubtype(noun);
+  else return null;
+  for (const w of words.slice(0, -1)) {
+    const lw = w.toLowerCase();
+    if (lw === "legendary") filter.legendary = true;
+    else if (lw === "nonlegendary") filter.nonlegendary = true;
+    else if (lw === "nontoken") filter.nontoken = true;
+    else if (lw === "token") filter.token = true;
+    else if (lw === "commander") filter.commander = true;
+    else if (COLOR_WORDS[lw]) (filter.colors ??= []).push(COLOR_WORDS[lw]!);
+    else if (PERMANENT_TYPES.includes(lw)) filter.types.push(lw);
+    else if (lw.startsWith("non") && PERMANENT_TYPES.includes(lw.slice(3))) (filter.notTypes ??= []).push(lw.slice(3));
+    else if (/^[A-Z]/.test(w) && !NOT_SUBTYPES.test(w) && !filter.subtype) filter.subtype = capitalize(w);
+    else return null;
+  }
+  return filter;
+}
+
+/** « creatures you control », « Zombies your opponents control », « creatures on the battlefield », « all creatures ». */
+function parsePermanentSubject(text: string): PermFilter | null {
+  let m: RegExpExecArray | null;
+  const t = text.trim();
+  if ((m = /^(.+?) you control( of the chosen type)?$/i.exec(t))) {
+    const f = parsePermanentGroup(m[1]!, "you");
+    if (f && m[2]) f.chosenType = true;
+    return f;
+  }
+  if ((m = /^(.+?) (?:your opponents control|an opponent controls)$/i.exec(t))) return parsePermanentGroup(m[1]!, "opponents");
+  if ((m = /^(.+?) on the battlefield$/i.exec(t))) return parsePermanentGroup(m[1]!, "all");
+  if ((m = /^all (.+)$/i.exec(t))) return parsePermanentGroup(m[1]!, "all");
+  return null;
+}
+
+/** Ce que l'on compte : « artifact you control », « color among permanents you control », « card in your hand ». */
+export function parseCount(text: string): CountSpec | null {
+  let m: RegExpExecArray | null;
+  const t = text.trim().replace(/\.$/, "");
+  if (/^cards? in your hand$/i.test(t)) return { kind: "hand" };
+  if ((m = /^((?:creature|artifact|enchantment|land|instant|sorcery|planeswalker) )?cards? in (your|all) graveyards?$/i.exec(t))) {
+    return { kind: "graveyard", types: m[1] ? [m[1].trim().toLowerCase()] : [], whose: m[2]!.toLowerCase() === "your" ? "you" : "all" };
+  }
+  if ((m = /^colors? among (.+)$/i.exec(t))) {
+    const f = parsePermanentSubject(m[1]!);
+    return f ? { kind: "colors", filter: f } : null;
+  }
+  const f = parsePermanentSubject(t);
+  return f ? { kind: "permanents", filter: f } : null;
+}
 const SPELL_TYPES = ["creature", "artifact", "enchantment", "instant", "sorcery", "planeswalker", "battle"];
 
-/** « gets +1/+1 », « has flying », « gets +1/+1 and has flying ». */
-function grant(text: string): { keywords: string[]; power: number; toughness: number } | null {
+/** « +1 », « -1 », « +X » (X vaut 1 : multiplié ensuite par le nombre compté). */
+function ptValue(v: string): number {
+  return /x$/i.test(v) ? (v.startsWith("-") ? -1 : 1) : parseInt(v, 10) || 0;
+}
+
+/**
+ * « gets +1/+1 », « has flying », « gets +1/+1 and has flying », « gets +1/+1 for each artifact you control »,
+ * « get +X/+X, where X is the number of legendary creatures you control ».
+ */
+function grant(text: string): { keywords: string[]; power: number; toughness: number; perCount?: CountSpec } | null {
   let power = 0;
   let toughness = 0;
   let keywords: string[] = [];
+  let perCount: CountSpec | undefined;
   let rest = text.trim();
-  const pt = /^gets? ([+-]\d+)\/([+-]\d+)(?: and (.+))?$/i.exec(rest);
-  if (pt) {
-    power = parseInt(pt[1]!, 10);
-    toughness = parseInt(pt[2]!, 10);
-    rest = pt[3] ?? "";
+  // « …, where X is the number of … » : à la fin de la phrase.
+  const where = /^(.*), where X is the number of (.+)$/i.exec(rest);
+  if (where) {
+    if (!/[+-]X\//i.test(where[1]!)) return null;
+    const c = parseCount(where[2]!);
+    if (!c) return null;
+    perCount = c;
+    rest = where[1]!;
   }
+  const pt = /^gets? ([+-](?:\d+|X))\/([+-](?:\d+|X))(?: for each (.+?))?(?: and (ha(?:s|ve) .+))?$/i.exec(rest);
+  if (pt) {
+    if (/x/i.test(pt[1]! + pt[2]!) !== !!where) return null;
+    power = ptValue(pt[1]!);
+    toughness = ptValue(pt[2]!);
+    if (pt[3]) {
+      if (perCount) return null;
+      const c = parseCount(pt[3]);
+      if (!c) return null;
+      perCount = c;
+    }
+    rest = pt[4] ?? "";
+  } else if (where) return null;
   if (rest) {
     const has = /^(?:has|have) (.+)$/i.exec(rest);
     if (!has) return null;
     keywords = keywordList(has[1]!);
     if (keywords.some((k) => !/^[a-z]+( [a-z]+)?$/.test(k))) return null;
   }
-  return { keywords, power, toughness };
+  return { keywords, power, toughness, ...(perCount ? { perCount } : {}) };
+}
+
+/**
+ * Seigneurs : « Legendary creatures you control get +X/+X… », « Horses you control have haste »,
+ * « You, planeswalkers you control, and other creatures you control have hexproof ».
+ */
+function parseAnthem(l: string): StaticAbility | null {
+  const m = /^(.+? (?:you control|your opponents control|an opponent controls|on the battlefield)(?: of the chosen type)?|you) (gets? .+|ha(?:s|ve) .+)$/i.exec(l);
+  if (!m) return null;
+  const parts = m[1]!.split(/,\s*and\s+|,\s*|\s+and\s+/).filter(Boolean);
+  const filters: PermFilter[] = [];
+  let you = false;
+  for (const part of parts) {
+    if (/^you$/i.test(part)) {
+      you = true;
+      continue;
+    }
+    const f = parsePermanentSubject(part);
+    if (!f) return null;
+    filters.push(f);
+  }
+  const g = grant(m[2]!);
+  if (!g) return null;
+  if (you) {
+    // Seuls la défense talismanique et le linceul ont un sens pour un joueur ici.
+    if (g.power || g.toughness || g.keywords.some((k) => k !== "hexproof" && k !== "shroud")) return null;
+    return { kind: "anthem", filters, keywords: g.keywords, power: 0, toughness: 0, player: g.keywords };
+  }
+  return { kind: "anthem", filters, ...g };
 }
 
 /** Lit une ligne d'effet statique (le nom de la carte déjà remplacé par « ~ »). */
@@ -163,8 +344,18 @@ export function parseStaticLine(line: string): StaticAbility | null {
   if (/^creatures you control can't attack$/i.test(l)) return { kind: "creaturesCantAttack" };
   if ((m = /^no more than one creature can (attack|block) each combat$/i.exec(l))) return { kind: "maxOne", attack: m[1]!.toLowerCase() === "attack" };
   if (/^~ can't (attack|block)( or (attack|block))?$/i.test(l)) return { kind: "restriction" };
-  if (/^~'s power and toughness are each equal to the number of cards in your hand$/i.test(l)) return { kind: "ptEqualsHand" };
-  if (/^~ gets \+1\/\+1 for each color among permanents you control$/i.test(l)) return { kind: "ptPerColor" };
+  if ((m = /^~'s power and toughness are each equal to the number of (.+)$/i.exec(l))) {
+    const count = parseCount(m[1]!);
+    return count ? { kind: "ptEquals", count } : null;
+  }
+  if ((m = /^~ gets ([+-]\d+)\/([+-]\d+) for each (.+)$/i.exec(l))) {
+    const count = parseCount(m[3]!);
+    return count ? { kind: "selfPump", power: parseInt(m[1]!, 10), toughness: parseInt(m[2]!, 10), count } : null;
+  }
+  if ((m = /^~ gets ([+-])X\/([+-])X, where X is the number of (.+)$/i.exec(l))) {
+    const count = parseCount(m[3]!);
+    return count ? { kind: "selfPump", power: m[1] === "-" ? -1 : 1, toughness: m[2] === "-" ? -1 : 1, count } : null;
+  }
   if ((m = /^if a triggered ability of another (\w+) you control triggers, it triggers an additional time$/i.exec(l))) {
     return { kind: "triggerDoubler", subtype: m[1]!.charAt(0).toUpperCase() + m[1]!.slice(1).toLowerCase() };
   }
@@ -204,14 +395,6 @@ export function parseStaticLine(line: string): StaticAbility | null {
   if (/^at the beginning of your upkeep, look at the top card of your library\. if it's a creature card of the chosen type, you may reveal it and put it into your hand$/i.test(l)) {
     return { kind: "heraldsHorn" };
   }
-  if ((m = /^other (\w+) creatures you control (.+)$/i.exec(l)) && !/^other$/i.test(m[1]!)) {
-    const g = grant(m[2]!);
-    return g ? { kind: "anthem", others: true, ...g, subtype: m[1]!.charAt(0).toUpperCase() + m[1]!.slice(1).toLowerCase() } : null;
-  }
-  if ((m = /^other creatures you control of the chosen type (.+)$/i.exec(l))) {
-    const g = grant(m[1]!);
-    return g ? { kind: "anthem", others: true, ...g, chosenType: true } : null;
-  }
   if ((m = /^((?:white|blue|black|red|green) )?((?:non)?[a-z]+ )?spells you cast cost \{(\d+)\} less to cast$/i.exec(l))) {
     const color = m[1]?.trim().toLowerCase();
     const type = m[2]?.trim().toLowerCase();
@@ -242,11 +425,7 @@ export function parseStaticLine(line: string): StaticAbility | null {
     const g = grant(m[1]!);
     return g ? { kind: "attached", ...g } : null;
   }
-  if ((m = /^(other )?creatures you control (.+)$/i.exec(l))) {
-    const g = grant(m[2]!);
-    return g ? { kind: "anthem", others: !!m[1], ...g } : null;
-  }
-  return null;
+  return parseAnthem(l);
 }
 
 const cache = new Map<string, StaticAbility[]>();
@@ -281,24 +460,98 @@ function battlefield(g: GameState): CardInstance[] {
   return g.turnOrder.flatMap((id) => g.players[id]!.zones.battlefield).map((id) => g.cards[id]!);
 }
 
+function cardTypeLine(g: GameState, card: CardInstance): string {
+  const data = g.cardData[card.cardId];
+  return data?.faces?.[card.faceIndex]?.typeLine ?? data?.typeLine ?? "";
+}
+
+/** Le permanent correspond-il au filtre ? `source` : le permanent qui porte l'effet. */
+export function matchesFilter(g: GameState, card: CardInstance, filter: PermFilter, source: { instanceId: string; controllerId: PlayerId; chosenType?: string }): boolean {
+  if (filter.others && card.instanceId === source.instanceId) return false;
+  if (filter.whose === "you" && card.controllerId !== source.controllerId) return false;
+  if (filter.whose === "opponents" && (card.controllerId === source.controllerId || areTeammates(g, card.controllerId, source.controllerId))) return false;
+  if (card.faceDown) {
+    // Une carte face cachée est une créature 2/2 sans nom, sans type ni couleur.
+    return filter.types.every((t) => t === "creature") && !filter.subtype && !filter.legendary && !filter.colors && !filter.chosenType && !filter.commander && !filter.token;
+  }
+  const typeLine = cardTypeLine(g, card);
+  const has = (t: string) => new RegExp(`\\b${t}\\b`, "i").test(typeLine);
+  if (!filter.types.every(has)) return false;
+  if (filter.notTypes?.some(has)) return false;
+  if (filter.legendary && !has("legendary")) return false;
+  if (filter.nonlegendary && has("legendary")) return false;
+  if (filter.token && !card.isToken) return false;
+  if (filter.nontoken && card.isToken) return false;
+  if (filter.commander && !card.isCommander) return false;
+  if (filter.subtype && !hasCreatureType(g, card, filter.subtype)) return false;
+  if (filter.chosenType && (!source.chosenType || !hasCreatureType(g, card, source.chosenType))) return false;
+  if (filter.colors && !filter.colors.some((c) => (g.cardData[card.cardId]?.colors ?? []).includes(c))) return false;
+  return true;
+}
+
+/** Les permanents qui correspondent au filtre, vus depuis la source. */
+function permanentsMatching(g: GameState, filter: PermFilter, source: CardInstance): CardInstance[] {
+  return battlefield(g).filter((c) => matchesFilter(g, c, filter, source));
+}
+
+/** La valeur d'un nombre lu dans le texte (« for each … ») pour ce permanent. */
+export function countValue(g: GameState, spec: CountSpec, source: CardInstance): number {
+  const me = g.players[source.controllerId];
+  if (!me) return 0;
+  switch (spec.kind) {
+    case "hand":
+      return me.zones.hand.length;
+    case "graveyard": {
+      const players = spec.whose === "you" ? [me] : g.turnOrder.map((id) => g.players[id]!);
+      return players
+        .flatMap((p) => p.zones.graveyard)
+        .filter((id) => spec.types.every((t) => new RegExp(`\\b${t}\\b`, "i").test(g.cardData[g.cards[id]!.cardId]?.typeLine ?? ""))).length;
+    }
+    case "permanents":
+      return permanentsMatching(g, spec.filter, source).length;
+    case "colors":
+      return colorsAmongPermanents(g, source.controllerId, spec.filter, source).length;
+  }
+}
+
 /** Ce que les autres permanents donnent à cette créature : mots-clés (minuscules) et bonus. */
 export function grantedTo(g: GameState, card: CardInstance): { keywords: string[]; power: number; toughness: number } {
-  const out = { keywords: [...(card.grants ?? [])], power: 0, toughness: 0 };
+  const out = { keywords: [...(card.grants ?? []), ...(card.grantsUntil ?? []).flatMap((x) => x.keywords)], power: 0, toughness: 0 };
   if (card.zone !== "battlefield") return out;
   for (const other of battlefield(g)) {
     for (const s of staticsOf(g, other)) {
       const applies =
         (s.kind === "attached" && card.instanceId === other.attachedTo) ||
-        (s.kind === "anthem" &&
-          other.controllerId === card.controllerId &&
-          !(s.others && other.instanceId === card.instanceId) &&
-          (!s.subtype || hasCreatureType(g, card, s.subtype)) &&
-          (!s.chosenType || (!!other.chosenType && hasCreatureType(g, card, other.chosenType))));
+        (s.kind === "anthem" && s.filters.some((f) => matchesFilter(g, card, f, other)));
       if (!applies || (s.kind !== "attached" && s.kind !== "anthem")) continue;
       out.keywords.push(...s.keywords);
-      out.power += s.power;
-      out.toughness += s.toughness;
+      const times = s.perCount ? countValue(g, s.perCount, other) : 1;
+      out.power += s.power * times;
+      out.toughness += s.toughness * times;
     }
+  }
+  return out;
+}
+
+/** Ce que la créature se donne elle-même : force et endurance de base (« equal to the number of … ») et bonus « for each ». */
+export function selfStats(g: GameState, card: CardInstance): { base?: number; power: number; toughness: number } {
+  const out: { base?: number; power: number; toughness: number } = { power: 0, toughness: 0 };
+  for (const s of staticsOf(g, card)) {
+    if (s.kind === "ptEquals") out.base = countValue(g, s.count, card);
+    if (s.kind === "selfPump") {
+      const n = countValue(g, s.count, card);
+      out.power += s.power * n;
+      out.toughness += s.toughness * n;
+    }
+  }
+  return out;
+}
+
+/** Mots-clés que les permanents du joueur lui donnent (Shalai : défense talismanique). */
+export function playerKeywords(g: GameState, playerId: PlayerId): string[] {
+  const out: string[] = [];
+  for (const id of g.players[playerId]?.zones.battlefield ?? []) {
+    for (const s of staticsOf(g, g.cards[id]!)) if (s.kind === "anthem" && s.player) out.push(...s.player);
   }
   return out;
 }
@@ -529,7 +782,12 @@ export function modifyDamage(g: GameState, source: DamageSource, target: { playe
 
 /** Le joueur a-t-il le linceul (Solitary Confinement) ? */
 export function playerHasShroud(g: GameState, playerId: PlayerId): boolean {
-  return controls(g, playerId, "playerShroud");
+  return controls(g, playerId, "playerShroud") || playerKeywords(g, playerId).includes("shroud");
+}
+
+/** Le joueur a-t-il la défense talismanique (Shalai, Leyline of Sanctity…) ? */
+export function playerHasHexproof(g: GameState, playerId: PlayerId): boolean {
+  return playerKeywords(g, playerId).includes("hexproof");
 }
 
 /** Le joueur passe-t-il son étape de pioche ? */
@@ -591,12 +849,13 @@ export function evokeOptions(
   return { ...(printed ? { printed } : {}), ...(granted ? { granted } : {}) };
 }
 
-/** Les couleurs parmi les permanents que contrôle le joueur. */
-export function colorsAmongPermanents(g: GameState, playerId: PlayerId): string[] {
+/** Les couleurs parmi les permanents que contrôle le joueur (seulement ceux du filtre : Sisay, « other legendary permanents »). */
+export function colorsAmongPermanents(g: GameState, playerId: PlayerId, filter?: PermFilter, source?: CardInstance): string[] {
   const found = new Set<string>();
   for (const id of g.players[playerId]?.zones.battlefield ?? []) {
     const c = g.cards[id]!;
     if (c.faceDown) continue;
+    if (filter && source && !matchesFilter(g, c, filter, source)) continue;
     for (const color of g.cardData[c.cardId]?.colors ?? []) found.add(color);
   }
   return (["W", "U", "B", "R", "G"] as string[]).filter((c) => found.has(c));

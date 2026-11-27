@@ -187,6 +187,8 @@ export interface CardInstance {
   ptBoost?: { power: number; toughness: number };
   /** Mots-clés gagnés jusqu'à la fin du tour (en minuscules : « lifelink »…). */
   grants?: string[];
+  /** Mots-clés gagnés « until your next turn » : ils durent jusqu'au début du prochain tour de `playerId`. */
+  grantsUntil?: { playerId: PlayerId; keywords: string[] }[];
   /** Capacités activées « une fois par tour » déjà utilisées (loyauté comprise) : le tour et leurs index. */
   usedAbilities?: { turn: number; indices: number[] };
   /** Capacités déclenchées données jusqu'à la fin du tour (texte « When ~ dies, … »). */

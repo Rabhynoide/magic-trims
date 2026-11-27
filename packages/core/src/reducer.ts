@@ -1,5 +1,6 @@
 import type { ActionEnvelope, GameAction } from "./actions.js";
 import { nextRandom, shuffleInPlace } from "./rng.js";
+import { reduceGenericCost } from "./activated.js";
 import { eliminationReason, isActivePlayer, lifeSharers, areTeammates, teamOf } from "./modes.js";
 import {
   MANA_LABELS,
@@ -8,6 +9,10 @@ import {
   isManaType,
   manaOptions,
   manaOptionsDetailed,
+  grantedManaAbility,
+  manaTapEffect,
+  manaTapSourceFits,
+  type ManaTapEffect,
   MANA_TYPES,
   parseManaCost,
   payFromPool,
@@ -22,6 +27,7 @@ import {
   resolveAmount,
   spellEffectsOf,
   flattenModes,
+  modesMax,
   modesTargeted,
   auraTarget,
   permanentLabel,
@@ -478,7 +484,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     // Cibles des effets que le moteur sait appliquer.
     const parsedEffects = g.settings.enforceRules ? spellEffectsOf(g, card, faceIndex, alternative ?? false) : null;
     // Modes avec des cibles (Ashling's Command) : choisis en lançant le sort, leurs cibles s'ajoutent à celles du sort.
-    const earlyModes = parsedEffects && modesTargeted(parsedEffects) ? checkModes(parsedEffects.modes!, modes ?? []) : undefined;
+    const earlyModes = parsedEffects && modesTargeted(parsedEffects) ? checkModes(g, actor.id, parsedEffects.modes!, modes ?? []) : undefined;
     const effects = parsedEffects && earlyModes ? flattenModes(parsedEffects, earlyModes) : parsedEffects;
     if (alternative && !effects?.alternativeCost) throw new ActionError("Ce sort n'a pas de coût alternatif.");
     if (effects?.castOnly === "opponentCombat" && (isActivePlayer(g, actor.id) || !["beginCombat", "declareAttackers", "declareBlockers", "combatDamage", "endCombat"].includes(g.turn.step))) {
@@ -899,7 +905,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const effects = card.ability ? abilityEffects(g, card) : spellEffectsOf(g, card);
     const spec = effects?.modes;
     if (!spec) throw new ActionError("Ce sort n'a pas de modes.");
-    const chosen = checkModes(spec, modes);
+    const chosen = checkModes(g, actor.id, spec, modes);
     card.modes.chosen = chosen;
     log(g, actor.id, `${actor.name} choisit : ${chosen.map((i) => `« ${spec.list[i]!.label} »`).join(", ")}.`);
     // Capacité déclenchée aux modes ciblés (Titan of Industry) : les modes sont choisis en la mettant sur la pile, puis ses cibles.
@@ -1187,6 +1193,7 @@ export function moveCardTo(
     delete card.deathtouched;
     delete card.ptBoost;
     delete card.grants;
+    delete card.grantsUntil;
     delete card.grantedTriggers;
     delete card.usedAbilities;
     if (g.combat) {
@@ -1960,6 +1967,8 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
   let lastExiled: { id: CardInstanceId; zone: Zone } | undefined;
   for (const effect of effects) {
     if (effect.ifControls && controlledMatching(effect.ifControls.filter).length < effect.ifControls.atLeast) continue;
+    // Addendum : le sort se résout dans l'étape où il a été lancé ; une phase principale de son lanceur.
+    if (effect.ifMainPhase && !(isActivePlayer(g, caster.id) && (g.turn.step === "main1" || g.turn.step === "main2"))) continue;
     switch (effect.type) {
       case "draw":
         for (const p of whoOf(effect.who)) drawCards(g, p, amountOf(effect.count));
@@ -2720,17 +2729,29 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
           const boost = c.ptBoost ?? { power: 0, toughness: 0 };
           c.ptBoost = { power: boost.power + effect.power, toughness: boost.toughness + effect.toughness };
         }
-        if (effect.keywords.length > 0) c.grants = [...new Set([...(c.grants ?? []), ...effect.keywords])];
+        grantKeywords(c, effect.keywords, effect.untilNextTurn ? caster.id : undefined);
         const sign = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
         const parts = [...(effect.power || effect.toughness ? [`${sign(effect.power)}/${sign(effect.toughness)}`] : []), ...effect.keywords.map((k) => KEYWORD_HELP[k]?.name.toLowerCase() ?? k)];
-        log(g, null, `${cardName(g, c)} gagne ${parts.join(" et ")} jusqu'à la fin du tour.`);
+        log(g, null, `${cardName(g, c)} gagne ${parts.join(" et ")} ${effect.untilNextTurn ? `jusqu'au prochain tour de ${caster.name}` : "jusqu'à la fin du tour"}.`);
         break;
       }
       case "grantAll": {
-        const all = allMatching(effect.filter);
-        for (const c of all) c.grants = [...new Set([...(c.grants ?? []), ...effect.keywords])];
-        const label = effect.keywords.map((k) => KEYWORD_HELP[k]?.name.toLowerCase() ?? k).join(", ");
-        log(g, null, `Les créatures de ${caster.name} gagnent ${label} jusqu'à la fin du tour.`);
+        const all = allMatching(effect.filter).filter((c) => !(effect.others && c.instanceId === ability?.sourceId));
+        for (const c of all) {
+          if (effect.power || effect.toughness) {
+            const boost = c.ptBoost ?? { power: 0, toughness: 0 };
+            c.ptBoost = { power: boost.power + (effect.power ?? 0), toughness: boost.toughness + (effect.toughness ?? 0) };
+          }
+          grantKeywords(c, effect.keywords, effect.untilNextTurn ? caster.id : undefined);
+        }
+        const sign = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
+        const parts = [
+          ...(effect.power || effect.toughness ? [`${sign(effect.power ?? 0)}/${sign(effect.toughness ?? 0)}`] : []),
+          ...effect.keywords.map((k) => KEYWORD_HELP[k]?.name.toLowerCase() ?? k),
+        ];
+        const noun = effect.filter.types.includes("creature") ? "créatures" : "permanents";
+        const what = `${effect.others ? "Les autres" : "Les"} ${noun}${effect.filter.legendary ? " légendaires" : ""} de ${caster.name}`;
+        if (parts.length > 0) log(g, null, `${what} gagnent ${parts.join(", ")} ${effect.untilNextTurn ? `jusqu'au prochain tour de ${caster.name}` : "jusqu'à la fin du tour"}.`);
         break;
       }
       case "attachEvent":
@@ -3055,12 +3076,26 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
 }
 
 /** Les modes choisis, triés, s'ils respectent « Choose two — » et compagnie. */
-function checkModes(spec: NonNullable<SpellEffects["modes"]>, modes: number[]): number[] {
+function checkModes(g: GameState, playerId: PlayerId, spec: NonNullable<SpellEffects["modes"]>, modes: number[]): number[] {
   const chosen = [...new Set(modes)].sort((a, b) => a - b);
-  if (chosen.length < Math.max(1, spec.min) || chosen.length > spec.max || chosen.some((i) => !Number.isInteger(i) || i < 0 || i >= spec.list.length)) {
-    throw new ActionError(spec.min === spec.max ? `Choisis ${plural(spec.min, "mode")}.` : `Choisis entre ${Math.max(1, spec.min)} et ${spec.max} modes.`);
+  // Akroma's Will : « if you control a commander as you cast this spell » ; les modes se choisissent ici, à la résolution (approximation).
+  const max = modesMax(spec, controlsCommander(g, playerId));
+  if (chosen.length < Math.max(1, spec.min) || chosen.length > max || chosen.some((i) => !Number.isInteger(i) || i < 0 || i >= spec.list.length)) {
+    throw new ActionError(spec.min === max ? `Choisis ${plural(spec.min, "mode")}.` : `Choisis entre ${Math.max(1, spec.min)} et ${max} modes.`);
   }
   return chosen;
+}
+
+/** Le joueur contrôle-t-il un commandant (le sien ou un autre) sur le champ de bataille ? */
+export function controlsCommander(g: GameState, playerId: PlayerId): boolean {
+  return g.players[playerId]!.zones.battlefield.some((id) => g.cards[id]!.isCommander);
+}
+
+/** Donne des mots-clés à un permanent, jusqu'à la fin du tour ou (`untilTurnOf`) jusqu'au prochain tour de ce joueur. */
+function grantKeywords(card: CardInstance, keywords: string[], untilTurnOf?: PlayerId): void {
+  if (keywords.length === 0) return;
+  if (untilTurnOf) (card.grantsUntil ??= []).push({ playerId: untilTurnOf, keywords: [...keywords] });
+  else card.grants = [...new Set([...(card.grants ?? []), ...keywords])];
 }
 
 /** Un sort ou une capacité modale (« Choose one or more — ») attend le choix de son contrôleur. */
@@ -3414,7 +3449,11 @@ function activateAbility(
   // Paiement : mana d'abord (sans engager la source si elle s'engage pour le coût), puis le reste.
   const sourceData = g.cardData[card.cardId];
   const asSpell = { typeLine: currentTypeLine(g, card), oracleText: sourceData?.faces?.[card.faceIndex]?.oracleText ?? sourceData?.oracleText ?? "", ability: true };
-  const paid = cost.mana ? payMana(g, actor, cost.mana, 0, 0, cost.tap ? card.instanceId : undefined, `activer ${name}`, asSpell) : null;
+  // Otawara : moins cher pour chaque permanent du filtre qu'on contrôle.
+  const manaCost = cost.reduction
+    ? reduceGenericCost(cost.mana, cost.reduction.amount * actor.zones.battlefield.filter((id) => matchesPermanent(g, g.cards[id]!, cost.reduction!.per, actor.id)).length)
+    : cost.mana;
+  const paid = manaCost ? payMana(g, actor, manaCost, 0, 0, cost.tap ? card.instanceId : undefined, `activer ${name}`, asSpell) : null;
   if (cost.tap) card.tapped = true;
   if (cost.life > 0) payLife(g, actor, cost.life);
   if (cost.loyalty !== undefined) setCounter(card, "loyauté", (card.counters["loyauté"] ?? 0) + cost.loyalty);
@@ -3460,8 +3499,9 @@ function activateAbility(
     costParts.push("en le défaussant");
   }
   if (cost.exileSelf) {
+    const fromGraveyard = card.zone === "graveyard";
     moveCardTo(g, card.instanceId, "exile", "top");
-    costParts.push("en l'exilant de son cimetière");
+    costParts.push(fromGraveyard ? "en l'exilant de son cimetière" : "en l'exilant");
   }
   const instance = newInstance(g, card.cardId, actor.id, "stack");
   instance.faceIndex = card.faceIndex;
@@ -3481,15 +3521,28 @@ function tapForMana(g: GameState, actor: PlayerState, card: CardInstance, choice
   const owner = g.players[card.controllerId]!;
   const pool = owner.manaPool;
   const only = cardManaRestrictions(g, card)[choice];
+  const typeLine = faceTypeLine(g, card, card.faceIndex);
+  const effects = manaTapEffectsFor(g, owner.id, typeLine);
+  // Mana Reflection, Nyxbloom Ancient : le mana produit est multiplié (remplacement).
+  const factor = effects.reduce((f, e) => (e.add.kind === "multiply" ? f * e.add.factor : f), 1);
+  const produced = Array.from({ length: factor }, () => mana).flat();
+  // Mirari's Wake, Mana Flare, Crypt Ghast : du mana en plus (capacités de mana déclenchées, sans restriction).
+  const extra: ManaType[] = [];
+  for (const e of effects) {
+    if (e.add.kind === "mana") extra.push(e.add.mana);
+    // « one mana of any type that land produced » : le type le plus produit.
+    else if (e.add.kind === "sameType" && mana.length > 0) extra.push([...mana].sort((a, b) => mana.filter((m) => m === b).length - mana.filter((m) => m === a).length)[0]!);
+  }
   if (only) {
-    for (const m of mana) (owner.restrictedMana ??= []).push({ mana: m, ...only });
-    log(g, actor.id, `${actor.name} engage ${cardName(g, card)} pour ${formatMana(mana)} (réservé : ${only.subtype || "type choisi"}).`);
+    for (const m of produced) (owner.restrictedMana ??= []).push({ mana: m, ...only });
+    for (const m of extra) pool[m] += 1;
+    const plus = extra.length > 0 ? `, plus ${formatMana(extra)}` : "";
+    log(g, actor.id, `${actor.name} engage ${cardName(g, card)} pour ${formatMana(produced)} (réservé : ${only.subtype || "type choisi"})${plus}.`);
     return;
   }
   // Bubbling Muck : du mana en plus pour un terrain de ce type.
-  const typeLine = faceTypeLine(g, card, card.faceIndex);
   const bonus = (g.manaBonuses ?? []).filter((b) => b.turn === g.turn.number && new RegExp(`\\b${b.subtype}\\b`).test(typeLine)).map((b) => b.mana);
-  const all = [...mana, ...bonus];
+  const all = [...produced, ...bonus, ...extra];
   for (const m of all) pool[m] += 1;
   log(g, actor.id, `${actor.name} engage ${cardName(g, card)} pour ${formatMana(all)}.`);
 }
@@ -3567,6 +3620,14 @@ function cardManaDetailed(g: GameState, card: CardInstance): { mana: ManaType[];
     const colors = colorsAmongPermanents(g, card.controllerId);
     if (colors.length > 0) options.push({ mana: colors as ManaType[] });
   }
+  // Capacités de mana données par d'autres permanents (Chromatic Lantern, Abundant Growth).
+  const typeLine = face?.typeLine ?? data.typeLine;
+  for (const ability of grantedManaAbilities(g, card, typeLine)) {
+    for (const o of manaOptionsDetailed("", ability)) {
+      const only = o.only ? { only: { subtype: o.only.subtype === "chosen" ? (card.chosenType ?? "") : o.only.subtype, abilities: o.only.abilities } } : {};
+      if (!options.some((x) => x.mana.join() === o.mana.join() && !x.only && !o.only)) options.push({ mana: o.mana, ...only });
+    }
+  }
   if (options.length === 0) return options;
   for (const id of g.players[card.controllerId]?.zones.battlefield ?? []) {
     const aura = g.cards[id]!;
@@ -3585,10 +3646,59 @@ function cardManaDetailed(g: GameState, card: CardInstance): { mana: ManaType[];
 }
 
 
+/** Les capacités de mana que d'autres permanents donnent à celui-ci (« Lands you control have "…" », « Enchanted land has "…" »). */
+function grantedManaAbilities(g: GameState, card: CardInstance, typeLine: string): string[] {
+  const abilities: string[] = [];
+  for (const pid of g.turnOrder) {
+    for (const id of g.players[pid]?.zones.battlefield ?? []) {
+      const other = g.cards[id]!;
+      if (other.faceDown) continue;
+      const data = g.cardData[other.cardId];
+      const text = data?.faces?.[other.faceIndex]?.oracleText ?? data?.oracleText ?? "";
+      if (!text.includes(" ha")) continue;
+      for (const line of text.split("\n")) {
+        const grant = grantedManaAbility(line);
+        if (!grant) continue;
+        const fits =
+          grant.to === "enchanted"
+            ? other.attachedTo === card.instanceId
+            : other.controllerId === card.controllerId && (grant.to === "permanent" || new RegExp(`\\b${grant.to}\\b`).test(typeLine));
+        if (fits) abilities.push(grant.ability);
+      }
+    }
+  }
+  return abilities;
+}
+
+/** Les effets « quand vous engagez un terrain pour du mana » qui s'appliquent à ce permanent engagé par ce joueur. */
+function manaTapEffectsFor(g: GameState, tapper: PlayerId, typeLine: string): ManaTapEffect[] {
+  const effects: ManaTapEffect[] = [];
+  for (const pid of g.turnOrder) {
+    for (const id of g.players[pid]?.zones.battlefield ?? []) {
+      const other = g.cards[id]!;
+      if (other.faceDown) continue;
+      const data = g.cardData[other.cardId];
+      const text = data?.faces?.[other.faceIndex]?.oracleText ?? data?.oracleText ?? "";
+      if (!text.includes("for mana")) continue;
+      for (const line of text.split("\n")) {
+        const effect = manaTapEffect(line);
+        if (!effect || !manaTapSourceFits(effect, typeLine)) continue;
+        if (effect.who === "you" && other.controllerId !== tapper) continue;
+        effects.push(effect);
+      }
+    }
+  }
+  return effects;
+}
+
+const RESTRICTION_TYPE_WORDS = /^(Artifact|Creature|Enchantment|Instant|Sorcery|Planeswalker|Battle|Legendary|Kindred)$/i;
+
 /** Ce mana réservé peut-il payer ce sort (ou cette capacité) ? */
 function restrictionFits(r: { subtype: string; abilities: boolean }, spell: { typeLine: string; oracleText: string; ability?: boolean } | undefined): boolean {
   if (!spell || !r.subtype) return false;
   if (spell.ability && !r.abilities) return false;
+  // « Spend this mana only to cast creature spells » : un type de carte, lu avant le tiret.
+  if (RESTRICTION_TYPE_WORDS.test(r.subtype)) return new RegExp(`\\b${r.subtype}\\b`, "i").test(spell.typeLine.split("—")[0]!);
   return typeLineHasCreatureType(spell.typeLine, spell.oracleText, r.subtype);
 }
 
@@ -4214,6 +4324,15 @@ function enterStep(g: GameState, step: TurnStep): void {
         log(g, null, `${cardName(g, card)} reçoit un marqueur de savoir (${from + 1}).`);
         emit(g, { type: "lore", cardId: id, from, to: from + 1 });
       }
+    }
+  }
+  // « Until your next turn » : les effets du joueur actif prennent fin au début de son tour.
+  if (step === "untap") {
+    const active = new Set(activePlayers(g).map((p) => p.id));
+    for (const card of Object.values(g.cards)) {
+      if (!card.grantsUntil) continue;
+      card.grantsUntil = card.grantsUntil.filter((x) => !active.has(x.playerId));
+      if (card.grantsUntil.length === 0) delete card.grantsUntil;
     }
   }
   // Le mana inutilisé disparaît entre deux étapes (règle 500.4).
