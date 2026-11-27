@@ -1339,7 +1339,25 @@ export function auraTarget(typeLine: string, oracleText: string): TargetSpec | n
   return null;
 }
 
+/**
+ * Capacités qui ne servent qu'à construire le deck (deux commandants, carte
+ * non-créature qui peut être commandant) : la validation du deck les applique.
+ */
+const DECKBUILDING_LINES: [RegExp, string][] = [
+  [/^Partner$/i, "Partenaire"],
+  [/^Partner\s*[—–-]\s*[^.]+\.?$/i, "Partenaire"],
+  [/^Friends forever$/i, "Amis pour toujours"],
+  [/^Choose a Background$/i, "Choisissez un historique"],
+  [/^Doctor's companion$/i, "Compagnon du Docteur"],
+  [/^.+ can be your commander\.?$/i, "Peut être votre commandant"],
+];
+
 function permanentLineStatus(line: string, typeLine: string, name: string): LineStatus {
+  for (const [re, title] of DECKBUILDING_LINES) if (re.test(line)) return { title, status: "auto" };
+  // « Partner with X » : la paire est vérifiée, mais la recherche du partenaire à l'arrivée reste à faire.
+  if (/^Partner with [^.]+$/i.test(line)) {
+    return { title: "Partenaire avec", status: "partial", manual: ["À l'arrivée, un joueur ciblé peut chercher le partenaire dans sa bibliothèque."] };
+  }
   if (/^enchant /i.test(line) && auraTarget(typeLine, line)) return { title: "Aura", status: "auto" };
   if (printedEvoke(line)) return { title: "Évocation", status: "auto" };
   const abilities = parsePermanentAbilities(line, name, typeLine);
