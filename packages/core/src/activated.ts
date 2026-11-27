@@ -18,7 +18,7 @@ export interface ActivationCost {
   sacrificeSelf: boolean;
   /** Défausser la carte (recyclage). */
   discardSelf?: boolean;
-  /** Exiler la carte de son cimetière (encore). */
+  /** Exiler la carte, de son cimetière (encore) ou du champ de bataille (Plaza of Heroes). */
   exileSelf?: boolean;
   /** Un autre permanent à sacrifier (« Sacrifice a creature »), choisi à l'activation. */
   sacrifice?: PermanentFilter;
@@ -67,6 +67,8 @@ export function parseActivationCost(text: string): ActivationCost | null {
     else if (/^(\{[0-9WUBRGCSX/P]+\})+$/i.test(part)) cost.mana += part;
     else if ((m = /^pay (\d+) life$/i.exec(part))) cost.life += parseInt(m[1]!, 10);
     else if (/^sacrifice ~$/i.test(part)) cost.sacrificeSelf = true;
+    // Plaza of Heroes : « {3}, {T}, Exile this land: … ».
+    else if (/^exile ~$/i.test(part)) cost.exileSelf = true;
     else if (/^discard (?:this card|~)$/i.test(part)) cost.discardSelf = true;
     else if ((m = /^sacrifice (?:a|an|another) (.+)$/i.exec(part))) {
       const filter = parsePermanentFilterText(m[1]!);

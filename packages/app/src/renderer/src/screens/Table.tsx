@@ -7,6 +7,7 @@ import {
   STEP_LABELS,
   abilitiesOf,
   isLegalTarget,
+  modesMax,
   parseSpellEffects,
   stackTrigger,
   flattenModes,
@@ -672,17 +673,18 @@ function ModesPanel(props: { view: GameView }) {
       : undefined;
   const spec = effects?.modes;
   if (!spec) return null;
+  // Akroma's Will : les deux modes si je contrôle un commandant.
+  const max = modesMax(spec, view.players[view.viewerId]?.zones.battlefield.some((c) => !c.hidden && c.isCommander) ?? false);
   const min = Math.max(1, spec.min);
-  const ok = picked.length >= min && picked.length <= spec.max;
-  const toggle = (i: number) =>
-    setPicked((p) => (p.includes(i) ? p.filter((x) => x !== i) : spec.max === 1 ? [i] : p.length < spec.max ? [...p, i] : p));
+  const ok = picked.length >= min && picked.length <= max;
+  const toggle = (i: number) => setPicked((p) => (p.includes(i) ? p.filter((x) => x !== i) : max === 1 ? [i] : p.length < max ? [...p, i] : p));
   return (
     <Modal title={`Modes de ${ability?.sourceName ?? name}`} onClose={() => {}}>
-      <p className="hint">{min === spec.max ? `Choisis ${min} mode${min > 1 ? "s" : ""}.` : `Choisis de ${min} à ${spec.max} modes.`}</p>
+      <p className="hint">{min === max ? `Choisis ${min} mode${min > 1 ? "s" : ""}.` : `Choisis de ${min} à ${max} modes.`}</p>
       <div className="modes-list">
         {spec.list.map((mode, i) => (
           <label key={i} className="mode-option">
-            <input type={spec.max === 1 ? "radio" : "checkbox"} checked={picked.includes(i)} onChange={() => toggle(i)} />
+            <input type={max === 1 ? "radio" : "checkbox"} checked={picked.includes(i)} onChange={() => toggle(i)} />
             <span>{mode.label}</span>
           </label>
         ))}

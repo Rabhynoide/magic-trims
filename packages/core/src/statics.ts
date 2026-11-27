@@ -603,7 +603,7 @@ export function countValue(g: GameState, spec: CountSpec, source: CardInstance):
 
 /** Ce que les autres permanents donnent à cette créature : mots-clés (minuscules) et bonus. */
 export function grantedTo(g: GameState, card: CardInstance): { keywords: string[]; power: number; toughness: number } {
-  const out = { keywords: [...(card.grants ?? [])], power: 0, toughness: 0 };
+  const out = { keywords: [...(card.grants ?? []), ...(card.grantsUntil ?? []).flatMap((x) => x.keywords)], power: 0, toughness: 0 };
   if (card.zone !== "battlefield") return out;
   for (const other of battlefield(g)) {
     for (const s of staticsOf(g, other)) {
@@ -715,11 +715,6 @@ export function castRestriction(g: GameState, playerId: PlayerId, typeLine: stri
     }
   }
   return null;
-}
-
-/** Le joueur contrôle-t-il un commandant (le sien ou celui d'un autre) ? */
-export function controlsCommander(g: GameState, playerId: PlayerId): boolean {
-  return g.players[playerId]!.zones.battlefield.some((id) => g.cards[id]!.isCommander && g.cards[id]!.controllerId === playerId);
 }
 
 /** Un permanent empêche-t-il ce joueur de jouer des terrains (Aggressive Mining) ? */

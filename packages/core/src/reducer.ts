@@ -27,6 +27,7 @@ import {
   resolveAmount,
   spellEffectsOf,
   flattenModes,
+  modesMax,
   modesTargeted,
   auraTarget,
   permanentLabel,
@@ -63,7 +64,6 @@ import {
   colorsAmongPermanents,
   costReductions,
   selfCostReduction,
-  controlsCommander,
   mostCommonCreatureType,
   hasCreatureType,
   typeLineHasCreatureType,
@@ -485,7 +485,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     // Cibles des effets que le moteur sait appliquer.
     const parsedEffects = g.settings.enforceRules ? spellEffectsOf(g, card, faceIndex, alternative ?? false) : null;
     // Modes avec des cibles (Ashling's Command) : choisis en lançant le sort, leurs cibles s'ajoutent à celles du sort.
-    const earlyModes = parsedEffects && modesTargeted(parsedEffects) ? checkModes(parsedEffects.modes!, modes ?? []) : undefined;
+    const earlyModes = parsedEffects && modesTargeted(parsedEffects) ? checkModes(g, actor.id, parsedEffects.modes!, modes ?? []) : undefined;
     const effects = parsedEffects && earlyModes ? flattenModes(parsedEffects, earlyModes) : parsedEffects;
     if (alternative && !effects?.alternativeCost) throw new ActionError("Ce sort n'a pas de coût alternatif.");
     // Flawless Maneuver, Fierce Guardianship : gratuit si l'on contrôle un commandant.
@@ -913,7 +913,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const effects = card.ability ? abilityEffects(g, card) : spellEffectsOf(g, card);
     const spec = effects?.modes;
     if (!spec) throw new ActionError("Ce sort n'a pas de modes.");
-    const chosen = checkModes(spec, modes);
+    const chosen = checkModes(g, actor.id, spec, modes);
     card.modes.chosen = chosen;
     log(g, actor.id, `${actor.name} choisit : ${chosen.map((i) => `« ${spec.list[i]!.label} »`).join(", ")}.`);
     // Capacité déclenchée aux modes ciblés (Titan of Industry) : les modes sont choisis en la mettant sur la pile, puis ses cibles.
@@ -1201,6 +1201,7 @@ export function moveCardTo(
     delete card.deathtouched;
     delete card.ptBoost;
     delete card.grants;
+    delete card.grantsUntil;
     delete card.grantedTriggers;
     delete card.usedAbilities;
     if (g.combat) {
@@ -1968,6 +1969,8 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
   let lastExiled: { id: CardInstanceId; zone: Zone } | undefined;
   for (const effect of effects) {
     if (effect.ifControls && controlledMatching(effect.ifControls.filter).length < effect.ifControls.atLeast) continue;
+    // Addendum : le sort se résout dans l'étape où il a été lancé ; une phase principale de son lanceur.
+    if (effect.ifMainPhase && !(isActivePlayer(g, caster.id) && (g.turn.step === "main1" || g.turn.step === "main2"))) continue;
     switch (effect.type) {
       case "draw":
         for (const p of whoOf(effect.who)) drawCards(g, p, amountOf(effect.count));
@@ -2709,17 +2712,29 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
           const boost = c.ptBoost ?? { power: 0, toughness: 0 };
           c.ptBoost = { power: boost.power + effect.power, toughness: boost.toughness + effect.toughness };
         }
-        if (effect.keywords.length > 0) c.grants = [...new Set([...(c.grants ?? []), ...effect.keywords])];
+        grantKeywords(c, effect.keywords, effect.untilNextTurn ? caster.id : undefined);
         const sign = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
         const parts = [...(effect.power || effect.toughness ? [`${sign(effect.power)}/${sign(effect.toughness)}`] : []), ...effect.keywords.map((k) => KEYWORD_HELP[k]?.name.toLowerCase() ?? k)];
-        log(g, null, `${cardName(g, c)} gagne ${parts.join(" et ")} jusqu'à la fin du tour.`);
+        log(g, null, `${cardName(g, c)} gagne ${parts.join(" et ")} ${effect.untilNextTurn ? `jusqu'au prochain tour de ${caster.name}` : "jusqu'à la fin du tour"}.`);
         break;
       }
       case "grantAll": {
-        const all = allMatching(effect.filter);
-        for (const c of all) c.grants = [...new Set([...(c.grants ?? []), ...effect.keywords])];
-        const label = effect.keywords.map((k) => KEYWORD_HELP[k]?.name.toLowerCase() ?? k).join(", ");
-        log(g, null, `Les créatures de ${caster.name} gagnent ${label} jusqu'à la fin du tour.`);
+        const all = allMatching(effect.filter).filter((c) => !(effect.others && c.instanceId === ability?.sourceId));
+        for (const c of all) {
+          if (effect.power || effect.toughness) {
+            const boost = c.ptBoost ?? { power: 0, toughness: 0 };
+            c.ptBoost = { power: boost.power + (effect.power ?? 0), toughness: boost.toughness + (effect.toughness ?? 0) };
+          }
+          grantKeywords(c, effect.keywords, effect.untilNextTurn ? caster.id : undefined);
+        }
+        const sign = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
+        const parts = [
+          ...(effect.power || effect.toughness ? [`${sign(effect.power ?? 0)}/${sign(effect.toughness ?? 0)}`] : []),
+          ...effect.keywords.map((k) => KEYWORD_HELP[k]?.name.toLowerCase() ?? k),
+        ];
+        const noun = effect.filter.types.includes("creature") ? "créatures" : "permanents";
+        const what = `${effect.others ? "Les autres" : "Les"} ${noun}${effect.filter.legendary ? " légendaires" : ""} de ${caster.name}`;
+        if (parts.length > 0) log(g, null, `${what} gagnent ${parts.join(", ")} ${effect.untilNextTurn ? `jusqu'au prochain tour de ${caster.name}` : "jusqu'à la fin du tour"}.`);
         break;
       }
       case "attach": {
@@ -3043,12 +3058,26 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
 }
 
 /** Les modes choisis, triés, s'ils respectent « Choose two — » et compagnie. */
-function checkModes(spec: NonNullable<SpellEffects["modes"]>, modes: number[]): number[] {
+function checkModes(g: GameState, playerId: PlayerId, spec: NonNullable<SpellEffects["modes"]>, modes: number[]): number[] {
   const chosen = [...new Set(modes)].sort((a, b) => a - b);
-  if (chosen.length < Math.max(1, spec.min) || chosen.length > spec.max || chosen.some((i) => !Number.isInteger(i) || i < 0 || i >= spec.list.length)) {
-    throw new ActionError(spec.min === spec.max ? `Choisis ${plural(spec.min, "mode")}.` : `Choisis entre ${Math.max(1, spec.min)} et ${spec.max} modes.`);
+  // Akroma's Will : « if you control a commander as you cast this spell » ; les modes se choisissent ici, à la résolution (approximation).
+  const max = modesMax(spec, controlsCommander(g, playerId));
+  if (chosen.length < Math.max(1, spec.min) || chosen.length > max || chosen.some((i) => !Number.isInteger(i) || i < 0 || i >= spec.list.length)) {
+    throw new ActionError(spec.min === max ? `Choisis ${plural(spec.min, "mode")}.` : `Choisis entre ${Math.max(1, spec.min)} et ${max} modes.`);
   }
   return chosen;
+}
+
+/** Le joueur contrôle-t-il un commandant (le sien ou un autre) sur le champ de bataille ? */
+export function controlsCommander(g: GameState, playerId: PlayerId): boolean {
+  return g.players[playerId]!.zones.battlefield.some((id) => g.cards[id]!.isCommander);
+}
+
+/** Donne des mots-clés à un permanent, jusqu'à la fin du tour ou (`untilTurnOf`) jusqu'au prochain tour de ce joueur. */
+function grantKeywords(card: CardInstance, keywords: string[], untilTurnOf?: PlayerId): void {
+  if (keywords.length === 0) return;
+  if (untilTurnOf) (card.grantsUntil ??= []).push({ playerId: untilTurnOf, keywords: [...keywords] });
+  else card.grants = [...new Set([...(card.grants ?? []), ...keywords])];
 }
 
 /** Un sort ou une capacité modale (« Choose one or more — ») attend le choix de son contrôleur. */
@@ -3452,8 +3481,9 @@ function activateAbility(
     costParts.push("en le défaussant");
   }
   if (cost.exileSelf) {
+    const fromGraveyard = card.zone === "graveyard";
     moveCardTo(g, card.instanceId, "exile", "top");
-    costParts.push("en l'exilant de son cimetière");
+    costParts.push(fromGraveyard ? "en l'exilant de son cimetière" : "en l'exilant");
   }
   const instance = newInstance(g, card.cardId, actor.id, "stack");
   instance.faceIndex = card.faceIndex;
@@ -4276,6 +4306,15 @@ function enterStep(g: GameState, step: TurnStep): void {
         log(g, null, `${cardName(g, card)} reçoit un marqueur de savoir (${from + 1}).`);
         emit(g, { type: "lore", cardId: id, from, to: from + 1 });
       }
+    }
+  }
+  // « Until your next turn » : les effets du joueur actif prennent fin au début de son tour.
+  if (step === "untap") {
+    const active = new Set(activePlayers(g).map((p) => p.id));
+    for (const card of Object.values(g.cards)) {
+      if (!card.grantsUntil) continue;
+      card.grantsUntil = card.grantsUntil.filter((x) => !active.has(x.playerId));
+      if (card.grantsUntil.length === 0) delete card.grantsUntil;
     }
   }
   // Le mana inutilisé disparaît entre deux étapes (règle 500.4).

@@ -50,6 +50,11 @@ export function protectionColors(g: GameState, card: CardInstance): string[] {
     if (!/^Protection from /i.test(clean)) continue;
     for (const m of clean.matchAll(/\bfrom (white|blue|black|red|green)\b/gi)) colors.push(COLOR_NAMES[m[1]!.toLowerCase()]!);
   }
+  // Protection gagnée (Akroma's Will : « protection from each color until end of turn »).
+  for (const k of grantedTo(g, card).keywords) {
+    if (k === "protection from each color") colors.push(...Object.values(COLOR_NAMES));
+    else if (/^protection from (white|blue|black|red|green)$/.test(k)) colors.push(COLOR_NAMES[k.slice("protection from ".length)]!);
+  }
   return colors;
 }
 
