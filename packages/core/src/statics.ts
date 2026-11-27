@@ -59,6 +59,11 @@ export type StaticAbility =
       /** Overgrown Tomb : dégagé si l'on paie ce nombre de points de vie. */
       unlessLife?: number;
     }
+  /**
+   * « ~ doesn't untap during your untap step » (Traxos : `entersTapped`, « enters tapped and doesn't untap… ») ;
+   * `attached` : « Enchanted creature doesn't untap during its controller's untap step » (Claustrophobia).
+   */
+  | { kind: "doesntUntap"; entersTapped?: boolean; attached?: boolean }
   /** « Creatures can't attack you unless their controller pays {2} for each creature… » (X : nombre d'enchantements). */
   | { kind: "attackTax"; amount: number | "enchantments" }
   /** « You can't cast creature spells. » */
@@ -304,6 +309,10 @@ export function parseStaticLine(line: string): StaticAbility | null {
   }
   if (/^players have no maximum hand size$/i.test(l)) return { kind: "noMaxHandSizeAll" };
   if (/^~ enters tapped$/i.test(l)) return { kind: "entersTapped" };
+  if ((m = /^~ (enters tapped and )?doesn't untap during your untap step$/i.exec(l))) return { kind: "doesntUntap", ...(m[1] ? { entersTapped: true } : {}) };
+  if (/^(?:enchanted|equipped) (?:creature|permanent|artifact|land|planeswalker) doesn't untap during its controller's untap step$/i.test(l)) {
+    return { kind: "doesntUntap", attached: true };
+  }
   if ((m = /^~ enters tapped unless you control (\w+) or more basic lands$/i.exec(l))) {
     const n = NUMBER_WORDS[m[1]!.toLowerCase()] ?? parseInt(m[1]!, 10);
     if (Number.isInteger(n)) return { kind: "entersTapped", unlessBasics: n };
@@ -568,7 +577,13 @@ export function hasNoMaxHandSize(g: GameState, playerId: PlayerId): boolean {
 
 /** Le permanent arrive-t-il engagé (« This land enters tapped ») ? Sans `g`, toute condition compte comme non remplie. */
 export function entersTapped(data: CardData | undefined, faceIndex: number): boolean {
-  return staticsOfData(data, faceIndex).some((s) => s.kind === "entersTapped");
+  return staticsOfData(data, faceIndex).some((s) => s.kind === "entersTapped" || (s.kind === "doesntUntap" && s.entersTapped));
+}
+
+/** « doesn't untap during your untap step » : le permanent lui-même, ou une aura / un équipement attaché à lui. */
+export function doesntUntap(g: GameState, card: CardInstance): boolean {
+  if (staticsOf(g, card).some((s) => s.kind === "doesntUntap" && !s.attached)) return true;
+  return battlefield(g).some((other) => other.attachedTo === card.instanceId && staticsOf(g, other).some((s) => s.kind === "doesntUntap" && s.attached));
 }
 
 export type EntersTappedStatic = Extract<StaticAbility, { kind: "entersTapped" }>;
