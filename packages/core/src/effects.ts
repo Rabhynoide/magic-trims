@@ -8,11 +8,11 @@
  * appliquer à la main, et le journal le rappelle.
  */
 import { COMBAT_KEYWORDS, creatureStats, hasKeyword, protectedFrom } from "./combat.js";
-import { manaOptions } from "./mana.js";
+import { grantedManaAbility, manaOptions, manaTapEffect } from "./mana.js";
 import { parsePermanentAbilities } from "./triggers.js";
 import { areTeammates } from "./modes.js";
 import { joinModes, keywordList, selfToTilde } from "./text.js";
-import { playerHasShroud, printedEvoke, typeLineHasCreatureType } from "./statics.js";
+import { playerHasHexproof, playerHasShroud, printedEvoke, typeLineHasCreatureType } from "./statics.js";
 
 export { selfToTilde };
 import type { CardData, CardInstance, GameState, PlayerId } from "./types.js";
@@ -93,10 +93,12 @@ export interface PermanentFilter {
   maxTotalPT?: number;
   /** Un sous-type (« Enchant Forest »). */
   subtype?: string;
-  /** « nonblack » : aucune de ces couleurs. */
-  notColors?: string[];
+  /** L'un de ces sous-types (« Equip Shaman, Warlock, or Wizard »). */
+  anySubtype?: string[];
   /** « legendary creature » : seulement les permanents légendaires. */
   legendary?: boolean;
+  /** « nonblack » : aucune de ces couleurs. */
+  notColors?: string[];
 }
 
 /** Condition entre les deux permanents échangés, vérifiée à la résolution. */
@@ -236,6 +238,7 @@ type EffectBase =
   | { type: "sacrifice"; filter: PermanentFilter; another?: boolean; orElse?: Effect[] }
   /** « tap ~ ». */
   | { type: "tapSelf" }
+  | { type: "untapSelf" }
   /** Jinxed Choker : « deals damage to you equal to the number of charge counters on it ». */
   | { type: "selfCounterDamage"; kind: string }
   /** « it gets +2/+0 until end of turn » : la créature de l'événement (Crown of Doom). */
@@ -396,10 +399,6 @@ function parsePermanentFilter(text: string): PermanentFilter | null {
       filter.controller = controller;
     }
   }
-  if (/^legendary /.test(t)) {
-    filter.legendary = true;
-    t = t.slice("legendary ".length);
-  }
   // « nonartifact, nonblack creature » : des adjectifs, pas une liste de choix.
   const adjectives = /^((?:non[a-z]+, )+non[a-z]+) (creature|permanent|artifact|enchantment|land)$/.exec(t);
   if (adjectives) {
@@ -419,6 +418,10 @@ function parsePermanentFilter(text: string): PermanentFilter | null {
   if (state) {
     filter.state = state[1] as PermanentFilter["state"];
     t = t.slice(state[0].length);
+  }
+  if (/^legendary [a-z]/.test(t)) {
+    filter.legendary = true;
+    t = t.slice("legendary ".length);
   }
   const words = t.replace(/,? or /g, ",").split(/,\s*/).map((w) => w.trim()).filter(Boolean);
   if (words.length === 0) return null;
@@ -461,6 +464,7 @@ export function permanentLabel(f: PermanentFilter): string {
     legendary: "légendaire",
   };
   let label = f.subtype ? (f.types.includes("creature") ? `créature ${f.subtype}` : f.subtype) : f.types.length > 0 ? f.types.map((t) => labels[t]).join(" ou ") : "permanent";
+  if (f.anySubtype?.length) label += ` ${f.anySubtype.join(", ").replace(/, ([^,]+)$/, " ou $1")}`;
   if (f.legendary) label += " légendaire";
   if (f.notTypes.length > 0) label += ` non-${f.notTypes.map((t) => labels[t]).join(", non-")}`;
   if (f.notColors?.length) label += ` non-${f.notColors.map((c) => ({ W: "blanche", U: "bleue", B: "noire", R: "rouge", G: "verte" })[c] ?? c).join(", non-")}`;
@@ -658,6 +662,7 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
     if (filter) return [{ type: "sacrifice", filter: { ...filter, controller: "you" }, another: true }];
   }
   if (/^tap ~$/i.test(s)) return [{ type: "tapSelf" }];
+  if (/^untap ~$/i.test(s)) return [{ type: "untapSelf" }];
   if ((m = /^(target opponent|target player) creates a token that's a copy of (?:it|~)$/i.exec(s))) {
     return [{ type: "copyToken", player: target(playerTarget(m[1]!)) }];
   }
@@ -1387,7 +1392,8 @@ export function permanentMatches(facts: PermanentFacts, filter: PermanentFilter,
   if (filter.maxTotalPT !== undefined && (facts.power ?? 0) + (facts.toughness ?? 0) > filter.maxTotalPT) return false;
   if (filter.notColors?.some((c) => facts.colors?.includes(c))) return false;
   if (filter.subtype && !new RegExp(`\\b${filter.subtype}\\b`).test(facts.typeLine.split("—")[1] ?? "")) return false;
-  if (filter.legendary && !/\bLegendary\b/i.test(facts.typeLine)) return false;
+  if (filter.anySubtype && !filter.anySubtype.some((s) => new RegExp(`\\b${s}\\b`).test(facts.typeLine.split("—")[1] ?? ""))) return false;
+  if (filter.legendary && !/\bLegendary\b/.test(facts.typeLine)) return false;
   return true;
 }
 
@@ -1423,6 +1429,7 @@ export function isLegalTarget(g: GameState, spec: TargetSpec, target: Target, ca
     const p = g.players[target.id];
     if (!spec.player || !p || p.hasConceded) return false;
     if (!spec.choice && playerHasShroud(g, p.id)) return false;
+    if (!spec.choice && playerHasHexproof(g, p.id) && p.id !== casterId && !areTeammates(g, p.id, casterId)) return false;
     if (spec.notOwner && sourceId) {
       const src = g.cards[sourceId];
       const perm = src?.ability ? g.cards[src.ability.sourceId] : src;
@@ -1580,12 +1587,32 @@ export function auraTarget(typeLine: string, oracleText: string): TargetSpec | n
   return null;
 }
 
+/**
+ * Capacités qui ne servent qu'à construire le deck (deux commandants, carte
+ * non-créature qui peut être commandant) : la validation du deck les applique.
+ */
+const DECKBUILDING_LINES: [RegExp, string][] = [
+  [/^Partner$/i, "Partenaire"],
+  [/^Partner\s*[—–-]\s*[^.]+\.?$/i, "Partenaire"],
+  [/^Friends forever$/i, "Amis pour toujours"],
+  [/^Choose a Background$/i, "Choisissez un historique"],
+  [/^Doctor's companion$/i, "Compagnon du Docteur"],
+  [/^.+ can be your commander\.?$/i, "Peut être votre commandant"],
+];
+
 function permanentLineStatus(line: string, typeLine: string, name: string): LineStatus {
+  for (const [re, title] of DECKBUILDING_LINES) if (re.test(line)) return { title, status: "auto" };
+  // « Partner with X » : la paire est vérifiée, mais la recherche du partenaire à l'arrivée reste à faire.
+  if (/^Partner with [^.]+$/i.test(line)) {
+    return { title: "Partenaire avec", status: "partial", manual: ["À l'arrivée, un joueur ciblé peut chercher le partenaire dans sa bibliothèque."] };
+  }
   if (/^enchant /i.test(line) && auraTarget(typeLine, line)) return { title: "Aura", status: "auto" };
   if (printedEvoke(line)) return { title: "Évocation", status: "auto" };
   const abilities = parsePermanentAbilities(line, name, typeLine);
   if (/^\{T\}: Add /.test(line) && manaOptions(typeLine, line).length > 0) return { title: "Capacité de mana", status: "auto" };
   if (/^(?:\w+ — )?\{T\}: For each color among permanents you control, add one mana of that color\.?$/.test(line)) return { title: "Capacité de mana", status: "auto" };
+  if (grantedManaAbility(line)) return { title: "Capacité de mana donnée", status: "auto" };
+  if (manaTapEffect(line)) return { title: "Mana en plus", status: "auto" };
   if (abilities.triggers.length > 0) return { title: "Capacité déclenchée", status: "auto" };
   const activated = abilities.activated[0];
   if (activated) {

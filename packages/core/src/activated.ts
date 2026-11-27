@@ -7,7 +7,7 @@
  * reconnaît à la résolution ; le reste est rappelé dans le journal. Une
  * capacité de mana (« Add … ») se résout tout de suite, sans la pile.
  */
-import { parsePermanentFilterText, parseSpellEffects, type PermanentFilter, type SpellEffects } from "./effects.js";
+import { parsePermanentFilterText, parseSpellEffects, permanentLabel, type PermanentFilter, type SpellEffects } from "./effects.js";
 
 export interface ActivationCost {
   /** Coût de mana (« {2}{B}{B} »), vide s'il n'y en a pas. */
@@ -24,6 +24,8 @@ export interface ActivationCost {
   sacrifice?: PermanentFilter;
   /** Loyauté ajoutée (+1) ou retirée (−2) d'un planeswalker. */
   loyalty?: number;
+  /** « This ability costs {1} less to activate for each legendary creature you control » (Otawara). */
+  reduction?: { amount: number; per: PermanentFilter };
 }
 
 export interface ActivatedAbility {
@@ -67,6 +69,7 @@ export function parseActivationCost(text: string): ActivationCost | null {
     else if (/^sacrifice ~$/i.test(part)) cost.sacrificeSelf = true;
     // Plaza of Heroes : « {3}, {T}, Exile this land: … ».
     else if (/^exile ~$/i.test(part)) cost.exileSelf = true;
+    else if (/^discard (?:this card|~)$/i.test(part)) cost.discardSelf = true;
     else if ((m = /^sacrifice (?:a|an|another) (.+)$/i.exec(part))) {
       const filter = parsePermanentFilterText(m[1]!);
       if (!filter) return null;
@@ -111,14 +114,17 @@ export function parseActivatedLine(line: string, isPlaneswalker: boolean): Activ
       equip: false,
     };
   }
-  const equip = /^Equip (\{[^}]+\}(?:\{[^}]+\})*)$/i.exec(line);
+  // « Equip {2} », et l'équipement restreint : « Equip Shaman, Warlock, or Wizard {1} », « Equip legendary creature {3} ».
+  const equip = /^Equip(?: ([^{]+?))? (\{[^}]+\}(?:\{[^}]+\})*)$/i.exec(line);
   if (equip) {
+    const restriction = equip[1] ? equipFilter(equip[1]) : { types: ["creature"], notTypes: [], controller: "you" as const };
+    if (!restriction) return null;
     return {
       text: line,
-      costText: equip[1]!,
-      cost: { mana: equip[1]!.replace(/\{0\}/g, ""), tap: false, life: 0, sacrificeSelf: false },
+      costText: equip[2]!,
+      cost: { mana: equip[2]!.replace(/\{0\}/g, ""), tap: false, life: 0, sacrificeSelf: false },
       effects: {
-        targets: [{ label: "créature que tu contrôles", permanent: { types: ["creature"], notTypes: [], controller: "you" } }],
+        targets: [{ label: permanentLabel(restriction), permanent: restriction }],
         effects: [{ type: "attach", target: 0 }],
         unknown: [],
       },
@@ -130,7 +136,8 @@ export function parseActivatedLine(line: string, isPlaneswalker: boolean): Activ
     };
   }
   // « Coût : effet ». Le coût ne contient pas de guillemets (sinon c'est une capacité donnée à une autre carte).
-  const m = /^([^:"]+): (.+)$/.exec(line);
+  // Un mot de capacité (« Channel — ») est retiré : il n'a pas d'effet sur les règles.
+  const m = /^(?:Channel — )?([^:"]+): (.+)$/.exec(line);
   if (!m) return null;
   const costText = m[1]!.trim();
   if (/^(When|Whenever|At|As|If)\b/i.test(costText)) return null;
@@ -148,6 +155,13 @@ export function parseActivatedLine(line: string, isPlaneswalker: boolean): Activ
     oncePerTurn = true;
     body = body.replace(/\s*Activate only once each turn\.?$/i, "");
   }
+  const reduction = /\s*This ability costs \{(\d+)\} less to activate for each ([^.]+)\.?$/i.exec(body);
+  if (reduction) {
+    const per = parsePermanentFilterText(reduction[2]!);
+    if (!per) return null;
+    cost.reduction = { amount: parseInt(reduction[1]!, 10), per };
+    body = body.slice(0, reduction.index);
+  }
   let ownTurn = false;
   if (/\s*Activate only during your turn\.?$/i.test(body)) {
     ownTurn = true;
@@ -159,7 +173,36 @@ export function parseActivatedLine(line: string, isPlaneswalker: boolean): Activ
     body = body.replace(/\s*You can't activate this ability during combat\.?$/i, "");
   }
   const effects = parseSpellEffects(body, "~");
-  const zone = effects.effects.some((e) => e.type === "returnSelf") ? "graveyard" : "battlefield";
+  // Canalisation (« Discard this card ») : depuis la main.
+  const zone = cost.discardSelf ? "hand" : effects.effects.some((e) => e.type === "returnSelf") ? "graveyard" : "battlefield";
   const mana = effects.effects.length > 0 && effects.effects.every((e) => e.type === "mana" || e.type === "manaAny") && effects.targets.length === 0;
   return { text: line, costText, cost, effects, zone, sorcery, oncePerTurn, mana, equip: false, ...(ownTurn ? { ownTurn } : {}), ...(notInCombat ? { notInCombat } : {}) };
+}
+
+/**
+ * La créature qu'on peut équiper : « Shaman, Warlock, or Wizard » (l'un de ces
+ * types de créature), « legendary creature »… ; `null` si ce n'est pas compris.
+ */
+function equipFilter(text: string): PermanentFilter | null {
+  const t = text.trim();
+  const words = t.replace(/,? or /g, ",").split(/,\s*/).map((w) => w.trim()).filter(Boolean);
+  if (words.length > 0 && words.every((w) => /^[A-Z][a-z]+(?:-[a-z]+)?$/.test(w)) && !/^(Legendary|Creature|Artifact)$/.test(words[0]!)) {
+    return words.length === 1
+      ? { types: ["creature"], notTypes: [], controller: "you", subtype: words[0]! }
+      : { types: ["creature"], notTypes: [], controller: "you", anySubtype: words };
+  }
+  const filter = parsePermanentFilterText(`${t} you control`);
+  if (!filter || filter.types.join() !== "creature") return null;
+  return filter;
+}
+
+/** Le coût de mana après réduction (« {3}{U} » moins 2 → « {1}{U} ») : seul le générique baisse. */
+export function reduceGenericCost(mana: string, by: number): string {
+  if (by <= 0) return mana;
+  let left = by;
+  return mana.replace(/\{(\d+)\}/g, (_, n: string) => {
+    const keep = Math.max(0, parseInt(n, 10) - left);
+    left -= parseInt(n, 10) - keep;
+    return keep > 0 ? `{${keep}}` : "";
+  });
 }

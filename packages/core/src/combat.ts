@@ -2,7 +2,7 @@
  * Combat : caractéristiques des créatures et mots-clés reconnus par le moteur.
  * Fonctions pures, sans modification de la partie.
  */
-import { colorsAmongPermanents, creaturesCantAttack, grantedTo, staticsOf } from "./statics.js";
+import { creaturesCantAttack, grantedTo, selfStats, staticsOf } from "./statics.js";
 import type { CardInstance, CardInstanceId, GameState, PlayerId } from "./types.js";
 
 export interface CombatState {
@@ -116,20 +116,17 @@ export function creatureStats(g: GameState, card: CardInstance): { power: number
   const plus = card.counters["+1/+1"] ?? 0;
   const minus = card.counters["-1/-1"] ?? 0;
   const granted = grantedTo(g, card);
-  // « Sa force et son endurance sont égales au nombre de cartes dans ta main. »
-  const statics = staticsOf(g, card);
-  const hand = statics.some((s) => s.kind === "ptEqualsHand") ? g.players[card.controllerId]!.zones.hand.length : null;
-  // Faeburrow Elder : +1/+1 par couleur parmi les permanents contrôlés.
-  const colors = statics.some((s) => s.kind === "ptPerColor") ? colorsAmongPermanents(g, card.controllerId).length : 0;
+  // « Sa force et son endurance sont égales au nombre de … » ; Faeburrow Elder, Sisay : +1/+1 pour chaque …
+  const self = selfStats(g, card);
   return {
-    power: (hand ?? toNumber(face.power)) + plus - minus + (card.ptBoost?.power ?? 0) + granted.power + colors,
-    toughness: (hand ?? toNumber(face.toughness)) + plus - minus + (card.ptBoost?.toughness ?? 0) + granted.toughness + colors,
+    power: (self.base ?? toNumber(face.power)) + plus - minus + (card.ptBoost?.power ?? 0) + granted.power + self.power,
+    toughness: (self.base ?? toNumber(face.toughness)) + plus - minus + (card.ptBoost?.toughness ?? 0) + granted.toughness + self.toughness,
   };
 }
 
 /** L'endurance imprimée est-elle un nombre (et non « * » ou absente) ? */
 export function hasKnownToughness(g: GameState, card: CardInstance): boolean {
-  return card.faceDown || /^-?\d+$/.test(faceOf(g, card).toughness ?? "") || staticsOf(g, card).some((s) => s.kind === "ptEqualsHand");
+  return card.faceDown || /^-?\d+$/.test(faceOf(g, card).toughness ?? "") || staticsOf(g, card).some((s) => s.kind === "ptEquals");
 }
 
 /** Blessures qu'il faut encore infliger pour détruire la créature. */
