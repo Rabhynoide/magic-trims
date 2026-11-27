@@ -120,6 +120,12 @@ export const PLAYER_ZONES = [
   "command",
   /** Pioche de machinations de l'archenemy (variante Archenemy). */
   "schemes",
+  /**
+   * Permanents mis hors phase (règle 702.26) : ils restent les mêmes objets (marqueurs,
+   * engagement, attachements) mais sont traités comme s'ils n'existaient pas. Ils sont
+   * rangés chez leur contrôleur et reviennent avant son dégagement.
+   */
+  "phasedOut",
 ] as const;
 export type PlayerZone = (typeof PLAYER_ZONES)[number];
 
@@ -149,6 +155,7 @@ export const PUBLIC_ZONES: ReadonlySet<Zone> = new Set<Zone>([
   "command",
   "stack",
   "plane",
+  "phasedOut",
 ]);
 
 /** Un exemplaire physique d'une carte dans la partie. */
@@ -222,6 +229,8 @@ export interface CardInstance {
   };
   /** Lancé depuis l'exil après avoir été présagé (« If this spell was foretold »). */
   foretold?: boolean;
+  /** Hors phase avec le permanent auquel elle est attachée (règle 702.26g) : revient avec lui, pas seule. */
+  phasedOutIndirectly?: boolean;
   /** Provoquée par ces joueurs (jusqu'à leur prochain tour) : doit attaquer, et un autre joueur si possible. */
   goadedBy?: PlayerId[];
   /** Cavalier of Gales : la pioche qui précède le choix des cartes à remettre est faite. */
@@ -323,6 +332,12 @@ export interface PlayerState {
   castHistory?: { turn: number; spells: CastRecord[] };
   /** Noms des sorts lancés pendant la partie (Approach of the Second Sun). */
   castNames?: string[];
+  /**
+   * Effets « until your next turn » sur le joueur (Teferi's Protection) : ils prennent fin
+   * au début de son prochain tour. `lifeCantChange` : ses points de vie ne changent pas ;
+   * `protection` : protection contre tout (ni ciblé, ni blessé).
+   */
+  untilNextTurn?: { lifeCantChange?: boolean; protection?: boolean };
   /** Terrains joués ce tour (un seul par tour, règle 305.2). */
   landsPlayed: number;
   /** Réserve de mana ; elle se vide à la fin de chaque étape (règle 500.4). */

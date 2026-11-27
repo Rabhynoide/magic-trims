@@ -144,7 +144,7 @@ export function createGame(options: NewGameOptions): GameState {
       poison: 0,
       commanderDamage: {},
       counters: {},
-      zones: { library: [], hand: [], battlefield: [], graveyard: [], exile: [], command: [], schemes: [] },
+      zones: { library: [], hand: [], battlefield: [], graveyard: [], exile: [], command: [], schemes: [], phasedOut: [] },
       commanderCasts: {},
       mulligans: 0,
       mulliganBottom: 0,
@@ -242,6 +242,7 @@ export function upgradeGame(g: GameState): GameState {
     p.mulliganBottom ??= 0;
     p.manaPool ??= emptyPool();
     p.landsPlayed ??= 0;
+    p.zones.phasedOut ??= [];
   }
   g.priority ??= g.stack.length > 0 ? { playerId: g.turn.activePlayerId, passed: [] } : null;
   return g;

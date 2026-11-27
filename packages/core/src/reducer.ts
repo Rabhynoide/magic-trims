@@ -1061,7 +1061,7 @@ export function getCard(g: GameState, id: CardInstanceId): CardInstance {
 /** Liste (modifiable) des cartes d'une zone. */
 export function zoneList(g: GameState, card: Pick<CardInstance, "zone" | "ownerId" | "controllerId">): CardInstanceId[] {
   if (card.zone === "stack" || card.zone === "planarDeck" || card.zone === "plane") return g[card.zone];
-  const holder = card.zone === "battlefield" ? card.controllerId : card.ownerId;
+  const holder = card.zone === "battlefield" || card.zone === "phasedOut" ? card.controllerId : card.ownerId;
   return g.players[holder]!.zones[card.zone];
 }
 
@@ -1809,6 +1809,10 @@ function dealDamage(g: GameState, sourceName: string, t: Target, raw: number, fr
     return 0;
   }
   if (t.kind === "player") {
+    if (lifeLocked(g, t.id)) {
+      log(g, null, `${sourceName} inflige ${amount} blessure${amount > 1 ? "s" : ""} à ${g.players[t.id]!.name}, dont les points de vie ne peuvent pas changer.`);
+      return amount;
+    }
     const sharers = lifeSharers(g, t.id);
     for (const p of sharers) p.life -= amount;
     emit(g, { type: "lifeLoss", playerId: t.id, amount });
@@ -1841,6 +1845,10 @@ function useShield(g: GameState, card: CardInstance): boolean {
 
 function changeLife(g: GameState, playerId: PlayerId, delta: number): void {
   if (delta === 0) return;
+  if (lifeLocked(g, playerId)) {
+    log(g, null, `Les points de vie de ${g.players[playerId]!.name} ne peuvent pas changer.`);
+    return;
+  }
   if (delta > 0 && cantGainLife(g, playerId)) {
     log(g, null, `${g.players[playerId]!.name} ne peut pas gagner de points de vie.`);
     return;
@@ -2166,6 +2174,22 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
           log(g, null, `${name} est exilé(e).`);
         }
         break;
+      case "phaseOut": {
+        const c = card(effect.target);
+        if (c?.zone === "battlefield") phaseOut(g, [c]);
+        break;
+      }
+      case "phaseOutAll":
+        phaseOut(g, allMatching(effect.filter));
+        break;
+      case "playerUntilNextTurn": {
+        const shield = (caster.untilNextTurn ??= {});
+        if (effect.lifeCantChange) shield.lifeCantChange = true;
+        if (effect.protection) shield.protection = true;
+        const parts = [effect.lifeCantChange ? "ses points de vie ne peuvent pas changer" : "", effect.protection ? "il a la protection contre tout" : ""].filter(Boolean);
+        log(g, null, `Jusqu'au prochain tour de ${caster.name}, ${parts.join(" et ")}.`);
+        break;
+      }
       case "damage":
         if (effect.target === "event") {
           if (eventPlayer && !eventPlayer.hasConceded) dealt += dealDamage(g, sourceName, { kind: "player", id: eventPlayer.id }, amountOf(effect.amount), damageFrom);
@@ -3152,6 +3176,13 @@ function finishSpell(g: GameState, card: CardInstance): void {
     log(g, null, `${name} est exilé (rebond) : ${g.players[owner]!.name} pourra le relancer gratuitement à son prochain entretien.`);
     return;
   }
+  // « Exile ~. » (Teferi's Protection).
+  if (g.settings.enforceRules && !card.ability && spellEffectsOf(g, card)?.exileSelf) {
+    const name = cardName(g, card);
+    moveCardTo(g, card.instanceId, "exile", "top");
+    log(g, null, `${name} est exilé(e).`);
+    return;
+  }
   moveCardTo(g, card.instanceId, "graveyard", "top");
 }
 
@@ -3306,6 +3337,8 @@ function entersUntapped(g: GameState, card: CardInstance, choice: boolean): bool
 }
 
 function payLife(g: GameState, actor: PlayerState, amount: number): void {
+  // Règle 119.8 : un joueur dont les points de vie ne peuvent pas changer ne peut pas payer de PV.
+  if (amount > 0 && lifeLocked(g, actor.id)) throw new ActionError("Tes points de vie ne peuvent pas changer : tu ne peux pas payer de points de vie.");
   for (const p of lifeSharers(g, actor.id)) p.life -= amount;
   emit(g, { type: "lifeLoss", playerId: actor.id, amount });
 }
@@ -3346,6 +3379,68 @@ function untap(g: GameState, card: CardInstance): void {
   if (!card.tapped) return;
   card.tapped = false;
   emit(g, { type: "untapped", cardId: card.instanceId });
+}
+
+/** Les points de vie de ce joueur (ou de son équipe, s'ils sont partagés) ne peuvent pas changer (Teferi's Protection). */
+function lifeLocked(g: GameState, playerId: PlayerId): boolean {
+  return lifeSharers(g, playerId).some((p) => p.untilNextTurn?.lifeCantChange);
+}
+
+/**
+ * Met des permanents hors phase (règle 702.26) : ils restent les mêmes objets mais
+ * sont traités comme s'ils n'existaient pas, sans quitter le champ de bataille (rien
+ * ne se déclenche). Ce qui leur est attaché part avec eux (hors phase « indirecte »).
+ */
+function phaseOut(g: GameState, cards: CardInstance[]): void {
+  const done: CardInstance[] = [];
+  const out = (c: CardInstance, indirect: boolean) => {
+    if (c.zone !== "battlefield") return;
+    removeFromZone(g, c);
+    c.zone = "phasedOut";
+    g.players[c.controllerId]!.zones.phasedOut.push(c.instanceId);
+    if (indirect) c.phasedOutIndirectly = true;
+    else delete c.phasedOutIndirectly;
+    // Une créature hors phase est retirée du combat (règle 506.4).
+    if (g.combat) {
+      delete g.combat.attackers[c.instanceId];
+      delete g.combat.blockers[c.instanceId];
+      g.combat.blocked = g.combat.blocked.filter((id) => id !== c.instanceId);
+    }
+    done.push(c);
+    for (const other of Object.values(g.cards)) {
+      if (other.attachedTo === c.instanceId) out(other, true);
+    }
+  };
+  for (const c of cards) out(c, false);
+  if (done.length === 0) return;
+  const names = done.filter((c) => !c.phasedOutIndirectly).map((c) => cardName(g, c));
+  const extra = done.length - names.length;
+  log(g, null, `${names.join(", ")}${extra > 0 ? ` (et ${plural(extra, "carte attachée", "cartes attachées")})` : ""} ${done.length > 1 ? "passent" : "passe"} hors phase.`);
+}
+
+/** Les permanents hors phase de ces joueurs reviennent, avec ce qui leur était attaché (règle 502.1). */
+function phaseIn(g: GameState, players: PlayerState[]): void {
+  const back: CardInstance[] = [];
+  const bring = (c: CardInstance) => {
+    if (c.zone !== "phasedOut") return;
+    removeFromZone(g, c);
+    c.zone = "battlefield";
+    g.players[c.controllerId]!.zones.battlefield.push(c.instanceId);
+    delete c.phasedOutIndirectly;
+    // Il est resté sous le même contrôle : pas de mal d'invocation (règle 302.6).
+    delete c.summoningSick;
+    back.push(c);
+    for (const other of Object.values(g.cards)) {
+      if (other.attachedTo === c.instanceId && other.zone === "phasedOut" && other.phasedOutIndirectly) bring(other);
+    }
+  };
+  for (const p of players) {
+    for (const id of [...p.zones.phasedOut]) {
+      const c = g.cards[id]!;
+      if (!c.phasedOutIndirectly) bring(c);
+    }
+  }
+  if (back.length > 0) log(g, null, `${back.map((c) => cardName(g, c)).join(", ")} ${back.length > 1 ? "reviennent" : "revient"} (fin de la mise hors phase).`);
 }
 
 /** Le type choisi en arrivant : un type de créature (un mot), ou un type de carte (Cloud Key). */
@@ -3991,19 +4086,20 @@ function applyCombatHit(
     log(g, null, `${sourceName} inflige ${plural(hit.amount, "blessure")} à ${cardName(g, target)}.`);
   } else if (hit.player) {
     const sharers = lifeSharers(g, hit.player).filter((p) => !p.hasConceded);
+    const locked = lifeLocked(g, hit.player);
     for (const p of sharers) {
       if (infect) p.poison += hit.amount;
-      else p.life -= hit.amount;
+      else if (!locked) p.life -= hit.amount;
       if (source.isCommander && !infect) {
         p.commanderDamage[source.instanceId] = (p.commanderDamage[source.instanceId] ?? 0) + hit.amount;
       }
     }
-    if (!infect && sharers.length > 0) emit(g, { type: "lifeLoss", playerId: hit.player, amount: hit.amount });
+    if (!infect && !locked && sharers.length > 0) emit(g, { type: "lifeLoss", playerId: hit.player, amount: hit.amount });
     if (sharers.length > 0) emit(g, { type: "combatDamage", cardId: source.instanceId, controllerId: source.controllerId, playerId: hit.player, amount: hit.amount });
     const what = infect ? plural(hit.amount, "marqueur poison", "marqueurs poison") : plural(hit.amount, "blessure");
     log(g, null, `${sourceName} inflige ${what} à ${names(sharers)}${infect ? "" : ` (${sharers[0]?.life ?? 0} PV)`}.`);
   }
-  if (hasKeyword(g, source, "Lifelink") && cantGainLife(g, source.controllerId)) {
+  if (hasKeyword(g, source, "Lifelink") && (cantGainLife(g, source.controllerId) || lifeLocked(g, source.controllerId))) {
     log(g, null, `${g.players[source.controllerId]!.name} ne peut pas gagner de points de vie.`);
   } else if (hasKeyword(g, source, "Lifelink")) {
     const gainers = lifeSharers(g, source.controllerId);
@@ -4262,6 +4358,8 @@ function enterStep(g: GameState, step: TurnStep): void {
     g.turn.upkeeps = (g.turn.upkeeps ?? 0) + 1;
   }
   g.turn.step = step;
+  // Mise hors phase : les permanents du joueur actif reviennent avant son dégagement (règle 502.1).
+  if (step === "untap") phaseIn(g, activePlayers(g));
   // Provocation : elle dure jusqu'au prochain tour du joueur qui a provoqué.
   if (step === "untap") {
     const active = activePlayers(g).map((p) => p.id);
@@ -4350,6 +4448,12 @@ function enterStep(g: GameState, step: TurnStep): void {
       if (!card.grantsUntil) continue;
       card.grantsUntil = card.grantsUntil.filter((x) => !active.has(x.playerId));
       if (card.grantsUntil.length === 0) delete card.grantsUntil;
+    }
+    for (const id of active) {
+      const p = g.players[id]!;
+      if (!p.untilNextTurn) continue;
+      delete p.untilNextTurn;
+      log(g, null, `Les effets « jusqu'à son prochain tour » sur ${p.name} prennent fin.`);
     }
   }
   // Le mana inutilisé disparaît entre deux étapes (règle 500.4).
@@ -4535,6 +4639,7 @@ const ZONE_NAMES: Record<Zone, { from: string; to: string }> = {
   schemes: { from: "de la pioche de machinations", to: "dans la pioche de machinations" },
   planarDeck: { from: "de la pioche de plans", to: "dans la pioche de plans" },
   plane: { from: "du plan actif", to: "sur le plan actif" },
+  phasedOut: { from: "de la zone hors phase", to: "hors phase" },
 };
 
 function zoneFrom(zone: Zone): string {
