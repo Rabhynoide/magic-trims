@@ -34,7 +34,7 @@ import {
   type PermanentFilter,
   type TokenSpec,
 } from "./effects.js";
-import { abilitiesOf, triggerConditionHolds, conditionMatches, parsePermanentAbilities, sagaChapters, stackTrigger, type TriggeredAbility, type TriggerEvent } from "./triggers.js";
+import { abilitiesOf, colorsOfCost, manaValueOfCost, triggerConditionHolds, conditionMatches, parsePermanentAbilities, sagaChapters, stackTrigger, type TriggeredAbility, type TriggerEvent } from "./triggers.js";
 import {
   attackTaxPerCreature,
   cantGainLife,
@@ -70,6 +70,7 @@ import {
   type CardData,
   type CardInstance,
   type CardInstanceId,
+  type CastRecord,
   type GameState,
   type PlayerId,
   type PendingAdvance,
@@ -426,7 +427,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const played = moveCardTo(g, cardId, "battlefield", "top", { untapChoice: untap ?? false });
     actor.landsPlayed += 1;
     log(g, actor.id, `${actor.name} joue ${cardName(g, played)}.`);
-    emit(g, { type: "landPlayed", playerId: actor.id });
+    emit(g, { type: "landPlayed", playerId: actor.id, cardId: played.instanceId });
   },
 
   foretell(g, actor, { cardId }) {
@@ -552,7 +553,18 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const fromHand = card.zone === "hand";
     const cast = moveCardTo(g, cardId, "stack", "top");
     if (fromHand) cast.castFromHand = true;
-    emit(g, { type: "cast", playerId: actor.id, cardId: cast.instanceId, typeLine });
+    const castCost = faceData?.manaCost ?? data.manaCost;
+    const record: CastRecord = {
+      cardId: cast.instanceId,
+      typeLine,
+      colors: faceData ? colorsOfCost(faceData.manaCost) : data.colors,
+      manaValue: (faceData ? manaValueOfCost(faceData.manaCost) : data.manaValue) + xValue * (castCost.match(/\{X\}/g)?.length ?? 0),
+      fromHand,
+      hasX: /\{X\}/.test(castCost),
+    };
+    const history = actor.castHistory?.turn === g.turn.number ? actor.castHistory.spells : [];
+    actor.castHistory = { turn: g.turn.number, spells: [...history, record] };
+    emit(g, { type: "cast", playerId: actor.id, cardId: cast.instanceId, typeLine, spell: record });
     cast.faceIndex = faceIndex;
     if (alternative) cast.alternative = true;
     if (evokeCost) cast.evoked = true;
@@ -819,7 +831,8 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
           payLife(g, actor, u.life * age);
         }
         if (u.mana) {
-          const paid = payMana(g, actor, u.mana.repeat(age), 0, 0, undefined, "payer ce coût");
+          const x = u.xPower ? unlessX(g, ability.sourceId) : 0;
+          const paid = payMana(g, actor, u.mana.repeat(age), x, 0, undefined, "payer ce coût");
           log(g, actor.id, `${actor.name} paie ${paid.spent.length > 0 ? formatMana(paid.spent) : "rien"}.`);
         }
         if (u.life) log(g, actor.id, `${actor.name} paie ${u.life * age} PV.`);
@@ -2612,6 +2625,12 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         if (self && n > 0) dealt += dealDamage(g, sourceName, { kind: "player", id: caster.id }, n, damageFrom);
         break;
       }
+      case "untapSelf":
+        if (self?.zone === "battlefield" && self.tapped) {
+          untap(g, self);
+          log(g, null, `${cardName(g, self)} se dégage.`);
+        }
+        break;
       case "tapSelf":
         if (self?.zone === "battlefield" && !self.tapped) {
           self.tapped = true;
@@ -3234,6 +3253,14 @@ function sacrificePermanent(g: GameState, card: CardInstance): void {
   };
   moveCardTo(g, card.instanceId, "graveyard", "top");
   emit(g, event);
+}
+
+/** X d'un « unless … pays {X}, where X is this creature's power » : la force actuelle de la source (ou imprimée si elle est partie). */
+export function unlessX(g: GameState, sourceId: CardInstanceId): number {
+  const source = g.cards[sourceId];
+  if (!source) return 0;
+  if (source.zone === "battlefield") return Math.max(0, creatureStats(g, source).power);
+  return Math.max(0, parseInt(g.cardData[source.cardId]?.power ?? "0", 10) || 0);
 }
 
 /** Dégage un permanent ; « Whenever ~ becomes untapped » (Daring Thief) se déclenche s'il était engagé. */

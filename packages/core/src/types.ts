@@ -46,6 +46,19 @@ export interface CardData {
   localized?: LocalizedCard;
 }
 
+/** Ce qu'on retient d'un sort lancé, pour les déclencheurs « Whenever you cast a … spell ». */
+export interface CastRecord {
+  /** L'objet sur la pile. */
+  cardId: CardInstanceId;
+  typeLine: string;
+  /** Couleurs du sort (de la face lancée). */
+  colors: string[];
+  manaValue: number;
+  fromHand: boolean;
+  /** « with {X} in its mana cost ». */
+  hasX: boolean;
+}
+
 export interface CardFace {
   name: string;
   manaCost: string;
@@ -304,6 +317,8 @@ export interface PlayerState {
   drawsThisTurn?: { turn: number; count: number };
   /** Sorts lancés ce tour (Moderation…). */
   spellsCast?: { turn: number; count: number };
+  /** Sorts lancés ce tour, dans l'ordre (« your first noncreature spell each turn », Esper Sentinel). */
+  castHistory?: { turn: number; spells: CastRecord[] };
   /** Noms des sorts lancés pendant la partie (Approach of the Second Sun). */
   castNames?: string[];
   /** Terrains joués ce tour (un seul par tour, règle 305.2). */

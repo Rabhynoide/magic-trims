@@ -16,7 +16,7 @@ import { hasCreatureType, parseStaticLine, typeLineHasCreatureType, type StaticA
 import { creatureStats } from "./combat.js";
 import { areTeammates, isActivePlayer } from "./modes.js";
 import type { TurnStep } from "./turn.js";
-import type { CardData, CardInstanceId, GameState, PlayerId, StackAbility, Zone } from "./types.js";
+import type { CardData, CardInstanceId, CastRecord, GameState, PlayerId, StackAbility, Zone } from "./types.js";
 
 export type TriggerEvent =
   /** `cast` : le permanent arrive depuis la pile (il a été lancé). */
@@ -28,8 +28,9 @@ export type TriggerEvent =
   | { type: "lifeGain"; playerId: PlayerId; amount: number }
   | { type: "lifeLoss"; playerId: PlayerId; amount: number }
   | { type: "step"; step: TurnStep; playerId: PlayerId }
-  | { type: "landPlayed"; playerId: PlayerId }
-  | { type: "cast"; playerId: PlayerId; cardId: CardInstanceId; typeLine: string }
+  | { type: "landPlayed"; playerId: PlayerId; cardId?: CardInstanceId }
+  /** `spell` : ce qu'on sait du sort (couleurs, valeur de mana, d'où il est lancé). */
+  | { type: "cast"; playerId: PlayerId; cardId: CardInstanceId; typeLine: string; spell?: CastRecord }
   | { type: "attacks"; cardId: CardInstanceId }
   | { type: "blocks"; cardId: CardInstanceId }
   | { type: "exploits"; cardId: CardInstanceId }
@@ -67,10 +68,11 @@ export type TriggerCondition =
   | { on: "dies"; self: boolean; others: boolean; whose: Whose; batched?: boolean; subtype?: string }
   /** `nth` : « draw your second card each turn ». */
   /** `controlsSameName` : « an opponent who controls an artifact named ~ » ; `theirTurn` : « during their turn ». */
-  | { on: "draw" | "lifeGain" | "lifeLoss" | "landPlayed"; whose: Whose; nth?: number; controlsSameName?: boolean; theirTurn?: boolean }
+  /** `legendary` : « play a legendary land » (Shanid). */
+  | { on: "draw" | "lifeGain" | "lifeLoss" | "landPlayed"; whose: Whose; nth?: number; controlsSameName?: boolean; theirTurn?: boolean; legendary?: boolean }
   /** `enchanted` : « enchanted player's upkeep » (aura sur un joueur) ; `first` : « first upkeep each turn ». */
   | { on: "step"; step: "upkeep" | "draw" | "main1" | "beginCombat" | "end"; whose: Whose; enchanted?: boolean; first?: boolean }
-  | { on: "cast"; whose: Whose; types: string[]; notTypes: string[]; self?: boolean }
+  | ({ on: "cast"; whose: Whose; self?: boolean } & CastFilter)
   /** « Whenever ~ attacks », « … blocks », « … attacks or blocks ». */
   | { on: "combat"; attacks: boolean; blocks: boolean; anyCreature?: boolean; defender?: "you" }
   /** « Whenever you sacrifice a nontoken Elemental » : `subtype` (ou type), `nontoken`. */
@@ -89,6 +91,137 @@ export type TriggerCondition =
   | { on: "chapter"; chapters: number[] }
   /** « When ~ leaves the battlefield » ; `enchanted` : « When enchanted permanent dies or is put into exile » (`to` : zones visées). */
   | { on: "leaves"; enchanted?: boolean; to?: Zone[] };
+
+/**
+ * Ce que doit être un sort lancé : « a legendary spell », « a white spell »,
+ * « their first noncreature spell each turn », « a spell from anywhere other
+ * than your hand »… Toutes les précisions doivent être vraies à la fois.
+ */
+export interface CastFilter {
+  /** Au moins un de ces types de carte (vide : n'importe lequel). */
+  types: string[];
+  /** Aucun de ces types. */
+  notTypes: string[];
+  legendary?: boolean;
+  /** Artefact, légendaire ou saga. */
+  historic?: boolean;
+  /** Au moins une de ces couleurs. */
+  colors?: string[];
+  multicolored?: boolean;
+  colorless?: boolean;
+  /** Au moins un de ces sous-types (Merfolk, Aura, Spirit…). */
+  subtypes?: string[];
+  minManaValue?: number;
+  /** D'où le sort est lancé. */
+  from?: "hand" | "notHand";
+  hasX?: boolean;
+  /** Le n-ième sort de ce genre lancé par ce joueur ce tour (« your first … spell each turn »). */
+  nth?: number;
+  /** « during each opponent's turn ». */
+  opponentsTurn?: boolean;
+}
+
+const CARD_TYPE_WORDS = ["artifact", "creature", "enchantment", "instant", "sorcery", "planeswalker", "battle", "kindred", "tribal"];
+const COLOR_WORDS: Record<string, string> = { white: "W", blue: "U", black: "B", red: "R", green: "G" };
+const ORDINALS: Record<string, number> = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5 };
+
+/** Lit « [your first] legendary spell from your hand » (après « you cast »). */
+function parseCastFilter(text: string): CastFilter | null {
+  let t = text.trim();
+  const f: CastFilter = { types: [], notTypes: [] };
+  const ord = /^(?:your|their|his or her) (first|second|third|fourth|fifth) (.+)$/i.exec(t);
+  if (ord) {
+    f.nth = ORDINALS[ord[1]!.toLowerCase()]!;
+    t = ord[2]!;
+  } else {
+    const art = /^(?:an?|another) (.+)$/i.exec(t);
+    if (!art) return null;
+    t = art[1]!;
+  }
+  let perTurn = false;
+  for (;;) {
+    let m: RegExpExecArray | null;
+    if ((m = / each turn$/i.exec(t))) perTurn = true;
+    else if ((m = / during each opponent's turn$/i.exec(t))) f.opponentsTurn = true;
+    else if ((m = / from your hand$/i.exec(t))) f.from = "hand";
+    else if ((m = / from anywhere other than your hand$/i.exec(t))) f.from = "notHand";
+    else if ((m = / with mana value (\d+) or greater$/i.exec(t))) f.minManaValue = parseInt(m[1]!, 10);
+    else if ((m = / with \{X\} in its mana cost$/i.exec(t))) f.hasX = true;
+    else break;
+    t = t.slice(0, m.index);
+  }
+  if (f.nth !== undefined && !perTurn && !f.opponentsTurn) return null;
+  if (f.nth === undefined && (perTurn || f.opponentsTurn)) return null;
+  const desc = /^(?:(.*) )?spell$/i.exec(t);
+  if (!desc) return null;
+  const words = (desc[1] ?? "").trim();
+  if (!words) return f;
+  // « instant or sorcery », « Aura or Equipment », « Spirit or Arcane » : une seule sorte de mot de chaque côté.
+  const alts = words.split(/ or /);
+  if (alts.length > 1) {
+    if (alts.some((a) => /\s/.test(a))) return null;
+    const low = alts.map((a) => a.toLowerCase());
+    if (low.every((a) => CARD_TYPE_WORDS.includes(a))) f.types = low;
+    else if (low.every((a) => a in COLOR_WORDS)) f.colors = low.map((a) => COLOR_WORDS[a]!);
+    else if (alts.every((a) => /^[A-Z][a-z]+$/.test(a))) f.subtypes = alts;
+    else return null;
+    return f;
+  }
+  for (const word of words.split(/\s+/)) {
+    const w = word.toLowerCase();
+    if (w === "legendary") f.legendary = true;
+    else if (w === "historic") f.historic = true;
+    else if (w === "multicolored") f.multicolored = true;
+    else if (w === "colorless") f.colorless = true;
+    else if (w in COLOR_WORDS) f.colors = [...(f.colors ?? []), COLOR_WORDS[w]!];
+    else if (w.startsWith("non") && CARD_TYPE_WORDS.includes(w.slice(3))) f.notTypes.push(w.slice(3));
+    else if (CARD_TYPE_WORDS.includes(w) && f.types.length === 0) f.types.push(w);
+    else if (/^[A-Z][a-z]+$/.test(word) && !f.subtypes) f.subtypes = [word];
+    else return null;
+  }
+  // « white blue spell » n'existe pas : deux couleurs voudraient dire « les deux ».
+  if ((f.colors?.length ?? 0) > 1) return null;
+  return f;
+}
+
+/** Le sort lancé correspond-il au filtre (sans compter le rang) ? */
+function castFilterMatches(f: CastFilter, spell: CastRecord): boolean {
+  const type = spell.typeLine.toLowerCase();
+  const has = (t: string) => new RegExp(`\\b${t}\\b`).test(type);
+  if (f.types.length > 0 && !f.types.some(has)) return false;
+  if (f.notTypes.some(has)) return false;
+  if (f.legendary && !has("legendary")) return false;
+  if (f.historic && !has("artifact") && !has("legendary") && !has("saga")) return false;
+  if (f.colors && !f.colors.some((c) => spell.colors.includes(c))) return false;
+  if (f.multicolored && spell.colors.length < 2) return false;
+  if (f.colorless && spell.colors.length > 0) return false;
+  if (f.subtypes) {
+    const sub = (spell.typeLine.split("—")[1] ?? "").split("//")[0]!;
+    if (!f.subtypes.some((s) => new RegExp(`\\b${s}\\b`, "i").test(sub))) return false;
+  }
+  if (f.minManaValue !== undefined && spell.manaValue < f.minManaValue) return false;
+  if (f.from === "hand" && !spell.fromHand) return false;
+  if (f.from === "notHand" && spell.fromHand) return false;
+  if (f.hasX && !spell.hasX) return false;
+  return true;
+}
+
+/** Couleurs d'un coût de mana (« {1}{W/U} » : blanc et bleu). */
+export function colorsOfCost(cost: string): string[] {
+  return ["W", "U", "B", "R", "G"].filter((c) => new RegExp(`\\{[^}]*${c}[^}]*\\}`).test(cost));
+}
+
+/** Valeur de mana d'un coût imprimé (X compte pour 0). */
+export function manaValueOfCost(cost: string): number {
+  let total = 0;
+  for (const [, sym] of cost.matchAll(/\{([^}]+)\}/g)) {
+    if (/^\d+$/.test(sym!)) total += parseInt(sym!, 10);
+    else if (/^[XYZ]$/i.test(sym!)) continue;
+    else if (/^2\//.test(sym!)) total += 2;
+    else total += 1;
+  }
+  return total;
+}
 
 export interface TriggeredAbility {
   /** Texte de la capacité, tel qu'imprimé. */
@@ -179,15 +312,11 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   if ((m = /^(you|an opponent|a player) loses? life$/i.exec(t))) return { on: "lifeLoss", whose: whose(m[1]!)! };
   if ((m = /^(you|an opponent|a player) plays? a land$/i.exec(t))) return { on: "landPlayed", whose: whose(m[1]!)! };
   if (/^you cast ~$/i.test(t)) return { on: "cast", whose: "you", types: [], notTypes: [], self: true };
-  if ((m = /^(you|an opponent|a player) casts? an? (?:(creature|noncreature|artifact|enchantment|instant|sorcery|instant or sorcery) )?spell$/i.exec(t))) {
-    const type = (m[2] ?? "").toLowerCase();
-    return {
-      on: "cast",
-      whose: whose(m[1]!)!,
-      types: type === "instant or sorcery" ? ["instant", "sorcery"] : type && !type.startsWith("non") ? [type] : [],
-      notTypes: type.startsWith("non") ? [type.slice(3)] : [],
-    };
+  if ((m = /^(you|an opponent|a player) casts? (.+)$/i.exec(t))) {
+    const filter = parseCastFilter(m[2]!);
+    if (filter) return { on: "cast", whose: whose(m[1]!)!, ...filter };
   }
+  if ((m = /^(you|an opponent|a player) plays? a legendary land$/i.exec(t))) return { on: "landPlayed", whose: whose(m[1]!)!, legendary: true };
   if ((m = /^~ (attacks|blocks|attacks or blocks)$/i.exec(t))) {
     const what = m[1]!.toLowerCase();
     return { on: "combat", attacks: what.includes("attacks"), blocks: what.includes("blocks") };
@@ -233,6 +362,22 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   return null;
 }
 
+/**
+ * Une ou plusieurs conditions : « you play a legendary land or cast a legendary
+ * spell » (Shanid) donne deux déclencheurs au même effet.
+ */
+export function parseTriggerConditions(text: string): TriggerCondition[] | null {
+  const single = parseTriggerCondition(text);
+  if (single) return [single];
+  const both = /^(you|an opponent|a player) (plays? an? (?:legendary )?land) or (casts? .+)$/i.exec(text.trim());
+  if (both) {
+    const a = parseTriggerCondition(`${both[1]} ${both[2]}`);
+    const b = parseTriggerCondition(`${both[1]} ${both[3]}`);
+    if (a && b) return [a, b];
+  }
+  return null;
+}
+
 const cache = new Map<string, PermanentAbilities>();
 
 export interface Unless {
@@ -241,6 +386,8 @@ export interface Unless {
   life?: number;
   discard?: number;
   perAge?: boolean;
+  /** « {X}, where X is this creature's power » : X vaut la force de la source au moment de payer (Esper Sentinel). */
+  xPower?: boolean;
 }
 
 /** Lit le corps d'une capacité déclenchée : ses effets, et si elle est facultative. */
@@ -257,9 +404,13 @@ function parseTriggerBody(text: string): { effects: SpellEffects; optional: bool
   const discard = /^(.+) unless you discard a card$/i.exec(bare);
   if (discard) return { effects: parseSpellEffects(cap(discard[1]!), "~"), optional: false, unless: { payer: "you", discard: 1 } };
   // Une seule phrase : « … unless you pay {1} » (pas la dernière phrase d'un texte plus long, comme Ashling).
-  const unlessPay = /\.\s/.test(bare) ? null : /^(.+) unless (?:you pay|that player pays) ((?:\{[^}]+\})+)$/i.exec(bare);
-  if (unlessPay) {
-    return { effects: parseSpellEffects(cap(unlessPay[1]!), "~"), optional: false, unless: { payer: /that player/i.test(text) ? "event" : "you", mana: unlessPay[2]! } };
+  const unlessPay = /\.\s/.test(bare) ? null : /^(.+) unless (?:you pay|that player pays) ((?:\{[^}]+\})+)(, where X is ~'s power)?$/i.exec(bare);
+  if (unlessPay && (!unlessPay[3] || unlessPay[2] === "{X}")) {
+    return {
+      effects: parseSpellEffects(cap(unlessPay[1]!), "~"),
+      optional: false,
+      unless: { payer: /that player/i.test(text) ? "event" : "you", mana: unlessPay[2]!, ...(unlessPay[3] ? { xPower: true } : {}) },
+    };
   }
   // « You may pay 2 life. If you do, … », « its controller may pay 1 life. If they do, they draw a card. »
   const life = /^(?:you|its controller) may pay (\d+) life\. If (?:you|they) do, (?:they )?(.+)$/i.exec(text);
@@ -423,7 +574,8 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
       continue;
     }
     if (m) {
-      const condition = parseTriggerCondition(m[2]!);
+      const conditions = parseTriggerConditions(m[2]!);
+      const condition = conditions?.[0] ?? null;
       let body = m[3]!;
       let oncePerTurn = false;
       if (/\s*This ability triggers only once each turn\.?$/i.test(body)) {
@@ -452,9 +604,9 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         result.unknown.push(line);
         continue;
       }
-      result.triggers.push({
+      for (const each of conditions!) result.triggers.push({
         text: line,
-        condition,
+        condition: each,
         effects: parsed.effects,
         ifUntapped,
         optional: parsed.optional,
@@ -562,9 +714,18 @@ export function conditionMatches(
     case "cast": {
       if (c.on !== "cast" || !whoseMatches(g, c.whose, source.controllerId, event.playerId)) return false;
       if (c.self) return event.cardId === source.instanceId;
-      const type = event.typeLine.toLowerCase();
-      const has = (t: string) => new RegExp(`\\b${t}\\b`).test(type);
-      return (c.types.length === 0 || c.types.some(has)) && !c.notTypes.some(has);
+      const spell: CastRecord = event.spell ?? { cardId: event.cardId, typeLine: event.typeLine, colors: [], manaValue: 0, fromHand: true, hasX: false };
+      if (!castFilterMatches(c, spell)) return false;
+      if (c.opponentsTurn && isActivePlayer(g, event.playerId)) return false;
+      if (c.nth !== undefined) {
+        // Rang parmi les sorts du même genre lancés par ce joueur ce tour, jusqu'à celui-ci compris.
+        const player = g.players[event.playerId];
+        const spells = player?.castHistory?.turn === g.turn.number ? player.castHistory.spells : [spell];
+        const upTo = spells.findIndex((s) => s.cardId === event.cardId);
+        const rank = (upTo < 0 ? spells : spells.slice(0, upTo + 1)).filter((s) => castFilterMatches(c, s)).length;
+        if (rank !== c.nth) return false;
+      }
+      return true;
     }
     case "attacks":
     case "blocks":
@@ -597,6 +758,15 @@ export function conditionMatches(
       if (c.to && !c.to.includes(event.to)) return false;
       if (c.enchanted) return Boolean(event.auras?.some((a) => a.cardId === source.instanceId));
       return event.cardId === source.instanceId;
+    case "landPlayed": {
+      if (c.on !== "landPlayed") return false;
+      if (c.legendary) {
+        const land = event.cardId ? g.cards[event.cardId] : undefined;
+        const data = land ? g.cardData[land.cardId] : undefined;
+        if (!/\bLegendary\b/.test(data?.faces?.[land!.faceIndex]?.typeLine ?? data?.typeLine ?? "")) return false;
+      }
+      return whoseMatches(g, c.whose, source.controllerId, event.playerId);
+    }
     default:
       return c.on === event.type && whoseMatches(g, c.whose, source.controllerId, event.playerId);
   }

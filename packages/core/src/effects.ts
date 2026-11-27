@@ -202,6 +202,7 @@ type EffectBase =
   | { type: "sacrifice"; filter: PermanentFilter; another?: boolean; orElse?: Effect[] }
   /** « tap ~ ». */
   | { type: "tapSelf" }
+  | { type: "untapSelf" }
   /** Jinxed Choker : « deals damage to you equal to the number of charge counters on it ». */
   | { type: "selfCounterDamage"; kind: string }
   /** « it gets +2/+0 until end of turn » : la créature de l'événement (Crown of Doom). */
@@ -604,6 +605,7 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
     if (filter) return [{ type: "sacrifice", filter: { ...filter, controller: "you" }, another: true }];
   }
   if (/^tap ~$/i.test(s)) return [{ type: "tapSelf" }];
+  if (/^untap ~$/i.test(s)) return [{ type: "untapSelf" }];
   if ((m = /^(target opponent|target player) creates a token that's a copy of (?:it|~)$/i.exec(s))) {
     return [{ type: "copyToken", player: target(playerTarget(m[1]!)) }];
   }

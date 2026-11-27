@@ -560,7 +560,7 @@ function DecisionBanner(props: { view: GameView }) {
       <span>
         <strong>{ability.sourceName}</strong> :{" "}
         {unless
-          ? `« ${ability.text} » : payer ${[unless.mana ? unless.mana : "", unless.life ? `${unless.life} PV` : "", unless.discard ? "une carte défaussée" : ""].filter(Boolean).join(", ")}${unless.perAge ? " par marqueur d'âge" : ""} pour l'empêcher ?`
+          ? `« ${ability.text} » : payer ${[unless.mana ? `${unless.mana}${unless.xPower ? ` (X = force de ${ability.sourceName})` : ""}` : "", unless.life ? `${unless.life} PV` : "", unless.discard ? "une carte défaussée" : ""].filter(Boolean).join(", ")}${unless.perAge ? " par marqueur d'âge" : ""} pour l'empêcher ?`
           : ability.text === "Exploit" ? "exploitation, sacrifier une créature ?" : `« ${ability.text} »${trigger?.payMana ? ` (payer ${trigger.payMana})` : ""}${trigger?.payLife ? ` (payer ${trigger.payLife} PV)` : ""}. Tu le fais ?`}
       </span>
       <span className="decision-buttons">
