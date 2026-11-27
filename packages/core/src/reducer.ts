@@ -673,8 +673,39 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const card = getCard(g, cardId);
     const ability = card.ability;
     if (!ability?.awaitingDecision || card.zone !== "stack") throw new ActionError("Cette capacité n'attend pas de réponse.");
-    if (card.controllerId !== actor.id) throw new ActionError("Seul le contrôleur de la capacité décide.");
+    const decider = ability.decider ?? card.controllerId;
+    if (decider !== actor.id) throw new ActionError(`C'est à ${g.players[decider]!.name} de décider.`);
     const trigger = stackTrigger(g.cardData[card.cardId], ability);
+    // « … unless that player pays {1} » : payer empêche l'effet.
+    if (ability.decider !== undefined || (trigger?.unless && ability.unlessPaid === undefined)) {
+      const u = trigger!.unless!;
+      const age = u.perAge ? Math.max(1, g.cards[ability.sourceId]?.counters["âge"] ?? 1) : 1;
+      if (accept) {
+        if (u.discard) {
+          const chosen = choice ? g.cards[choice] : undefined;
+          if (!chosen || chosen.zone !== "hand" || chosen.ownerId !== actor.id) throw new ActionError("Choisis une carte de ta main à défausser.");
+          const name = cardName(g, chosen);
+          moveCardTo(g, chosen.instanceId, "graveyard", "top");
+          log(g, actor.id, `${actor.name} défausse ${name}.`);
+        }
+        if (u.life) {
+          if (actor.life < u.life * age) throw new ActionError("Tu n'as pas assez de points de vie.");
+          payLife(g, actor, u.life * age);
+        }
+        if (u.mana) {
+          const paid = payMana(g, actor, u.mana.repeat(age), 0, 0, undefined, "payer ce coût");
+          log(g, actor.id, `${actor.name} paie ${paid.spent.length > 0 ? formatMana(paid.spent) : "rien"}.`);
+        }
+        if (u.life) log(g, actor.id, `${actor.name} paie ${u.life * age} PV.`);
+      } else {
+        log(g, actor.id, `${actor.name} ne paie pas pour « ${ability.text} ».`);
+      }
+      ability.unlessPaid = accept;
+      delete ability.awaitingDecision;
+      delete ability.decider;
+      resolveAbility(g, card);
+      return;
+    }
     if (accept && trigger) {
       const sac = trigger.effects.effects.find((e) => e.type === "sacrifice");
       if (sac && sac.type === "sacrifice") {
@@ -707,7 +738,8 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const card = getCard(g, cardId);
     const pending = card.cardChoice;
     if (!pending || card.zone !== "stack") throw new ActionError("Aucun choix de cartes n'est en attente.");
-    if (card.controllerId !== actor.id) throw new ActionError("Seul son contrôleur choisit.");
+    const chooser = pending.playerId ?? card.controllerId;
+    if (chooser !== actor.id) throw new ActionError(`C'est à ${g.players[chooser]!.name} de choisir.`);
     const chosen = [...new Set(cardIds)];
     if (chosen.length < pending.min || chosen.length > pending.max || chosen.some((id) => !pending.options.includes(id))) {
       throw new ActionError(pending.min === pending.max ? `Choisis ${plural(pending.max, "carte")} parmi celles proposées.` : `Choisis au plus ${plural(pending.max, "carte")} parmi celles proposées.`);
@@ -1434,8 +1466,29 @@ function resolveAbility(g: GameState, card: CardInstance): void {
     moveCardTo(g, card.instanceId, "graveyard", "top");
     return;
   }
-  // « You may » : le contrôleur répond d'abord (la capacité reste sur la pile en attendant).
   const trigger = stackTrigger(g.cardData[card.cardId], ability);
+  // « … unless that player pays » : le payeur répond d'abord (entretien cumulatif : un marqueur d'âge avant).
+  if (trigger?.unless && ability.unlessPaid === undefined) {
+    const source = g.cards[ability.sourceId];
+    if (trigger.unless.perAge && !ability.aged && source?.zone === "battlefield") {
+      source.counters["âge"] = (source.counters["âge"] ?? 0) + 1;
+      ability.aged = true;
+    }
+    const payerId = trigger.unless.payer === "event" ? ability.eventPlayerId : card.controllerId;
+    if (payerId && !g.players[payerId]!.hasConceded) {
+      ability.awaitingDecision = true;
+      if (payerId !== card.controllerId) ability.decider = payerId;
+      log(g, null, `${g.players[payerId]!.name} choisit s'il paie pour la capacité de ${ability.sourceName}.`);
+      return;
+    }
+    ability.unlessPaid = false;
+  }
+  if (ability.unlessPaid) {
+    log(g, null, `La capacité de ${ability.sourceName} ne fait rien (le coût a été payé).`);
+    moveCardTo(g, card.instanceId, "graveyard", "top");
+    return;
+  }
+  // « You may » : le contrôleur répond d'abord (la capacité reste sur la pile en attendant).
   if (trigger?.optional && ability.accepted === undefined) {
     ability.awaitingDecision = true;
     log(g, null, `${g.players[card.controllerId]!.name} choisit s'il applique la capacité de ${ability.sourceName}.`);
@@ -1658,21 +1711,25 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
       }
       case "search": {
         const chosen = source.choices?.[effects.indexOf(effect)] ?? [];
+        const finder = effect.who ? (whoOf(effect.who)[0] ?? caster) : caster;
         for (const id of chosen) {
           const c = g.cards[id];
           if (!c || c.zone !== "library") continue;
           const name = cardName(g, c);
+          const owner = g.players[c.ownerId]!;
           if (effect.to === "hand") moveCardTo(g, id, "hand", "top");
-          else moveCardTo(g, id, "battlefield", "top", { controllerId: caster.id });
-          log(g, null, `${caster.name} ${effect.reveal || effect.to === "battlefield" ? `prend ${name}` : "prend une carte"} dans sa bibliothèque.`);
+          else moveCardTo(g, id, "battlefield", "top", { controllerId: owner.id, tapped: effect.tapped ?? false });
+          log(g, null, `${owner.name} ${effect.reveal || effect.to === "battlefield" ? `prend ${name}` : "prend une carte"} dans sa bibliothèque.`);
         }
-        if (chosen.length === 0) log(g, null, `${caster.name} ne prend aucune carte dans sa bibliothèque.`);
+        if (chosen.length === 0) log(g, null, `${finder.name} ne prend aucune carte dans sa bibliothèque.`);
         break;
       }
-      case "shuffle":
-        shuffleLibrary(g, caster);
-        log(g, null, `${caster.name} mélange sa bibliothèque.`);
+      case "shuffle": {
+        const who = effect.who ? (whoOf(effect.who)[0] ?? caster) : caster;
+        shuffleLibrary(g, who);
+        log(g, null, `${who.name} mélange sa bibliothèque.`);
         break;
+      }
       case "revealHand":
         for (const p of whoOf(effect.who)) {
           for (const id of p.zones.hand) addRevealed(g.cards[id]!, g.turnOrder);
@@ -1687,6 +1744,15 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
           const name = cardName(g, c);
           moveCardTo(g, id, "graveyard", "top");
           log(g, null, `${g.players[c.ownerId]!.name} défausse ${name}.`);
+        }
+        break;
+      }
+      case "sacrificeSelf": {
+        const self2 = ability ? g.cards[ability.sourceId] : undefined;
+        if (self2?.zone === "battlefield") {
+          const name = cardName(g, self2);
+          moveCardTo(g, self2.instanceId, "graveyard", "top");
+          log(g, null, `${g.players[self2.controllerId]?.name ?? caster.name} sacrifie ${name}.`);
         }
         break;
       }
@@ -1990,10 +2056,22 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
     let options: CardInstanceId[] = [];
     let label = "";
     let min = 0;
+    let chooser = controller;
     if (effect.type === "search") {
-      options = controller.zones.library.filter((id) => typeOk(id, effect.types));
+      // « Its controller may search… » (Path to Exile) : c'est le contrôleur de la cible qui cherche.
+      const who = effect.who;
+      if (who && typeof who === "object" && "controllerOf" in who) {
+        const t = targets[who.controllerOf];
+        const id = legal[who.controllerOf] && t?.kind === "card" ? g.cards[t.id]?.controllerId : undefined;
+        if (!id) {
+          card.choices = { ...(card.choices ?? {}), [index]: [] };
+          continue;
+        }
+        chooser = g.players[id]!;
+      }
+      options = chooser.zones.library.filter((id) => typeOk(id, effect.types));
       label = `Choisis ${effect.types.length > 0 ? `une carte (${effect.types.join(", ")})` : "une carte"} de ta bibliothèque`;
-      for (const id of options) addRevealed(g.cards[id]!, [controller.id]);
+      for (const id of options) addRevealed(g.cards[id]!, [chooser.id]);
     } else {
       const who = effect.who;
       const playerId = typeof who === "object" && "target" in who && legal[who.target] && targets[who.target]?.kind === "player" ? targets[who.target]!.id : undefined;
@@ -2008,8 +2086,8 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
       card.choices = { ...(card.choices ?? {}), [index]: [] };
       continue;
     }
-    card.cardChoice = { index, options, min, max: 1, label };
-    log(g, null, `${controller.name} choisit une carte pour ${cardName(g, card)}.`);
+    card.cardChoice = { index, options, min, max: 1, label, ...(chooser.id !== controller.id ? { playerId: chooser.id } : {}) };
+    log(g, null, `${chooser.name} choisit une carte pour ${cardName(g, card)}.`);
     return true;
   }
   return false;

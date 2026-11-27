@@ -86,6 +86,11 @@ export interface TriggeredAbility {
   payMana?: string;
   /** « may pay 1 life. If they do, … » : les points de vie à payer pour accepter. */
   payLife?: number;
+  /**
+   * « … unless that player pays {1} », « sacrifice ~ unless you discard a card », entretien cumulatif :
+   * le payeur peut payer pour empêcher l'effet. `perAge` : le coût est multiplié par les marqueurs d'âge.
+   */
+  unless?: Unless;
   /** « This ability triggers only once each turn. » */
   oncePerTurn?: boolean;
 }
@@ -184,9 +189,31 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
 
 const cache = new Map<string, PermanentAbilities>();
 
+export interface Unless {
+  payer: "event" | "you";
+  mana?: string;
+  life?: number;
+  discard?: number;
+  perAge?: boolean;
+}
+
 /** Lit le corps d'une capacité déclenchée : ses effets, et si elle est facultative. */
-function parseTriggerBody(text: string): { effects: SpellEffects; optional: boolean; payMana?: string; payLife?: number } | null {
+function parseTriggerBody(text: string): { effects: SpellEffects; optional: boolean; payMana?: string; payLife?: number; unless?: Unless } | null {
   const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+  const bare = text.replace(/\.$/, "");
+  // Rhystic Study : « you may draw a card unless that player pays {1} ».
+  const unlessMay = /^you may (.+) unless that player pays ((?:\{[^}]+\})+)$/i.exec(bare);
+  if (unlessMay) return { effects: parseSpellEffects(cap(unlessMay[1]!), "~"), optional: true, unless: { payer: "event", mana: unlessMay[2]! } };
+  // Smothering Tithe : « that player may pay {2}. If the player doesn't, you create a Treasure token. »
+  const tithe = /^that player may pay ((?:\{[^}]+\})+)\. If (?:the player|they) (?:doesn't|don't), (.+)$/i.exec(bare);
+  if (tithe) return { effects: parseSpellEffects(cap(tithe[2]!), "~"), optional: false, unless: { payer: "event", mana: tithe[1]! } };
+  // Solitary Confinement : « sacrifice ~ unless you discard a card ».
+  const discard = /^(.+) unless you discard a card$/i.exec(bare);
+  if (discard) return { effects: parseSpellEffects(cap(discard[1]!), "~"), optional: false, unless: { payer: "you", discard: 1 } };
+  const unlessPay = /^(.+) unless (?:you pay|that player pays) ((?:\{[^}]+\})+)$/i.exec(bare);
+  if (unlessPay) {
+    return { effects: parseSpellEffects(cap(unlessPay[1]!), "~"), optional: false, unless: { payer: /that player/i.test(text) ? "event" : "you", mana: unlessPay[2]! } };
+  }
   // « You may pay 2 life. If you do, … », « its controller may pay 1 life. If they do, they draw a card. »
   const life = /^(?:you|its controller) may pay (\d+) life\. If (?:you|they) do, (?:they )?(.+)$/i.exec(text);
   if (life) return { effects: parseSpellEffects(cap(life[2]!), "~"), optional: true, payLife: parseInt(life[1]!, 10) };
@@ -225,6 +252,19 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
       result.triggers.push(EXPLOIT);
       continue;
     }
+    // Entretien cumulatif : un marqueur d'âge, puis payer autant de fois le coût ou sacrifier.
+    const cumulative = /^Cumulative upkeep(?: |—)(?:((?:\{[^}]+\})+)|Pay (\d+) life)\.?$/i.exec(line);
+    if (cumulative) {
+      result.triggers.push({
+        text: line,
+        condition: { on: "step", step: "upkeep", whose: "you" },
+        effects: { targets: [], effects: [{ type: "sacrificeSelf" }], unknown: [] },
+        ifUntapped: false,
+        optional: false,
+        unless: { payer: "you", perAge: true, ...(cumulative[1] ? { mana: cumulative[1] } : { life: parseInt(cumulative[2]!, 10) }) },
+      });
+      continue;
+    }
     // Chapitres d'une saga : « I — … », « II, III — … ».
     const chapter = /^((?:I{1,3}|IV|V|VI)(?:, (?:I{1,3}|IV|V|VI))*) — (.+)$/.exec(tilde);
     if (chapter && /\bSaga\b/.test(typeLine)) {
@@ -243,6 +283,7 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         optional: parsed.optional,
         ...(parsed.payMana ? { payMana: parsed.payMana } : {}),
         ...(parsed.payLife ? { payLife: parsed.payLife } : {}),
+        ...(parsed.unless ? { unless: parsed.unless } : {}),
       });
       continue;
     }
@@ -280,6 +321,7 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         optional: parsed.optional,
         ...(parsed.payMana ? { payMana: parsed.payMana } : {}),
         ...(parsed.payLife ? { payLife: parsed.payLife } : {}),
+        ...(parsed.unless ? { unless: parsed.unless } : {}),
         ...(oncePerTurn ? { oncePerTurn } : {}),
       });
       continue;

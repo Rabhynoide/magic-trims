@@ -34,6 +34,8 @@ export interface TargetSpec {
   opponent?: boolean;
   /** Un choix (sacrifice…) et non une cible : le linceul et la défense talismanique ne comptent pas. */
   choice?: boolean;
+  /** Une carte de sa propre main (choix d'une défausse). */
+  hand?: boolean;
   /** Une carte dans un cimetière (« target creature card from your graveyard »). */
   graveyard?: GraveyardFilter;
 }
@@ -143,13 +145,15 @@ export type Effect =
   /** Une carte d'un cimetière va sur le champ de bataille (sous le contrôle du lanceur) ou dans la main de son propriétaire. */
   | { type: "fromGraveyard"; target: number; to: "battlefield" | "hand" | "libraryTop" }
   /** « Search your library for a land card, put it into your hand » : le lanceur choisit dans la fenêtre de choix. */
-  | { type: "search"; types: string[]; to: "hand" | "battlefield"; reveal: boolean }
-  | { type: "shuffle" }
+  | { type: "search"; types: string[]; to: "hand" | "battlefield"; reveal: boolean; who?: Who; tapped?: boolean }
+  | { type: "shuffle"; who?: Who }
   /** « Target opponent reveals their hand. » */
   | { type: "revealHand"; who: Who }
   /** « You choose a creature or planeswalker card from it. That player discards that card. » */
   | { type: "chooseDiscard"; who: Who; types: string[] }
   | { type: "discardHand"; who: Who }
+  /** « Sacrifice ~. » */
+  | { type: "sacrificeSelf" }
   /** « Flip a coin. If you lose the flip, ~ deals 3 damage to you. » */
   | { type: "coinFlipDamage"; amount: number }
   /** « Shuffle ~ and your graveyard into their owner's library. » */
@@ -329,6 +333,7 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
   if ((m = /^(?:you )?draw that many cards$/i.exec(s))) return [{ type: "draw", who: "you", count: "event" }];
   if (/^(?:you )?draw an additional card$/i.test(s)) return [{ type: "draw", who: "you", count: 1 }];
   if (/^discard your hand$/i.test(s)) return [{ type: "discardHand", who: "you" }];
+  if (/^sacrifice ~$/i.test(s)) return [{ type: "sacrificeSelf" }];
   if (/^shuffle ~ and your graveyard into (?:their|its) owner's library$/i.test(s)) return [{ type: "shuffleSelfAndGraveyard" }];
   if (/^exile all graveyards$/i.test(s)) return [{ type: "exileGraveyards" }];
   if (/^each opponent mills cards equal to the number of cards in their hand$/i.test(s)) return [{ type: "mill", who: "opponents", count: "theirHand" }];
@@ -528,8 +533,14 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       result.effects.push({ type: "coinFlipDamage", amount: parseInt(m[1]!, 10) });
       continue;
     }
+    // Path to Exile : « Its controller may search their library for a basic land card, put that card onto the battlefield tapped ».
+    if ((m = /^its controller may search their library for an? (basic land|land) card, put (?:it|that card) onto the battlefield( tapped)?$/i.exec(s)) && result.targets.length > 0) {
+      result.effects.push({ type: "search", types: ["land"], to: "battlefield", reveal: true, who: { controllerOf: result.targets.length - 1 }, ...(m[2] ? { tapped: true } : {}) });
+      continue;
+    }
     if (/^shuffle$/i.test(s)) {
-      result.effects.push({ type: "shuffle" });
+      const last = result.effects.at(-1);
+      result.effects.push({ type: "shuffle", ...(last?.type === "search" && last.who ? { who: last.who } : {}) });
       continue;
     }
     if ((m = /^(target opponent|target player|each opponent) reveals (?:their|his or her) hand$/i.exec(s))) {
@@ -660,7 +671,7 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       const t = target(playerTarget(m[1]!));
       const loses = m[2]!.toLowerCase() === "loses";
       result.effects.push({ type: "life", who: { target: t }, amount: loses ? (n === "X" ? "-X" : -(n as number)) : n });
-    } else if ((m = new RegExp(`^create ${NUM} (tapped )?(Treasure|Food|Clue|Blood) tokens?$`, "i").exec(s))) {
+    } else if ((m = new RegExp(`^(?:you )?create ${NUM} (tapped )?(Treasure|Food|Clue|Blood) tokens?$`, "i").exec(s))) {
       const name = m[3]!.charAt(0).toUpperCase() + m[3]!.slice(1).toLowerCase();
       result.effects.push({ type: "namedToken", name, count: amount(m[1]!), tapped: !!m[2] });
     } else if ((m = new RegExp(`^create ${NUM} (tapped )?(.+)$`, "i").exec(s))) {

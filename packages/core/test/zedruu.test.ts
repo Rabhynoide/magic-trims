@@ -56,7 +56,7 @@ function inHand(g: GameState, playerId: string, card: CardData, n = 0): [GameSta
 
 function resolveAll(g: GameState, max = 100): GameState {
   for (let i = 0; i < max && g.priority && g.stack.length > 0; i++) {
-    if (g.stack.some((id) => g.cards[id]!.ability?.awaitingDecision || g.cards[id]!.ability?.needsTargets)) break;
+    if (g.stack.some((id) => g.cards[id]!.ability?.awaitingDecision || g.cards[id]!.ability?.needsTargets || g.cards[id]!.cardChoice)) break;
     g = act(g, g.priority.playerId, { type: "passPriority" });
   }
   return g;
@@ -195,7 +195,7 @@ describe("Deck Zedruu : prison et restrictions", () => {
 
   it("Ghostly Prison, Propaganda et la plupart des cartes du deck sont gérées", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "" })).level);
-    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(56);
+    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(63);
   });
 });
 
@@ -253,8 +253,12 @@ describe("Deck Zedruu : blessures modifiées et effets simples", () => {
     const hand = g.players.p2!.zones.hand.length;
     g = act(g, "p1", { type: "passTurn" });
     g = resolveAll(g);
+    // Entretien : p2 défausse une carte pour la garder.
+    const upkeep = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.awaitingDecision)!;
+    g = act(g, "p2", { type: "decideOptional", cardId: upkeep.instanceId, accept: true, choice: g.players.p2!.zones.hand[0]! });
+    g = resolveAll(g);
     if (g.turn.step !== "main1") g = act(g, "p2", { type: "nextStep", to: "main1" });
-    expect(g.players.p2!.zones.hand.length).toBe(hand);
+    expect(g.players.p2!.zones.hand.length).toBe(hand - 1);
   });
 
   it("Body of Knowledge pioche autant que les blessures subies ; Cinder Giant blesse mes autres créatures", () => {
@@ -306,6 +310,109 @@ describe("Deck Zedruu : blessures modifiées et effets simples", () => {
 
   it("Folio of Fancies, Farewell, Unwind, Elixir, Grafted Skullcap, Mana Crypt sont reconnues", () => {
     for (const name of ["Folio of Fancies", "Farewell", "Unwind", "Elixir of Immortality", "Grafted Skullcap", "Mana Crypt", "Hall of Heliod's Generosity", "Statecraft"]) {
+      expect(cardSupport(real(name)).level, name).toBe("full");
+    }
+  });
+});
+
+describe("Deck Zedruu : « à moins qu'il paie », entretien cumulatif, Path to Exile", () => {
+  const pending = (g: GameState) => g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.awaitingDecision);
+
+  it("Rhystic Study : le lanceur paie {1} ou je peux piocher", () => {
+    let g = toMain(newTestGame(2));
+    [g] = put(g, "p2", real("Rhystic Study"));
+    let spell: string;
+    [g, spell] = inHand(g, "p1", fakeCard("Divination", { typeLine: "Sorcery", oracleText: "Draw two cards.", manaCost: "{U}" }));
+    g = mana(g, "p1", "U");
+    g = act(g, "p1", { type: "castSpell", cardId: spell });
+    g = resolveAll(g);
+    let p = pending(g)!;
+    expect(p.ability!.decider).toBe("p1");
+    expect(refuse(g, "p2", { type: "decideOptional", cardId: p.instanceId, accept: false })).toMatch(/C'est à Alice/);
+    g = act(g, "p1", { type: "decideOptional", cardId: p.instanceId, accept: false });
+    // p1 n'a pas payé : p2 choisit s'il pioche.
+    p = pending(g)!;
+    expect(p.ability!.decider).toBeUndefined();
+    const hand = g.players.p2!.zones.hand.length;
+    g = act(g, "p2", { type: "decideOptional", cardId: p.instanceId, accept: true });
+    g = resolveAll(g);
+    expect(g.players.p2!.zones.hand.length).toBe(hand + 1);
+  });
+
+  it("Smothering Tithe : s'il paie {2}, pas de Trésor", () => {
+    let g = toMain(newTestGame(2));
+    [g] = put(g, "p2", real("Smothering Tithe"));
+    g = mana(g, "p1", "CC");
+    g = act(g, "p1", { type: "draw", count: 1 });
+    g = resolveAll(g);
+    const p = pending(g)!;
+    g = act(g, "p1", { type: "decideOptional", cardId: p.instanceId, accept: true });
+    g = resolveAll(g);
+    expect(g.players.p1!.manaPool.C).toBe(0);
+    const treasures = g.players.p2!.zones.battlefield.filter((id) => g.cardData[g.cards[id]!.cardId]!.name === "Treasure");
+    expect(treasures).toHaveLength(0);
+  });
+
+  it("Solitary Confinement : à l'entretien, défausser une carte ou la sacrifier", () => {
+    let g = newTestGame(2);
+    let conf: string;
+    [g, conf] = put(g, "p1", real("Solitary Confinement"));
+    g = act(g, "p1", { type: "passTurn" });
+    g = act(g, "p2", { type: "passTurn" });
+    g = resolveAll(g);
+    const p = pending(g)!;
+    expect(p).toBeDefined();
+    const card = g.players.p1!.zones.hand[0]!;
+    g = act(g, "p1", { type: "decideOptional", cardId: p.instanceId, accept: true, choice: card });
+    g = resolveAll(g);
+    expect(g.cards[card]!.zone).toBe("graveyard");
+    expect(g.cards[conf]!.zone).toBe("battlefield");
+  });
+
+  it("entretien cumulatif : un marqueur d'âge de plus à chaque fois, refuser sacrifie", () => {
+    let g = newTestGame(2);
+    let chasm: string;
+    [g, chasm] = put(g, "p1", real("Glacial Chasm", { oracleText: "Cumulative upkeep—Pay 2 life." }));
+    g = act(g, "p1", { type: "passTurn" });
+    g = act(g, "p2", { type: "passTurn" });
+    g = resolveAll(g);
+    let p = pending(g)!;
+    g = act(g, "p1", { type: "decideOptional", cardId: p.instanceId, accept: true });
+    g = resolveAll(g);
+    expect(g.players.p1!.life).toBe(38);
+    expect(g.cards[chasm]!.counters["âge"]).toBe(1);
+    g = act(g, "p1", { type: "passTurn" });
+    g = act(g, "p2", { type: "passTurn" });
+    g = resolveAll(g);
+    p = pending(g)!;
+    g = act(g, "p1", { type: "decideOptional", cardId: p.instanceId, accept: false });
+    g = resolveAll(g);
+    expect(g.cards[chasm]!.zone).toBe("graveyard");
+  });
+
+  it("Path to Exile : le contrôleur de la créature cherche un terrain de base", () => {
+    let g = toMain(newTestGame(2));
+    let target: string, path: string;
+    [g, target] = put(g, "p2", bear("Cible"));
+    [g, path] = inHand(g, "p1", real("Path to Exile", { manaCost: "{W}" }));
+    g = structuredClone(g);
+    const land = g.players.p2!.zones.library[2]!;
+    g.cardData[g.cards[land]!.cardId] = fakeCard("Plains", { id: g.cards[land]!.cardId, typeLine: "Basic Land — Plains" });
+    g = mana(g, "p1", "W");
+    g = act(g, "p1", { type: "castSpell", cardId: path, targets: [{ kind: "card", id: target }] });
+    g = resolveAll(g);
+    const choice = g.cards[path]!.cardChoice!;
+    expect(choice.playerId).toBe("p2");
+    expect(choice.options).toEqual([land]);
+    expect(refuse(g, "p1", { type: "chooseCards", cardId: path, cardIds: [land] })).toMatch(/C'est à Bruno/);
+    g = act(g, "p2", { type: "chooseCards", cardId: path, cardIds: [land] });
+    expect(g.cards[target]!.zone).toBe("exile");
+    const plains = g.players.p2!.zones.battlefield.map((id) => g.cards[id]!).find((c) => g.cardData[c.cardId]!.name === "Plains");
+    expect(plains?.tapped).toBe(true);
+  });
+
+  it("les cartes sont reconnues en entier", () => {
+    for (const name of ["Rhystic Study", "Smothering Tithe", "Solitary Confinement", "Glacial Chasm", "Path to Exile"]) {
       expect(cardSupport(real(name)).level, name).toBe("full");
     }
   });
