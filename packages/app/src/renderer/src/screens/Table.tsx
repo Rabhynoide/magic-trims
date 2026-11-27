@@ -352,6 +352,7 @@ function canTargetCard(view: GameView, spec: TargetSpec, card: CardView, sourceI
     );
   }
   if (card.zone === "stack") return Boolean(spec.spell) && spellMatches(typeLine, spec.spell!);
+  if (card.zone === "hand") return Boolean(spec.hand) && card.ownerId === view.viewerId;
   if (card.zone === "graveyard") return Boolean(spec.graveyard) && isLegalTarget(stateFromView(view), spec, { kind: "card", id }, view.viewerId, sourceId);
   return false;
 }
@@ -413,11 +414,12 @@ function CardChoicePanel(props: { view: GameView }) {
   if (!waiting) return null;
   const choice = waiting.cardChoice!;
   const name = waiting.ability?.sourceName ?? cardName(view, waiting);
-  if (waiting.controllerId !== view.viewerId) {
+  const chooser = choice.playerId ?? waiting.controllerId;
+  if (chooser !== view.viewerId) {
     return (
       <div className="targeting-banner" role="status">
         <span>
-          {view.players[waiting.controllerId]?.name} choisit une carte pour <strong>{name}</strong>.
+          {view.players[chooser]?.name} choisit une carte pour <strong>{name}</strong>.
         </span>
       </div>
     );
@@ -503,16 +505,19 @@ function useTriggerTargets(view: GameView): { waitingName: string | null; reopen
  */
 function DecisionBanner(props: { view: GameView }) {
   const { view } = props;
+  const deciderOf = (c: VisibleCardView) => c.ability?.decider ?? c.controllerId;
   const waiting = view.stack.find(
-    (c): c is VisibleCardView => !c.hidden && Boolean(c.ability?.awaitingDecision) && c.controllerId === view.viewerId,
+    (c): c is VisibleCardView => !c.hidden && Boolean(c.ability?.awaitingDecision) && deciderOf(c as VisibleCardView) === view.viewerId,
   );
-  const others = view.stack.find((c): c is VisibleCardView => !c.hidden && Boolean(c.ability?.awaitingDecision) && c.controllerId !== view.viewerId);
+  const others = view.stack.find(
+    (c): c is VisibleCardView => !c.hidden && Boolean(c.ability?.awaitingDecision) && deciderOf(c as VisibleCardView) !== view.viewerId,
+  );
   if (!waiting) {
     if (!others) return null;
     return (
       <div className="targeting-banner" role="status">
         <span>
-          {view.players[others.controllerId]?.name} décide pour la capacité de <strong>{others.ability!.sourceName}</strong>.
+          {view.players[deciderOf(others)]?.name} décide pour la capacité de <strong>{others.ability!.sourceName}</strong>.
         </span>
       </div>
     );
@@ -521,7 +526,15 @@ function DecisionBanner(props: { view: GameView }) {
   const trigger = stackTrigger(view.cardData[waiting.cardId], ability);
   const sacrifice = trigger?.effects.effects.find((e) => e.type === "sacrifice");
   const id = waiting.instanceId!;
+  // « … unless that player pays » : on demande d'abord au payeur.
+  const unless = trigger?.unless && ability.unlessPaid === undefined ? trigger.unless : undefined;
   const accept = async () => {
+    if (unless?.discard) {
+      const chosen = await ui.chooseTargets(ability.sourceName, id, [{ label: "carte de ta main à défausser", hand: true, choice: true }]);
+      if (!chosen) return;
+      return void act({ type: "decideOptional", cardId: id, accept: true, choice: chosen[0]!.id });
+    }
+    if (unless) return void act({ type: "decideOptional", cardId: id, accept: true });
     if (sacrifice && sacrifice.type === "sacrifice") {
       const chosen = await ui.chooseTargets(ability.sourceName, id, [
         { label: `${permanentLabel(sacrifice.filter)} à sacrifier`, permanent: sacrifice.filter, choice: true },
@@ -542,7 +555,9 @@ function DecisionBanner(props: { view: GameView }) {
     <div className="targeting-banner" role="status">
       <span>
         <strong>{ability.sourceName}</strong> :{" "}
-        {ability.text === "Exploit" ? "exploitation, sacrifier une créature ?" : `« ${ability.text} »${trigger?.payMana ? ` (payer ${trigger.payMana})` : ""}. Tu le fais ?`}
+        {unless
+          ? `« ${ability.text} » : payer ${[unless.mana ? unless.mana : "", unless.life ? `${unless.life} PV` : "", unless.discard ? "une carte défaussée" : ""].filter(Boolean).join(", ")}${unless.perAge ? " par marqueur d'âge" : ""} pour l'empêcher ?`
+          : ability.text === "Exploit" ? "exploitation, sacrifier une créature ?" : `« ${ability.text} »${trigger?.payMana ? ` (payer ${trigger.payMana})` : ""}${trigger?.payLife ? ` (payer ${trigger.payLife} PV)` : ""}. Tu le fais ?`}
       </span>
       <span className="decision-buttons">
         <button onClick={() => void accept()}>Oui</button>
@@ -1104,6 +1119,7 @@ function Pile(props: {
 function Hand(props: { view: GameView }) {
   const { view } = props;
   const me = view.players[view.viewerId]!;
+  const { targeting } = useUi();
   const drop = useDrop({ zone: "hand", playerId: view.viewerId }, view);
   // Après un mulligan : choisir les cartes à mettre au-dessous de la bibliothèque.
   // Au nettoyage : choisir les cartes à défausser pour revenir à 7 en main.
@@ -1160,7 +1176,9 @@ function Hand(props: { view: GameView }) {
             onMenu={(e) => openCardMenu(e, view, c)}
             {...(toChoose > 0 && c.instanceId
               ? { selected: chosen.includes(c.instanceId), onSelect: () => toggle(c.instanceId!) }
-              : { onDoubleClick: (e: React.MouseEvent) => playCard(e, view, c) })}
+              : targeting
+                ? targetProps(view, targeting, c)
+                : { onDoubleClick: (e: React.MouseEvent) => playCard(e, view, c) })}
           />
         ))}
       </div>

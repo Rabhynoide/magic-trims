@@ -12,6 +12,7 @@ import { manaOptions } from "./mana.js";
 import { parsePermanentAbilities } from "./triggers.js";
 import { areTeammates } from "./modes.js";
 import { joinModes, keywordList, selfToTilde } from "./text.js";
+import { playerHasShroud } from "./statics.js";
 
 export { selfToTilde };
 import type { CardData, CardInstance, GameState, PlayerId } from "./types.js";
@@ -33,6 +34,8 @@ export interface TargetSpec {
   opponent?: boolean;
   /** Un choix (sacrifice…) et non une cible : le linceul et la défense talismanique ne comptent pas. */
   choice?: boolean;
+  /** Une carte de sa propre main (choix d'une défausse). */
+  hand?: boolean;
   /** Une carte dans un cimetière (« target creature card from your graveyard »). */
   graveyard?: GraveyardFilter;
 }
@@ -78,6 +81,9 @@ export interface PermanentFilter {
   maxTotalPT?: number;
 }
 
+/** Condition entre les deux permanents échangés, vérifiée à la résolution. */
+export type ExchangeRelation = "differentPlayers" | "sharePermanentType" | "shareCardType" | "lesserManaValue";
+
 export interface SpellFilter {
   types: string[];
   notTypes: string[];
@@ -101,7 +107,7 @@ export type Effect =
   | { type: "exileAll"; filter: PermanentFilter }
   | { type: "bounce"; target: number }
   | { type: "damage"; target: number | "event" | "you"; amount: Amount }
-  | { type: "damageEach"; who: "opponents" | "players" | "creatures"; amount: Amount }
+  | { type: "damageEach"; who: "opponents" | "players" | "creatures" | "yourOtherCreatures"; amount: Amount }
   | { type: "life"; who: Who; amount: Amount }
   | { type: "token"; count: Amount; token: TokenSpec; tapped: boolean; forOpponents?: boolean }
   | { type: "counter"; target: number }
@@ -123,7 +129,9 @@ export type Effect =
   /** « Target opponent gains control of target permanent you control » ; `permanent` : une cible, ou la source. */
   | { type: "gainControl"; permanent: number | "self"; player: number }
   /** « Exchange control of target land you control and target land an opponent controls. » */
-  | { type: "exchangeControl"; a: number; b: number }
+  | { type: "exchangeControl"; a: number; b: number; relation?: ExchangeRelation }
+  /** Modify Memory : « If you control neither creature, draw three cards. » */
+  | { type: "drawIfNeither"; a: number; b: number; count: number }
   /** « If you have 40 or more life, you win the game. » */
   | { type: "winIf"; life?: number; handExactly?: number }
   | { type: "loseGame" }
@@ -140,14 +148,26 @@ export type Effect =
   /** « Until end of turn, whenever a player taps a Swamp for mana, that player adds an additional {B}. » */
   | { type: "manaBonus"; subtype: string; mana: string }
   /** Une carte d'un cimetière va sur le champ de bataille (sous le contrôle du lanceur) ou dans la main de son propriétaire. */
-  | { type: "fromGraveyard"; target: number; to: "battlefield" | "hand" }
+  | { type: "fromGraveyard"; target: number; to: "battlefield" | "hand" | "libraryTop" }
   /** « Search your library for a land card, put it into your hand » : le lanceur choisit dans la fenêtre de choix. */
-  | { type: "search"; types: string[]; to: "hand" | "battlefield"; reveal: boolean }
-  | { type: "shuffle" }
+  | { type: "search"; types: string[]; to: "hand" | "battlefield"; reveal: boolean; who?: Who; tapped?: boolean }
+  | { type: "shuffle"; who?: Who }
   /** « Target opponent reveals their hand. » */
   | { type: "revealHand"; who: Who }
   /** « You choose a creature or planeswalker card from it. That player discards that card. » */
   | { type: "chooseDiscard"; who: Who; types: string[] }
+  | { type: "discardHand"; who: Who }
+  /** « Sacrifice ~. » */
+  | { type: "sacrificeSelf" }
+  /** « Flip a coin. If you lose the flip, ~ deals 3 damage to you. » */
+  | { type: "coinFlipDamage"; amount: number }
+  /** « Shuffle ~ and your graveyard into their owner's library. » */
+  | { type: "shuffleSelfAndGraveyard" }
+  | { type: "exileGraveyards" }
+  /** « Each opponent mills cards equal to the number of cards in their hand. » */
+  | { type: "mill"; who: Who; count: Amount | "theirHand" }
+  /** « Untap up to three lands. » (les terrains engagés du lanceur, choisis d'office) */
+  | { type: "untapLands"; count: number }
   /** Jeton prédéfini : Treasure, Food, Clue, Blood. */
   | { type: "namedToken"; name: string; count: Amount; tapped: boolean }
   /** « Scry 2 » : le contrôleur range les cartes du dessus avant le reste de la résolution (seulement en premier effet). */
@@ -242,7 +262,7 @@ function parsePermanentFilter(text: string): PermanentFilter | null {
     if (parts.length > 2) return null;
     if (parts.length === 2) {
       const [mod, base] = parts as [string, string];
-      if (!mod.startsWith("non") || !CARD_TYPES.includes(mod.slice(3))) return null;
+      if (!mod.startsWith("non") || ![...CARD_TYPES, "legendary"].includes(mod.slice(3))) return null;
       filter.notTypes.push(mod.slice(3));
       w = base;
     }
@@ -270,6 +290,7 @@ export function permanentLabel(f: PermanentFilter): string {
     enchantment: "enchantement",
     land: "terrain",
     planeswalker: "planeswalker",
+    legendary: "légendaire",
   };
   let label = f.types.length > 0 ? f.types.map((t) => labels[t]).join(" ou ") : "permanent";
   if (f.notTypes.length > 0) label += ` non-${f.notTypes.map((t) => labels[t]).join(", non-")}`;
@@ -308,11 +329,31 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
   if ((m = new RegExp(`^that player draws ${NUM} (?:additional )?cards?$`, "i").exec(s))) {
     return [{ type: "draw", who: "event", count: amount(m[1]!) }];
   }
-  if ((m = /^(?:return|put) (.+? from (?:your|a) graveyard) (?:to|onto) (the battlefield|your hand)(?: under your control)?$/i.exec(s))) {
+  if ((m = /^(?:return|put) (.+? from (?:your|a) graveyard) (?:to|onto|on top of) (the battlefield|your hand|your library)(?: under your control)?$/i.exec(s))) {
     const filter = parseGraveyardTarget(m[1]!);
     if (filter) {
-      return [{ type: "fromGraveyard", target: target({ label: graveyardLabel(filter), graveyard: filter }), to: /hand/i.test(m[2]!) ? "hand" : "battlefield" }];
+      const to = /hand/i.test(m[2]!) ? "hand" : /library/i.test(m[2]!) ? "libraryTop" : "battlefield";
+      return [{ type: "fromGraveyard", target: target({ label: graveyardLabel(filter), graveyard: filter }), to }];
     }
+  }
+  if ((m = /^(?:you )?draw that many cards$/i.exec(s))) return [{ type: "draw", who: "you", count: "event" }];
+  if (/^(?:you )?draw an additional card$/i.test(s)) return [{ type: "draw", who: "you", count: 1 }];
+  if (/^discard your hand$/i.test(s)) return [{ type: "discardHand", who: "you" }];
+  if (/^sacrifice ~$/i.test(s)) return [{ type: "sacrificeSelf" }];
+  if (/^shuffle ~ and your graveyard into (?:their|its) owner's library$/i.test(s)) return [{ type: "shuffleSelfAndGraveyard" }];
+  if (/^exile all graveyards$/i.test(s)) return [{ type: "exileGraveyards" }];
+  if (/^each opponent mills cards equal to the number of cards in their hand$/i.test(s)) return [{ type: "mill", who: "opponents", count: "theirHand" }];
+  if ((m = new RegExp(`^(target player|each opponent|you) mills? ${NUM} cards?$`, "i").exec(s))) {
+    const w = m[1]!.toLowerCase();
+    const who: Who = w === "you" ? "you" : w === "each opponent" ? "opponents" : { target: target({ label: "joueur", player: true }) };
+    return [{ type: "mill", who, count: amount(m[2]!) }];
+  }
+  if ((m = new RegExp(`^untap up to ${NUM} lands$`, "i").exec(s))) {
+    const n = amount(m[1]!);
+    if (typeof n === "number") return [{ type: "untapLands", count: n }];
+  }
+  if ((m = new RegExp(`^~ deals ${NUM} damage to each other creature you control$`, "i").exec(s))) {
+    return [{ type: "damageEach", who: "yourOtherCreatures", amount: amount(m[1]!) }];
   }
   if ((m = /^return (?:it|that card) to the battlefield( tapped)? under (your|its owner's) control$/i.exec(s))) {
     return [{ type: "returnEventCard", tapped: !!m[1], owner: /owner/i.test(m[2]!) }];
@@ -352,13 +393,27 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
     if (!filter) return null;
     return [{ type: "gainControl", permanent: target({ label: permanentLabel(filter), permanent: filter }), player }];
   }
-  if ((m = /^exchange control of target (.+?) and target (.+)$/i.exec(s))) {
+  if ((m = /^exchange control of two target (.+?)( controlled by different players| that share a permanent type)?$/i.exec(s))) {
+    const f = parsePermanentFilter(m[1]!);
+    if (!f) return null;
+    const relation: ExchangeRelation | undefined = !m[2] ? undefined : /different/i.test(m[2]) ? "differentPlayers" : "sharePermanentType";
+    const a = target({ label: permanentLabel(f), permanent: f });
+    const b = target({ label: permanentLabel(f), permanent: f });
+    return [{ type: "exchangeControl", a, b, ...(relation ? { relation } : {}) }];
+  }
+  if ((m = /^exchange control of target (.+?) and target (.+?)( that shares a card type with it| with equal or lesser mana value)?$/i.exec(s))) {
     const fa = parsePermanentFilter(m[1]!);
     const fb = parsePermanentFilter(m[2]!);
     if (!fa || !fb) return null;
+    const relation: ExchangeRelation | undefined = !m[3] ? undefined : /card type/i.test(m[3]) ? "shareCardType" : "lesserManaValue";
     const a = target({ label: permanentLabel(fa), permanent: fa });
     const b = target({ label: permanentLabel(fb), permanent: fb });
-    return [{ type: "exchangeControl", a, b }];
+    return [{ type: "exchangeControl", a, b, ...(relation ? { relation } : {}) }];
+  }
+  if ((m = new RegExp(`^if you control neither creature, draw ${NUM} cards?$`, "i").exec(s))) {
+    const b = lastTarget();
+    if (b < 1) return null;
+    return [{ type: "drawIfNeither", a: b - 1, b, count: amount(m[1]!) as number }];
   }
   if ((m = /^if you have (\d+) or more life, you win the game$/i.exec(s))) return [{ type: "winIf", life: parseInt(m[1]!, 10) }];
   if ((m = new RegExp(`^if you have exactly (${NUM.slice(1, -1)}|thirteen) cards in your hand, you win the game$`, "i").exec(s))) {
@@ -493,8 +548,19 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       result.effects.push({ type: "search", types, to: /hand/i.test(m[3]!) ? "hand" : "battlefield", reveal: !!m[2] });
       continue;
     }
+    if (/^flip a coin$/i.test(s)) continue;
+    if ((m = /^if you lose the flip, ~ deals (\d+) damage to you$/i.exec(s))) {
+      result.effects.push({ type: "coinFlipDamage", amount: parseInt(m[1]!, 10) });
+      continue;
+    }
+    // Path to Exile : « Its controller may search their library for a basic land card, put that card onto the battlefield tapped ».
+    if ((m = /^its controller may search their library for an? (basic land|land) card, put (?:it|that card) onto the battlefield( tapped)?$/i.exec(s)) && result.targets.length > 0) {
+      result.effects.push({ type: "search", types: ["land"], to: "battlefield", reveal: true, who: { controllerOf: result.targets.length - 1 }, ...(m[2] ? { tapped: true } : {}) });
+      continue;
+    }
     if (/^shuffle$/i.test(s)) {
-      result.effects.push({ type: "shuffle" });
+      const last = result.effects.at(-1);
+      result.effects.push({ type: "shuffle", ...(last?.type === "search" && last.who ? { who: last.who } : {}) });
       continue;
     }
     if ((m = /^(target opponent|target player|each opponent) reveals (?:their|his or her) hand$/i.exec(s))) {
@@ -625,7 +691,7 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       const t = target(playerTarget(m[1]!));
       const loses = m[2]!.toLowerCase() === "loses";
       result.effects.push({ type: "life", who: { target: t }, amount: loses ? (n === "X" ? "-X" : -(n as number)) : n });
-    } else if ((m = new RegExp(`^create ${NUM} (tapped )?(Treasure|Food|Clue|Blood) tokens?$`, "i").exec(s))) {
+    } else if ((m = new RegExp(`^(?:you )?create ${NUM} (tapped )?(Treasure|Food|Clue|Blood) tokens?$`, "i").exec(s))) {
       const name = m[3]!.charAt(0).toUpperCase() + m[3]!.slice(1).toLowerCase();
       result.effects.push({ type: "namedToken", name, count: amount(m[1]!), tapped: !!m[2] });
     } else if ((m = new RegExp(`^create ${NUM} (tapped )?(.+)$`, "i").exec(s))) {
@@ -743,6 +809,7 @@ export function isLegalTarget(g: GameState, spec: TargetSpec, target: Target, ca
   if (target.kind === "player") {
     const p = g.players[target.id];
     if (!spec.player || !p || p.hasConceded) return false;
+    if (!spec.choice && playerHasShroud(g, p.id)) return false;
     return !spec.opponent || (p.id !== casterId && !areTeammates(g, p.id, casterId));
   }
   const card = g.cards[target.id];

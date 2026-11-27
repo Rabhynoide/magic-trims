@@ -31,6 +31,12 @@ export type TriggerEvent =
   | { type: "attacks"; cardId: CardInstanceId }
   | { type: "blocks"; cardId: CardInstanceId }
   | { type: "exploits"; cardId: CardInstanceId }
+  /** Un permanent engagé se dégage. */
+  | { type: "untapped"; cardId: CardInstanceId }
+  /** Un permanent subit des blessures (Body of Knowledge). */
+  | { type: "damaged"; cardId: CardInstanceId; amount: number }
+  /** Une créature inflige des blessures de combat à un joueur. */
+  | { type: "combatDamage"; cardId: CardInstanceId; controllerId: PlayerId; playerId: PlayerId; amount: number }
   /** Des marqueurs de savoir arrivent sur une saga : de `from` à `to`. */
   | { type: "lore"; cardId: CardInstanceId; from: number; to: number }
   /** `auras` : les auras attachées au permanent quand il est parti (Kaya's Ghostform). */
@@ -60,6 +66,12 @@ export type TriggerCondition =
   | { on: "combat"; attacks: boolean; blocks: boolean }
   /** « When ~ exploits a creature ». */
   | { on: "exploits" }
+  /** « Whenever ~ becomes untapped ». */
+  | { on: "untapped" }
+  /** « Whenever a creature deals combat damage to one of your opponents », « Whenever ~ deals combat damage to a player ». */
+  | { on: "combatDamage"; self: boolean; creature: Whose; player: Whose }
+  /** « Whenever ~ is dealt damage ». */
+  | { on: "damaged" }
   /** Chapitre d'une saga (« I, II — … »). */
   | { on: "chapter"; chapters: number[] }
   /** « When ~ leaves the battlefield » ; `enchanted` : « When enchanted permanent dies or is put into exile » (`to` : zones visées). */
@@ -76,6 +88,13 @@ export interface TriggeredAbility {
   optional: boolean;
   /** « You may pay {1}. If you do, … » : le mana à payer pour accepter. */
   payMana?: string;
+  /** « may pay 1 life. If they do, … » : les points de vie à payer pour accepter. */
+  payLife?: number;
+  /**
+   * « … unless that player pays {1} », « sacrifice ~ unless you discard a card », entretien cumulatif :
+   * le payeur peut payer pour empêcher l'effet. `perAge` : le coût est multiplié par les marqueurs d'âge.
+   */
+  unless?: Unless;
   /** « This ability triggers only once each turn. » */
   oncePerTurn?: boolean;
 }
@@ -145,6 +164,18 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
     return { on: "combat", attacks: what.includes("attacks"), blocks: what.includes("blocks") };
   }
   if (/^~ exploits a creature$/i.test(t)) return { on: "exploits" };
+  if (/^~ becomes untapped$/i.test(t)) return { on: "untapped" };
+  if (/^~ is dealt damage$/i.test(t)) return { on: "damaged" };
+  if ((m = /^(~|a creature|a creature you control|a creature an opponent controls) deals combat damage to (a player|an opponent|one of your opponents|you)$/i.exec(t))) {
+    const who = m[1]!.toLowerCase();
+    const to = m[2]!.toLowerCase();
+    return {
+      on: "combatDamage",
+      self: who === "~",
+      creature: who.endsWith("you control") ? "you" : who.endsWith("opponent controls") ? "opponent" : "any",
+      player: to === "a player" ? "any" : to === "you" ? "you" : "opponent",
+    };
+  }
   if (/^~ leaves the battlefield$/i.test(t)) return { on: "leaves" };
   if ((m = /^enchanted (?:permanent|creature) (dies|is put into exile|dies or is put into exile|leaves the battlefield)$/i.exec(t))) {
     const what = m[1]!.toLowerCase();
@@ -163,9 +194,34 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
 
 const cache = new Map<string, PermanentAbilities>();
 
+export interface Unless {
+  payer: "event" | "you";
+  mana?: string;
+  life?: number;
+  discard?: number;
+  perAge?: boolean;
+}
+
 /** Lit le corps d'une capacité déclenchée : ses effets, et si elle est facultative. */
-function parseTriggerBody(text: string): { effects: SpellEffects; optional: boolean; payMana?: string } | null {
+function parseTriggerBody(text: string): { effects: SpellEffects; optional: boolean; payMana?: string; payLife?: number; unless?: Unless } | null {
   const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+  const bare = text.replace(/\.$/, "");
+  // Rhystic Study : « you may draw a card unless that player pays {1} ».
+  const unlessMay = /^you may (.+) unless that player pays ((?:\{[^}]+\})+)$/i.exec(bare);
+  if (unlessMay) return { effects: parseSpellEffects(cap(unlessMay[1]!), "~"), optional: true, unless: { payer: "event", mana: unlessMay[2]! } };
+  // Smothering Tithe : « that player may pay {2}. If the player doesn't, you create a Treasure token. »
+  const tithe = /^that player may pay ((?:\{[^}]+\})+)\. If (?:the player|they) (?:doesn't|don't), (.+)$/i.exec(bare);
+  if (tithe) return { effects: parseSpellEffects(cap(tithe[2]!), "~"), optional: false, unless: { payer: "event", mana: tithe[1]! } };
+  // Solitary Confinement : « sacrifice ~ unless you discard a card ».
+  const discard = /^(.+) unless you discard a card$/i.exec(bare);
+  if (discard) return { effects: parseSpellEffects(cap(discard[1]!), "~"), optional: false, unless: { payer: "you", discard: 1 } };
+  const unlessPay = /^(.+) unless (?:you pay|that player pays) ((?:\{[^}]+\})+)$/i.exec(bare);
+  if (unlessPay) {
+    return { effects: parseSpellEffects(cap(unlessPay[1]!), "~"), optional: false, unless: { payer: /that player/i.test(text) ? "event" : "you", mana: unlessPay[2]! } };
+  }
+  // « You may pay 2 life. If you do, … », « its controller may pay 1 life. If they do, they draw a card. »
+  const life = /^(?:you|its controller) may pay (\d+) life\. If (?:you|they) do, (?:they )?(.+)$/i.exec(text);
+  if (life) return { effects: parseSpellEffects(cap(life[2]!), "~"), optional: true, payLife: parseInt(life[1]!, 10) };
   // Well of Lost Dreams : X au plus égal à la quantité de l'événement.
   const payX = /^you may pay \{X\}, where X is less than or equal to the amount of life you (?:gained|lost)\. If you do, (.+)$/i.exec(text);
   if (payX) return { effects: parseSpellEffects(cap(payX[1]!), "~"), optional: true, payMana: "{X}" };
@@ -196,9 +252,25 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
   for (const raw of joinModes(oracleText).split("\n")) {
     const line = raw.replace(/\([^)]*\)/g, "").trim();
     if (!line) continue;
-    const tilde = selfToTilde(line, cardName).trim();
+    let tilde = selfToTilde(line, cardName).trim();
+    // Mot de capacité (« Inspired — … », « Landfall — … ») : sans effet de jeu.
+    const abilityWord = /^\s*[A-Z][a-z]+(?: [a-z]+)* — (?=(?:When|Whenever|At)\b)/.exec(tilde);
+    if (abilityWord) tilde = tilde.slice(abilityWord[0].length);
     if (/^exploit$/i.test(line)) {
       result.triggers.push(EXPLOIT);
+      continue;
+    }
+    // Entretien cumulatif : un marqueur d'âge, puis payer autant de fois le coût ou sacrifier.
+    const cumulative = /^Cumulative upkeep(?: |—)(?:((?:\{[^}]+\})+)|Pay (\d+) life)\.?$/i.exec(line);
+    if (cumulative) {
+      result.triggers.push({
+        text: line,
+        condition: { on: "step", step: "upkeep", whose: "you" },
+        effects: { targets: [], effects: [{ type: "sacrificeSelf" }], unknown: [] },
+        ifUntapped: false,
+        optional: false,
+        unless: { payer: "you", perAge: true, ...(cumulative[1] ? { mana: cumulative[1] } : { life: parseInt(cumulative[2]!, 10) }) },
+      });
       continue;
     }
     // Chapitres d'une saga : « I — … », « II, III — … ».
@@ -218,7 +290,15 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         ifUntapped: false,
         optional: parsed.optional,
         ...(parsed.payMana ? { payMana: parsed.payMana } : {}),
+        ...(parsed.payLife ? { payLife: parsed.payLife } : {}),
+        ...(parsed.unless ? { unless: parsed.unless } : {}),
       });
+      continue;
+    }
+    // « When there are nine or more … counters on ~, exile it » : une règle d'état, lue comme un effet statique.
+    const stateRule = /^When there are /i.test(tilde) ? parseStaticLine(tilde) : null;
+    if (stateRule) {
+      result.statics.push(stateRule);
       continue;
     }
     const m = /^(When|Whenever|At) (.+?), (.+)$/.exec(tilde);
@@ -248,6 +328,8 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         ifUntapped,
         optional: parsed.optional,
         ...(parsed.payMana ? { payMana: parsed.payMana } : {}),
+        ...(parsed.payLife ? { payLife: parsed.payLife } : {}),
+        ...(parsed.unless ? { unless: parsed.unless } : {}),
         ...(oncePerTurn ? { oncePerTurn } : {}),
       });
       continue;
@@ -330,6 +412,14 @@ export function conditionMatches(
       return c.on === "combat" && (event.type === "attacks" ? c.attacks : c.blocks) && event.cardId === source.instanceId;
     case "exploits":
       return c.on === "exploits" && event.cardId === source.instanceId;
+    case "untapped":
+      return c.on === "untapped" && event.cardId === source.instanceId;
+    case "damaged":
+      return c.on === "damaged" && event.cardId === source.instanceId;
+    case "combatDamage":
+      if (c.on !== "combatDamage") return false;
+      if (c.self && event.cardId !== source.instanceId) return false;
+      return whoseMatches(g, c.creature, source.controllerId, event.controllerId) && whoseMatches(g, c.player, source.controllerId, event.playerId);
     case "lore":
       return c.on === "chapter" && event.cardId === source.instanceId && c.chapters.some((n) => n > event.from && n <= event.to);
     case "draw":

@@ -42,7 +42,7 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
   }
 
   // Ses capacités facultatives : oui, sauf s'il faut sacrifier (ou payer sans le pouvoir).
-  const deciding = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.awaitingDecision && c.controllerId === botId);
+  const deciding = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.awaitingDecision && (c.ability.decider ?? c.controllerId) === botId);
   if (deciding) {
     const trigger = stackTrigger(g.cardData[deciding.cardId], deciding.ability!);
     const sacrifice = trigger?.effects.effects.some((e) => e.type === "sacrifice");
@@ -53,7 +53,7 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
   }
 
   // La fenêtre de choix : la première carte proposée.
-  const picking = g.stack.map((id) => g.cards[id]!).find((c) => c.cardChoice && c.controllerId === botId);
+  const picking = g.stack.map((id) => g.cards[id]!).find((c) => c.cardChoice && (c.cardChoice.playerId ?? c.controllerId) === botId);
   if (picking) return { type: "chooseCards", cardId: picking.instanceId, cardIds: picking.cardChoice!.options.slice(0, 1) };
 
   // Ses modes : le premier (ou le nombre minimum).

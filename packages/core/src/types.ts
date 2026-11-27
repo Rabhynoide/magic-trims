@@ -175,7 +175,7 @@ export interface CardInstance {
   /** Capacités déclenchées données jusqu'à la fin du tour (texte « When ~ dies, … »). */
   grantedTriggers?: string[];
   /** Choix de cartes en attente à la résolution (recherche, main révélée) : effet n° `index`. */
-  cardChoice?: { index: number; options: CardInstanceId[]; min: number; max: number; label: string };
+  cardChoice?: { index: number; options: CardInstanceId[]; min: number; max: number; label: string; playerId?: PlayerId };
   /** Cartes choisies pour chaque effet (par son index). */
   choices?: Record<number, CardInstanceId[]>;
   /** Sort ou capacité modale sur la pile : les modes choisis (absents tant que le contrôleur n'a pas choisi). */
@@ -223,6 +223,12 @@ export interface StackAbility {
   activated?: boolean;
   /** Capacité facultative (« you may ») : le contrôleur doit dire oui ou non avant qu'elle se résolve. */
   awaitingDecision?: boolean;
+  /** Qui doit répondre, si ce n'est pas le contrôleur (« unless that player pays {1} »). */
+  decider?: PlayerId;
+  /** Le payeur a payé pour empêcher l'effet (`false` : il a refusé). */
+  unlessPaid?: boolean;
+  /** Entretien cumulatif : le marqueur d'âge est posé. */
+  aged?: boolean;
   /** Réponse du contrôleur à une capacité facultative. */
   accepted?: boolean;
   /** Permanent choisi à la résolution (le sacrifice d'Exploit…). */
