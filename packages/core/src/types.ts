@@ -173,6 +173,8 @@ export interface CardInstance {
   attachedPlayer?: PlayerId;
   /** Carte d'origine quand une aura la transforme (Darksteel Mutation, Witness Protection). */
   originalCardId?: string;
+  /** Sa vraie carte quand elle est arrivée en copie d'une autre (Clone, Sakashima) : `cardId` pointe alors vers la copie. */
+  copyBaseId?: string;
   /** Joueurs qui ont vu cette carte alors qu'elle était cachée (révélée). */
   revealedTo: PlayerId[];
   /** Arrivée (ou changée de contrôleur) depuis le début du dernier tour de son contrôleur : mal d'invocation. */

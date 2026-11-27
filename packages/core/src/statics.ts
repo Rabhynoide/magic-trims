@@ -93,6 +93,13 @@ export type StaticAbility =
    * Darksteel Mutation, Witness Protection : la créature enchantée perd ses capacités et devient
    * autre chose (types, force et endurance de base, mots-clés, couleurs, nom).
    */
+  /** « The "legend rule" doesn't apply to permanents (tokens) you control » (Sakashima, Cadric). */
+  | { kind: "noLegendRule"; tokensOnly: boolean }
+  /**
+   * Clone, Sakashima : « You may have ~ enter as a copy of any creature on the battlefield » ;
+   * `yours` : « another creature you control » ; `keepOthers` : « except it has ~'s other abilities ».
+   */
+  | { kind: "enterAsCopy"; yours: boolean; keepOthers: boolean }
   | { kind: "becomes"; typeLine: string; power: string; toughness: string; keywords: string[]; colors?: string[]; name?: string };
 
 /** Quels permanents un effet statique touche ou compte (« other legendary creatures you control »). */
@@ -340,6 +347,10 @@ export function parseStaticLine(line: string): StaticAbility | null {
     if (Number.isFinite(n)) return { kind: "exileAtCounters", counter: m[2]!.toLowerCase(), count: n };
   }
   if (/^you have shroud$/i.test(l)) return { kind: "playerShroud" };
+  if ((m = /^the "legend rule" doesn't apply to (permanents|tokens) you control$/i.exec(l))) return { kind: "noLegendRule", tokensOnly: m[1]!.toLowerCase() === "tokens" };
+  if ((m = /^you may have (?:~|[A-Z][\w-]*) enter as a copy of (any creature on the battlefield|another creature you control|a creature you control)(, except it has (?:~|[A-Z][\w-]*)'s other abilities)?$/i.exec(l))) {
+    return { kind: "enterAsCopy", yours: !/battlefield/i.test(m[1]!), keepOthers: !!m[2] };
+  }
   if (/^skip your draw step$/i.test(l)) return { kind: "skipDraw" };
   if (/^creatures you control can't attack$/i.test(l)) return { kind: "creaturesCantAttack" };
   if ((m = /^no more than one creature can (attack|block) each combat$/i.exec(l))) return { kind: "maxOne", attack: m[1]!.toLowerCase() === "attack" };
@@ -559,6 +570,25 @@ export function playerKeywords(g: GameState, playerId: PlayerId): string[] {
 /** Un permanent de ce joueur a-t-il cet effet ? */
 function controls(g: GameState, playerId: PlayerId, kind: StaticAbility["kind"]): boolean {
   return g.players[playerId]!.zones.battlefield.some((id) => staticsOf(g, g.cards[id]!).some((s) => s.kind === kind));
+}
+
+/**
+ * La règle des légendes s'applique-t-elle à ce permanent ? Non si son
+ * contrôleur a Sakashima (tous ses permanents) ou Cadric (ses jetons).
+ */
+export function legendRuleApplies(g: GameState, card: CardInstance): boolean {
+  for (const id of g.players[card.controllerId]!.zones.battlefield) {
+    for (const s of staticsOf(g, g.cards[id]!)) {
+      if (s.kind === "noLegendRule" && (!s.tokensOnly || card.isToken)) return false;
+    }
+  }
+  return true;
+}
+
+/** « You may have ~ enter as a copy of… » de la carte (Clone, Sakashima), ou rien. */
+export function enterAsCopyOf(data: CardData | undefined, faceIndex = 0): Extract<StaticAbility, { kind: "enterAsCopy" }> | undefined {
+  const s = staticsOfData(data, faceIndex).find((x) => x.kind === "enterAsCopy");
+  return s && s.kind === "enterAsCopy" ? s : undefined;
 }
 
 /** Le joueur n'a pas de taille maximale de main. */
