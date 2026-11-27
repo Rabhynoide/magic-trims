@@ -325,6 +325,8 @@ export interface PlayerState {
   castNames?: string[];
   /** Terrains joués ce tour (un seul par tour, règle 305.2). */
   landsPlayed: number;
+  /** Terrains supplémentaires accordés pour un tour (Explore). */
+  extraLands?: { turn: number; count: number };
   /** Réserve de mana ; elle se vide à la fin de chaque étape (règle 500.4). */
   manaPool: ManaPool;
   /** Mana qui ne sert qu'à certains sorts (Primal Beyond : les Élémentaux) ; vidé avec la réserve. */

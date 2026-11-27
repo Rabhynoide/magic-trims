@@ -11,7 +11,7 @@ import { COMBAT_KEYWORDS, creatureStats, hasKeyword, protectedFrom } from "./com
 import { grantedManaAbility, manaOptions, manaTapEffect } from "./mana.js";
 import { parsePermanentAbilities } from "./triggers.js";
 import { areTeammates } from "./modes.js";
-import { joinModes, keywordList, selfToTilde } from "./text.js";
+import { joinModes, keywordList, NUMBER_WORDS, selfToTilde } from "./text.js";
 import { playerHasHexproof, playerHasShroud, printedEvoke, typeLineHasCreatureType } from "./statics.js";
 
 export { selfToTilde };
@@ -138,7 +138,10 @@ type EffectBase =
   /** Cavalier of Gales : mettre N cartes de sa main sur le dessus de sa bibliothèque. */
   | { type: "handToTop"; count: number; drawFirst?: number }
   /** Incandescent Soulstoke : une carte de sa main sur le champ de bataille (au choix), célérité, sacrifiée à la fin du tour. */
-  | { type: "putFromHand"; subtype: string; haste: boolean; sacrificeAtEnd: boolean }
+  /** Incandescent Soulstoke (`subtype`), Growth Spiral (`land`, pioche d'abord `drawFirst` cartes). */
+  | { type: "putFromHand"; subtype?: string; land?: boolean; drawFirst?: number; haste: boolean; sacrificeAtEnd: boolean }
+  /** Explore : « You may play an additional land this turn. » */
+  | { type: "extraLand"; count: number }
   /**
    * Haunting Voyage, Wake the Dead : des cartes de créature de son cimetière, choisies à la résolution,
    * du type choisi en lançant (`chosenType`), toutes si le sort a été présagé (`allIfForetold`).
@@ -1039,6 +1042,14 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       result.effects.push({ type: "shuffleEventCard" });
     } else if ((m = /^you may put an? (\w+) creature card from your hand onto the battlefield$/i.exec(s))) {
       result.effects.push({ type: "putFromHand", subtype: m[1]!.charAt(0).toUpperCase() + m[1]!.slice(1).toLowerCase(), haste: false, sacrificeAtEnd: false });
+    } else if (/^you may put a land card from your hand onto the battlefield$/i.test(s)) {
+      // Growth Spiral : la pioche se fait avant le choix du terrain.
+      const prev = result.effects.at(-1);
+      const drawFirst = prev?.type === "draw" && prev.who === "you" && typeof prev.count === "number" ? prev.count : undefined;
+      if (drawFirst !== undefined) result.effects.pop();
+      result.effects.push({ type: "putFromHand", land: true, ...(drawFirst !== undefined ? { drawFirst } : {}), haste: false, sacrificeAtEnd: false });
+    } else if ((m = /^you may play (an|one|two|three) additional lands? this turn$/i.exec(s))) {
+      result.effects.push({ type: "extraLand", count: m[1]!.toLowerCase() === "an" ? 1 : (NUMBER_WORDS[m[1]!.toLowerCase()] ?? 1) });
     } else if (/^that creature gains haste until end of turn$/i.test(s) && result.effects.at(-1)?.type === "putFromHand") {
       (result.effects.at(-1) as Extract<Effect, { type: "putFromHand" }>).haste = true;
     } else if (/^sacrifice it at the beginning of the next end step$/i.test(s) && result.effects.at(-1)?.type === "putFromHand") {
