@@ -153,9 +153,13 @@ class Session {
     }
   }
 
+  /** Heure de la dernière action envoyée par ce joueur (pour le son de priorité). */
+  lastActAt = 0;
+
   /** Envoie une action ; affiche l'erreur si l'hôte la refuse. */
   async act(action: GameAction): Promise<boolean> {
     if (!this.client) return false;
+    this.lastActAt = Date.now();
     const result = await this.client.act(action);
     if (!result.ok && result.error) this.toast(result.error);
     return result.ok;

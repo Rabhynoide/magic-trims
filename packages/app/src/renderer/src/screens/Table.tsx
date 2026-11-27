@@ -23,6 +23,8 @@ import { Modal } from "../components/Modal";
 import { Overlays } from "../components/Overlays";
 import { cardData, cardImage, cardManaOptions, cardName, cardText, isLand, manaSymbolUrl } from "../cards";
 import { CardLanguageSelect } from "../components/CardLanguage";
+import { SoundSettings } from "../components/SoundSettings";
+import { prioritySound } from "../sound";
 import { CardZoom } from "../components/CardZoom";
 import { cardMenu, libraryMenu, manaItems, playItems } from "../menus";
 import { session, useSession } from "../session";
@@ -325,6 +327,31 @@ function openCardMenu(e: React.MouseEvent, view: GameView, card: CardView) {
   if (items.length > 0) ui.openMenu(e.clientX, e.clientY, items);
 }
 
+/**
+ * Joue un son quand ce joueur (ou son équipe en tours partagés) reçoit la
+ * priorité : seulement au passage de « non » à « oui », jamais à l'ouverture
+ * de la table, et pas plus d'une fois par seconde et demie (voir sound.ts).
+ * Pas de son non plus quand on la garde juste après sa propre action (lancer
+ * un sort donne la priorité à celui qui l'a lancé), sauf si un autre joueur
+ * l'avait entre-temps.
+ */
+function usePrioritySound(view: GameView) {
+  const holder: "me" | "other" | null =
+    view.priority === null || view.outcome.winners
+      ? null
+      : hasPriority(view, view.viewerId)
+        ? "me"
+        : "other";
+  const previous = useRef<typeof holder | undefined>(undefined);
+  useEffect(() => {
+    const before = previous.current;
+    previous.current = holder;
+    if (before === undefined || before === "me" || holder !== "me") return;
+    const justActed = Date.now() - session.lastActAt < 2000;
+    if (before === "other" || !justActed) prioritySound.notify();
+  }, [holder]);
+}
+
 export function Table() {
   const s = useSession();
   const view = s.view!;
@@ -338,6 +365,7 @@ export function Table() {
   const isActive = sameSide(view, view.turn.activePlayerId, me);
   const combatUi = useCombatUi(view, isActive);
   const winners = view.outcome.winners;
+  usePrioritySound(view);
 
   return (
     <div className="table">
@@ -880,6 +908,7 @@ function Toolbar(props: { view: GameView; isActive: boolean; onTokens: () => voi
         <button onClick={() => void act({ type: "setSchemeInMotion" })}>Machination ({me.zones.schemes.length})</button>
       )}
       <span className="spacer" />
+      <SoundSettings />
       <CardLanguageSelect />
       <button
         className="link danger"
