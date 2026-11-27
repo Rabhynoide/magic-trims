@@ -8,6 +8,10 @@ import {
   isManaType,
   manaOptions,
   manaOptionsDetailed,
+  grantedManaAbility,
+  manaTapEffect,
+  manaTapSourceFits,
+  type ManaTapEffect,
   MANA_TYPES,
   parseManaCost,
   payFromPool,
@@ -3428,15 +3432,28 @@ function tapForMana(g: GameState, actor: PlayerState, card: CardInstance, choice
   const owner = g.players[card.controllerId]!;
   const pool = owner.manaPool;
   const only = cardManaRestrictions(g, card)[choice];
+  const typeLine = faceTypeLine(g, card, card.faceIndex);
+  const effects = manaTapEffectsFor(g, owner.id, typeLine);
+  // Mana Reflection, Nyxbloom Ancient : le mana produit est multiplié (remplacement).
+  const factor = effects.reduce((f, e) => (e.add.kind === "multiply" ? f * e.add.factor : f), 1);
+  const produced = Array.from({ length: factor }, () => mana).flat();
+  // Mirari's Wake, Mana Flare, Crypt Ghast : du mana en plus (capacités de mana déclenchées, sans restriction).
+  const extra: ManaType[] = [];
+  for (const e of effects) {
+    if (e.add.kind === "mana") extra.push(e.add.mana);
+    // « one mana of any type that land produced » : le type le plus produit.
+    else if (e.add.kind === "sameType" && mana.length > 0) extra.push([...mana].sort((a, b) => mana.filter((m) => m === b).length - mana.filter((m) => m === a).length)[0]!);
+  }
   if (only) {
-    for (const m of mana) (owner.restrictedMana ??= []).push({ mana: m, ...only });
-    log(g, actor.id, `${actor.name} engage ${cardName(g, card)} pour ${formatMana(mana)} (réservé : ${only.subtype || "type choisi"}).`);
+    for (const m of produced) (owner.restrictedMana ??= []).push({ mana: m, ...only });
+    for (const m of extra) pool[m] += 1;
+    const plus = extra.length > 0 ? `, plus ${formatMana(extra)}` : "";
+    log(g, actor.id, `${actor.name} engage ${cardName(g, card)} pour ${formatMana(produced)} (réservé : ${only.subtype || "type choisi"})${plus}.`);
     return;
   }
   // Bubbling Muck : du mana en plus pour un terrain de ce type.
-  const typeLine = faceTypeLine(g, card, card.faceIndex);
   const bonus = (g.manaBonuses ?? []).filter((b) => b.turn === g.turn.number && new RegExp(`\\b${b.subtype}\\b`).test(typeLine)).map((b) => b.mana);
-  const all = [...mana, ...bonus];
+  const all = [...produced, ...bonus, ...extra];
   for (const m of all) pool[m] += 1;
   log(g, actor.id, `${actor.name} engage ${cardName(g, card)} pour ${formatMana(all)}.`);
 }
@@ -3514,6 +3531,14 @@ function cardManaDetailed(g: GameState, card: CardInstance): { mana: ManaType[];
     const colors = colorsAmongPermanents(g, card.controllerId);
     if (colors.length > 0) options.push({ mana: colors as ManaType[] });
   }
+  // Capacités de mana données par d'autres permanents (Chromatic Lantern, Abundant Growth).
+  const typeLine = face?.typeLine ?? data.typeLine;
+  for (const ability of grantedManaAbilities(g, card, typeLine)) {
+    for (const o of manaOptionsDetailed("", ability)) {
+      const only = o.only ? { only: { subtype: o.only.subtype === "chosen" ? (card.chosenType ?? "") : o.only.subtype, abilities: o.only.abilities } } : {};
+      if (!options.some((x) => x.mana.join() === o.mana.join() && !x.only && !o.only)) options.push({ mana: o.mana, ...only });
+    }
+  }
   if (options.length === 0) return options;
   for (const id of g.players[card.controllerId]?.zones.battlefield ?? []) {
     const aura = g.cards[id]!;
@@ -3532,10 +3557,59 @@ function cardManaDetailed(g: GameState, card: CardInstance): { mana: ManaType[];
 }
 
 
+/** Les capacités de mana que d'autres permanents donnent à celui-ci (« Lands you control have "…" », « Enchanted land has "…" »). */
+function grantedManaAbilities(g: GameState, card: CardInstance, typeLine: string): string[] {
+  const abilities: string[] = [];
+  for (const pid of g.turnOrder) {
+    for (const id of g.players[pid]?.zones.battlefield ?? []) {
+      const other = g.cards[id]!;
+      if (other.faceDown) continue;
+      const data = g.cardData[other.cardId];
+      const text = data?.faces?.[other.faceIndex]?.oracleText ?? data?.oracleText ?? "";
+      if (!text.includes(" ha")) continue;
+      for (const line of text.split("\n")) {
+        const grant = grantedManaAbility(line);
+        if (!grant) continue;
+        const fits =
+          grant.to === "enchanted"
+            ? other.attachedTo === card.instanceId
+            : other.controllerId === card.controllerId && (grant.to === "permanent" || new RegExp(`\\b${grant.to}\\b`).test(typeLine));
+        if (fits) abilities.push(grant.ability);
+      }
+    }
+  }
+  return abilities;
+}
+
+/** Les effets « quand vous engagez un terrain pour du mana » qui s'appliquent à ce permanent engagé par ce joueur. */
+function manaTapEffectsFor(g: GameState, tapper: PlayerId, typeLine: string): ManaTapEffect[] {
+  const effects: ManaTapEffect[] = [];
+  for (const pid of g.turnOrder) {
+    for (const id of g.players[pid]?.zones.battlefield ?? []) {
+      const other = g.cards[id]!;
+      if (other.faceDown) continue;
+      const data = g.cardData[other.cardId];
+      const text = data?.faces?.[other.faceIndex]?.oracleText ?? data?.oracleText ?? "";
+      if (!text.includes("for mana")) continue;
+      for (const line of text.split("\n")) {
+        const effect = manaTapEffect(line);
+        if (!effect || !manaTapSourceFits(effect, typeLine)) continue;
+        if (effect.who === "you" && other.controllerId !== tapper) continue;
+        effects.push(effect);
+      }
+    }
+  }
+  return effects;
+}
+
+const RESTRICTION_TYPE_WORDS = /^(Artifact|Creature|Enchantment|Instant|Sorcery|Planeswalker|Battle|Legendary|Kindred)$/i;
+
 /** Ce mana réservé peut-il payer ce sort (ou cette capacité) ? */
 function restrictionFits(r: { subtype: string; abilities: boolean }, spell: { typeLine: string; oracleText: string; ability?: boolean } | undefined): boolean {
   if (!spell || !r.subtype) return false;
   if (spell.ability && !r.abilities) return false;
+  // « Spend this mana only to cast creature spells » : un type de carte, lu avant le tiret.
+  if (RESTRICTION_TYPE_WORDS.test(r.subtype)) return new RegExp(`\\b${r.subtype}\\b`, "i").test(spell.typeLine.split("—")[0]!);
   return typeLineHasCreatureType(spell.typeLine, spell.oracleText, r.subtype);
 }
 

@@ -1,4 +1,4 @@
-import { cardSupport, creatureStats, stateFromView, isCreature, manaOptions, type CardSupport, type CardData, type CardView, type GameView, type ManaType, type VisibleCardView } from "@magic-trims/core";
+import { cardSupport, creatureStats, stateFromView, isCreature, manaOptions, permanentManaOptions, type CardSupport, type CardData, type CardView, type GameView, type ManaType, type VisibleCardView } from "@magic-trims/core";
 
 export function cardData(view: GameView, card: CardView): CardData | undefined {
   return card.hidden ? undefined : view.cardData[card.cardId];
@@ -86,6 +86,12 @@ export function battlefieldRow(view: GameView, card: CardView): "creatures" | "o
 export function cardManaOptions(view: GameView, card: CardView): ManaType[][] {
   const data = cardData(view, card);
   if (!data || card.hidden) return [];
+  // Sur le champ de bataille, le moteur tient compte des capacités données (Chromatic Lantern, Abundant Growth…).
+  if (card.zone === "battlefield" && card.instanceId) {
+    const g = stateFromView(view);
+    const instance = g.cards[card.instanceId];
+    if (instance) return permanentManaOptions(g, instance);
+  }
   const face = data.faces?.[(card as VisibleCardView).faceIndex];
   return manaOptions(face?.typeLine ?? data.typeLine, face?.oracleText ?? data.oracleText);
 }
