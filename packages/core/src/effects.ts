@@ -253,6 +253,11 @@ type EffectBase =
   | { type: "gainControl"; permanent: number | "self"; player: number }
   /** « Exchange control of target land you control and target land an opponent controls. » */
   | { type: "exchangeControl"; a: number; b: number; relation?: ExchangeRelation }
+  /**
+   * « Gain control of target creature until end of turn. Untap that creature. It gains haste until end of turn. »
+   * (une cible) ou « Gain control of all nonland permanents until end of turn. Untap them. They gain haste… » (un filtre).
+   */
+  | { type: "takeControl"; target?: number; filter?: PermanentFilter; untilEndOfTurn?: boolean; untap?: boolean; haste?: boolean }
   /** Chaos Warp : le propriétaire mélange le permanent dans sa bibliothèque ; `revealPermanent` : puis révèle et met en jeu un permanent. */
   | { type: "shuffleIntoLibrary"; target: number; revealPermanent?: boolean }
   /** Ashling : « create a token that's a copy of it » (la carte sacrifiée), avec la célérité et un sacrifice à la fin du tour. */
@@ -394,6 +399,16 @@ function parsePermanentFilter(text: string): PermanentFilter | null {
   if (total) {
     filter.maxTotalPT = parseInt(total[1]!, 10);
     t = t.slice(0, total.index);
+  }
+  // « nonland permanents that aren't legendary » (Urza's Ruinous Blast), « creatures that are legendary ».
+  const quality = / that (are|aren't|are not) (legendary|tapped|untapped)$/.exec(t);
+  if (quality) {
+    t = t.slice(0, quality.index);
+    const negated = quality[1] !== "are";
+    if (quality[2] === "legendary") {
+      if (negated) filter.notTypes.push("legendary");
+      else filter.legendary = true;
+    } else filter.state = (negated ? (quality[2] === "tapped" ? "untapped" : "tapped") : quality[2]) as PermanentFilter["state"];
   }
   const suffixes: [RegExp, PermanentFilter["controller"]][] = [
     [/ (an opponent controls|you don't control)$/, "notYou"],
@@ -1265,6 +1280,21 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     } else if (/^target opponent chooses a permanent they control at random and sacrifices it$/i.test(s)) {
       result.effects.push({ type: "randomSacrificeLoop", player: target({ label: "adversaire", player: true, opponent: true }) });
       followUps.push(/^if a nonland permanent is sacrificed this way, repeat this process$/i);
+    } else if ((m = /^gain control of (target|all) (.+?)( until end of turn)?$/i.exec(s)) && parsePermanentFilter(m[2]!)) {
+      const filter = parsePermanentFilter(m[2]!)!;
+      result.effects.push({
+        type: "takeControl",
+        ...(m[1]!.toLowerCase() === "target" ? { target: target({ label: permanentLabel(filter), permanent: filter }) } : { filter }),
+        ...(m[3] ? { untilEndOfTurn: true } : {}),
+      });
+    } else if ((m = /^untap target (.+?) and gain control of it until end of turn$/i.exec(s)) && parsePermanentFilter(m[1]!)) {
+      // Word of Seizing, Threaten.
+      const filter = parsePermanentFilter(m[1]!)!;
+      result.effects.push({ type: "takeControl", target: target({ label: permanentLabel(filter), permanent: filter }), untilEndOfTurn: true, untap: true });
+    } else if (/^untap (?:them|it|that creature|that permanent|those permanents|those creatures)$/i.test(s) && result.effects.at(-1)?.type === "takeControl") {
+      (result.effects.at(-1) as Extract<Effect, { type: "takeControl" }>).untap = true;
+    } else if (/^(?:they|it|that creature) gains? haste until end of turn$/i.test(s) && result.effects.at(-1)?.type === "takeControl") {
+      (result.effects.at(-1) as Extract<Effect, { type: "takeControl" }>).haste = true;
     } else if ((m = /^(destroy|exile) all (.+)$/i.exec(s))) {
       const filter = parsePermanentFilter(m[2]!.replace(/^(\w+) and (\w+)$/, "$1 or $2"));
       if (!filter) {

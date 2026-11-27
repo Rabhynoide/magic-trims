@@ -1201,6 +1201,7 @@ export function moveCardTo(
     delete card.grantsUntil;
     delete card.grantedTriggers;
     delete card.usedAbilities;
+    delete card.controlReturnsTo;
     if (g.combat) {
       delete g.combat.attackers[card.instanceId];
       delete g.combat.blockers[card.instanceId];
@@ -2788,6 +2789,18 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         setController(g, c, p.id);
         break;
       }
+      case "takeControl": {
+        const targets = effect.target !== undefined ? [card(effect.target)].filter((c): c is CardInstance => !!c && c.zone === "battlefield") : allMatching(effect.filter!);
+        for (const c of targets) {
+          const previous = c.controllerId;
+          setController(g, c, caster.id);
+          // Le contrôle revient au nettoyage ; un contrôle déjà temporaire revient au même joueur.
+          if (effect.untilEndOfTurn && previous !== caster.id) c.controlReturnsTo ??= previous;
+          if (effect.untap) untap(g, c);
+          if (effect.haste) c.grants = [...new Set([...(c.grants ?? []), "haste"])];
+        }
+        break;
+      }
       case "exchangeControl": {
         const a = card(effect.a);
         const b = card(effect.b);
@@ -3267,6 +3280,8 @@ function payMana(
 /** Le permanent passe sous le contrôle d'un autre joueur (il a de nouveau le mal d'invocation). */
 function setController(g: GameState, card: CardInstance, playerId: PlayerId): void {
   if (card.controllerId === playerId) return;
+  // Un changement de contrôle durable remplace un contrôle « jusqu'à la fin du tour ».
+  delete card.controlReturnsTo;
   removeFromZone(g, card);
   card.controllerId = playerId;
   card.summoningSick = true;
@@ -4405,6 +4420,15 @@ function enterStep(g: GameState, step: TurnStep): void {
         delete card.ptBoost;
         delete card.grants;
         delete card.grantedTriggers;
+      }
+      // Fin des contrôles « jusqu'à la fin du tour » (Dihada −11) : chaque permanent revient à son contrôleur d'avant.
+      for (const card of Object.values(g.cards)) {
+        if (card.controlReturnsTo === undefined) continue;
+        const back = card.controlReturnsTo;
+        delete card.controlReturnsTo;
+        const p = g.players[back];
+        if (card.zone !== "battlefield" || !p || p.hasConceded) continue;
+        setController(g, card, back);
       }
       delete g.manaBonuses;
       break;
