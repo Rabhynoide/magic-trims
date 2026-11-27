@@ -599,6 +599,8 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         ifUntapped = true;
         body = untapped[1]!;
       }
+      // « Whenever ~ attacks, put a +1/+1 counter on it » : « it » est la source elle-même.
+      if (/^~ /.test(m[2]!)) body = body.replace(/^put (an? [^ ]+ counter) on it\b/i, "put $1 on ~");
       const parsed = parseTriggerBody(body);
       if (!condition || !parsed || parsed.effects.unknown.length > 0 || (parsed.effects.effects.length === 0 && !parsed.effects.modes)) {
         result.unknown.push(line);

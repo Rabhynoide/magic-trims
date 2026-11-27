@@ -542,7 +542,12 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     // Morophon : retire du coût le mana coloré indiqué (une fois chaque symbole).
     let paidCost = costText;
     for (const c of reductions.colored) paidCost = paidCost.replace(`{${c}}`, "");
-    const payment = payMana(g, actor, paidCost, xValue, tax - reduction, card.instanceId, `lancer ${name}`, { typeLine, oracleText: faceData?.oracleText ?? data.oracleText });
+    // Toxic Deluge : X PV payés en coût supplémentaire (on ne peut pas payer plus de PV qu'on n'en a).
+    const lifeX = effects?.payLifeX ? xValue : 0;
+    if (effects?.payLifeX && x === undefined) throw new ActionError(`Choisis X, les PV à payer pour lancer ${name}.`);
+    if (lifeX > actor.life) throw new ActionError(`Tu n'as que ${actor.life} PV : X ne peut pas dépasser ${actor.life}.`);
+    const payment = payMana(g, actor, paidCost, effects?.payLifeX ? 0 : xValue, tax - reduction, card.instanceId, `lancer ${name}`, { typeLine, oracleText: faceData?.oracleText ?? data.oracleText });
+    if (lifeX > 0) payLife(g, actor, lifeX);
     if (sacrificed) {
       const sacName = cardName(g, sacrificed);
       sacrificePermanent(g, sacrificed);
@@ -593,7 +598,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       cast.targets = effects.targets.length > 0 ? chosen.map((t) => ({ ...t })) : [];
       if (x !== undefined) cast.xValue = xValue;
     }
-    const paid = [payment.spent.length > 0 ? formatMana(payment.spent) : "rien", payment.life > 0 ? `${payment.life} PV` : ""]
+    const paid = [payment.spent.length > 0 ? formatMana(payment.spent) : "rien", payment.life + lifeX > 0 ? `${payment.life + lifeX} PV` : ""]
       .filter(Boolean)
       .join(" et ");
     const details = [
@@ -1885,8 +1890,18 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
       hand: caster.zones.hand.length,
       given: a === "given" ? given() : 0,
       devotion: a === "devotion" || a === "-devotion" ? devotion() : 0,
-      count: (filter) => controlledMatching(filter).length,
+      count: (filter, all) => (all ? allMatching(filter) : controlledMatching(filter)).length,
+      quantity: (q) => {
+        if ("greatest" in q) return Math.max(0, ...allMatching(q.filter).filter((c) => isCreature(g, c)).map((c) => creatureStats(g, c)[q.greatest]));
+        if (q.of === "self") return self ? Math.max(0, creatureStats(g, self)[q.stat]) : 0;
+        return Math.max(0, statsAtStart[q.of]?.[q.stat] ?? 0);
+      },
     });
+  // Force et endurance des cibles au début de la résolution (« Exile target creature. Its controller gains life equal to its power. »).
+  const statsAtStart = targets.map((t, i) => {
+    const c = legal[i] && t.kind === "card" ? g.cards[t.id] : undefined;
+    return c && c.zone === "battlefield" && isCreature(g, c) ? creatureStats(g, c) : undefined;
+  });
   const controlledMatching = (filter: PermanentFilter) => caster.zones.battlefield.map((id) => g.cards[id]!).filter((c) => matchesPermanent(g, c, { ...filter, controller: "you" }, caster.id));
   // Contrôleurs des cibles au début de la résolution (« its controller » après « destroy target creature »).
   const controllers = targets.map((t) => (t.kind === "card" ? g.cards[t.id]?.controllerId : undefined));
@@ -2711,21 +2726,23 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         break;
       }
       case "grantAll": {
+        const power = amountOf(effect.power ?? 0);
+        const toughness = amountOf(effect.toughness ?? 0);
         const all = allMatching(effect.filter).filter((c) => !(effect.others && c.instanceId === ability?.sourceId));
         for (const c of all) {
-          if (effect.power || effect.toughness) {
+          if (power || toughness) {
             const boost = c.ptBoost ?? { power: 0, toughness: 0 };
-            c.ptBoost = { power: boost.power + (effect.power ?? 0), toughness: boost.toughness + (effect.toughness ?? 0) };
+            c.ptBoost = { power: boost.power + power, toughness: boost.toughness + toughness };
           }
           grantKeywords(c, effect.keywords, effect.untilNextTurn ? caster.id : undefined);
         }
         const sign = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
         const parts = [
-          ...(effect.power || effect.toughness ? [`${sign(effect.power ?? 0)}/${sign(effect.toughness ?? 0)}`] : []),
+          ...(power || toughness ? [`${sign(power)}/${sign(toughness)}`] : []),
           ...effect.keywords.map((k) => KEYWORD_HELP[k]?.name.toLowerCase() ?? k),
         ];
         const noun = effect.filter.types.includes("creature") ? "créatures" : "permanents";
-        const what = `${effect.others ? "Les autres" : "Les"} ${noun}${effect.filter.legendary ? " légendaires" : ""} de ${caster.name}`;
+        const what = `${effect.others ? "Les autres" : "Les"} ${noun}${effect.filter.legendary ? " légendaires" : ""}${effect.filter.controller === "you" ? ` de ${caster.name}` : ""}`;
         if (parts.length > 0) log(g, null, `${what} gagnent ${parts.join(", ")} ${effect.untilNextTurn ? `jusqu'au prochain tour de ${caster.name}` : "jusqu'à la fin du tour"}.`);
         break;
       }
