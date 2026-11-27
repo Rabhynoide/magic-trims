@@ -198,6 +198,8 @@ export interface CardInstance {
   castPermission?: { free: boolean; turn: number; step?: TurnStep; ignoreTiming?: boolean; whileOnStack?: CardInstanceId; reason: string };
   /** Provoquée par ces joueurs (jusqu'à leur prochain tour) : doit attaquer, et un autre joueur si possible. */
   goadedBy?: PlayerId[];
+  /** Cavalier of Gales : la pioche qui précède le choix des cartes à remettre est faite. */
+  drewFirst?: boolean;
   /** Rebond : exilée en se résolvant, lançable gratuitement à l'entretien suivant de ce joueur. */
   rebound?: PlayerId;
   /** Lancé pour son coût d'évocation : sacrifié en arrivant. */

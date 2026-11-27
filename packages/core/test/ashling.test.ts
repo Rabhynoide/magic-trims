@@ -94,6 +94,9 @@ describe("Deck Ashling : évocation", () => {
     g = act(g, "p1", { type: "castSpell", cardId: endurance, evoke: true, evokeExile: green });
     expect(g.players.p1!.zones.exile).toContain(green);
     g = resolveAll(g);
+    const etb = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.needsTargets);
+    if (etb) g = act(g, "p1", { type: "chooseTargets", cardId: etb.instanceId, targets: [{ kind: "player", id: "p2" }] });
+    g = resolveAll(g);
     expect(g.players.p1!.zones.graveyard).toContain(endurance);
   });
 
@@ -213,7 +216,7 @@ describe("Deck Ashling : recherches de terrains", () => {
 describe("Deck Ashling : bilan", () => {
   it("compte les cartes entièrement gérées", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "", manaCost: c.manaCost ?? "" })).level);
-    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(78);
+    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(90);
   });
 });
 
@@ -760,5 +763,151 @@ describe("Deck Ashling : myriade et provocation", () => {
     g = act(g, "p2", { type: "declareAttackers", attackers: [{ cardId: a, defender: "p3" }] });
     expect(g.combat!.attackers[a]).toBe("p3");
     for (const name of ["Mass of Mysteries", "Havoc Eater"]) expect(cardSupport(real(name)).level, name).toBe("full");
+  });
+});
+
+describe("Deck Ashling : gros effets et déclencheurs divers", () => {
+  const creature = (name: string, extra: Partial<CardData> = {}) => fakeCard(name, { typeLine: "Creature — Beast", power: "2", toughness: "2", manaCost: "{1}", ...extra });
+  const named = (g: GameState, zone: "battlefield" | "graveyard" | "exile" | "hand" | "library", player: string, name: string) =>
+    g.players[player]!.zones[zone].find((id) => g.cardData[g.cards[id]!.cardId]?.name === name);
+
+  it("Bane of Progress : détruit artefacts et enchantements, un marqueur par permanent", () => {
+    let g = toMain(newTestGame(2));
+    let bane: string;
+    [g] = put(g, "p2", fakeCard("Bague", { typeLine: "Artifact", manaCost: "{1}" }));
+    [g] = put(g, "p2", fakeCard("Aura", { typeLine: "Enchantment", manaCost: "{1}" }), 1);
+    [g, bane] = put(g, "p1", real("Bane of Progress"));
+    g = resolveAll(g);
+    expect(g.cards[bane]!.counters["+1/+1"]).toBe(2);
+    expect(g.players.p2!.zones.battlefield).toHaveLength(0);
+  });
+
+  it("Living Death : les créatures des cimetières remplacent celles en jeu", () => {
+    let g = toMain(newTestGame(2));
+    let ld: string, alive: string;
+    [g, alive] = put(g, "p1", creature("Vivant"));
+    [g] = inHand(g, "p2", creature("Mort"));
+    g = act(g, "p2", { type: "moveCard", cardId: g.players.p2!.zones.hand[0]!, to: "graveyard", force: true });
+    [g, ld] = inHand(g, "p1", real("Living Death"));
+    g = mana(g, "p1", "BBCCC");
+    g = act(g, "p1", { type: "castSpell", cardId: ld });
+    g = resolveAll(g);
+    expect(g.cards[alive]!.zone).toBe("graveyard");
+    expect(named(g, "battlefield", "p2", "Mort")).toBeDefined();
+  });
+
+  it("Shroudstomper : en arrivant et en attaquant", () => {
+    let g = toMain(newTestGame(2));
+    let stomper: string;
+    const life = g.players.p2!.life;
+    [g, stomper] = put(g, "p1", real("Shroudstomper"));
+    g = resolveAll(g);
+    expect(g.players.p2!.life).toBe(life - 2);
+    delete g.cards[stomper]!.summoningSick;
+    g = act(g, "p1", { type: "nextStep", to: "declareAttackers" });
+    g = act(g, "p1", { type: "declareAttackers", attackers: [{ cardId: stomper, defender: "p2" }] });
+    g = resolveAll(g);
+    expect(g.players.p2!.life).toBe(life - 4);
+  });
+
+  it("Endurance, Cavalier of Dawn, Tyrant of Discord", () => {
+    let g = toMain(newTestGame(2));
+    let rock: string;
+    [g] = inHand(g, "p2", creature("Mort"));
+    g = act(g, "p2", { type: "moveCard", cardId: g.players.p2!.zones.hand[0]!, to: "graveyard", force: true });
+    [g] = put(g, "p1", real("Endurance"));
+    const t = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.needsTargets);
+    if (t) g = act(g, "p1", { type: "chooseTargets", cardId: t.instanceId, targets: [{ kind: "player", id: "p2" }] });
+    g = resolveAll(g);
+    expect(g.players.p2!.zones.graveyard).toHaveLength(0);
+    // Cavalier of Dawn : le contrôleur du permanent détruit reçoit un Golem 3/3.
+    [g, rock] = put(g, "p2", fakeCard("Pierre", { typeLine: "Artifact", manaCost: "{1}" }));
+    [g] = put(g, "p1", real("Cavalier of Dawn"), 0);
+    const dawn = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.needsTargets);
+    if (dawn) g = act(g, "p1", { type: "chooseTargets", cardId: dawn.instanceId, targets: [{ kind: "card", id: rock }] });
+    g = resolveAll(g);
+    expect(g.cards[rock]!.zone).toBe("graveyard");
+    expect(g.players.p2!.zones.battlefield.some((id) => g.cards[id]!.isToken)).toBe(true);
+    // Tyrant of Discord : sacrifices au hasard jusqu'à un terrain.
+    [g] = put(g, "p2", basic("Forest"), 0);
+    [g] = put(g, "p1", real("Tyrant of Discord"), 0);
+    g = resolveAll(g);
+    expect(g.players.p2!.zones.battlefield.length).toBeLessThan(2);
+  });
+
+  it("Greenwarden of Murasa et Cavalier of Gales en mourant", () => {
+    let g = toMain(newTestGame(2));
+    let warden: string, gales: string;
+    [g] = inHand(g, "p1", creature("Souvenir"));
+    g = act(g, "p1", { type: "moveCard", cardId: g.players.p1!.zones.hand[0]!, to: "graveyard", force: true });
+    [g, warden] = put(g, "p1", real("Greenwarden of Murasa"));
+    // En arrivant : on refuse de reprendre la carte.
+    g = resolveAll(g);
+    const etb = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.awaitingDecision)!;
+    g = act(g, "p1", { type: "decideOptional", cardId: etb.instanceId, accept: false });
+    g = resolveAll(g);
+    expect(named(g, "graveyard", "p1", "Souvenir")).toBeDefined();
+    // En mourant : on exile Greenwarden pour reprendre Souvenir.
+    g = act(g, "p1", { type: "moveCard", cardId: warden, to: "graveyard", force: true });
+    const dies = g.stack.map((id) => g.cards[id]!).find((c) => c.ability)!;
+    if (dies.ability!.needsTargets) g = act(g, "p1", { type: "chooseTargets", cardId: dies.instanceId, targets: [{ kind: "card", id: named(g, "graveyard", "p1", "Souvenir")! }] });
+    g = resolveAll(g);
+    g = act(g, "p1", { type: "decideOptional", cardId: dies.instanceId, accept: true });
+    g = resolveAll(g);
+    expect(named(g, "hand", "p1", "Souvenir")).toBeDefined();
+    expect(g.cards[warden]!.zone).toBe("exile");
+    // Cavalier of Gales : pioche 3, en remet 2 dessus ; en mourant, mélangé dans la bibliothèque.
+    const hand = g.players.p1!.zones.hand.length;
+    [g, gales] = put(g, "p1", real("Cavalier of Gales"));
+    g = resolveAll(g);
+    const choice = g.stack.map((id) => g.cards[id]!).find((c) => c.cardChoice)!;
+    g = act(g, "p1", { type: "chooseCards", cardId: choice.instanceId, cardIds: choice.cardChoice!.options.slice(0, 2) });
+    g = resolveAll(g);
+    expect(g.players.p1!.zones.hand.length).toBe(hand - 1 + 3 - 2);
+    const lib = g.players.p1!.zones.library.length;
+    g = act(g, "p1", { type: "moveCard", cardId: gales, to: "graveyard", force: true });
+    g = act(g, "p1", { type: "passPriority" });
+    g = act(g, "p2", { type: "passPriority" });
+    const scry = g.stack.map((id) => g.cards[id]!).find((c) => c.scry);
+    expect(scry).toBeDefined();
+    expect(g.players.p1!.zones.library).toHaveLength(lib + 1);
+  });
+
+  it("Fury : 4 blessures réparties, Incandescent Soulstoke, Horde of Notions, Cavalier of Thorns", () => {
+    let g = toMain(newTestGame(2));
+    let a: string, b: string, soul: string, horde: string;
+    [g, a] = put(g, "p2", creature("A", { toughness: "3" }));
+    [g, b] = put(g, "p2", creature("B", { toughness: "1" }), 1);
+    [g] = put(g, "p1", real("Fury"));
+    const fury = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.needsTargets)!;
+    g = act(g, "p1", { type: "chooseTargets", cardId: fury.instanceId, targets: [{ kind: "card", id: a }, { kind: "card", id: a }, { kind: "card", id: a }, { kind: "card", id: b }] });
+    g = resolveAll(g);
+    expect(g.cards[a]!.zone).toBe("graveyard");
+    expect(g.cards[b]!.zone).toBe("graveyard");
+    // Soulstoke : un Élémental de la main, avec la célérité.
+    [g, soul] = put(g, "p1", real("Incandescent Soulstoke"));
+    delete g.cards[soul]!.summoningSick;
+    let elem: string;
+    [g, elem] = inHand(g, "p1", fakeCard("Élémental", { typeLine: "Creature — Elemental", power: "1", toughness: "1", manaCost: "{5}" }));
+    g = mana(g, "p1", "RC");
+    g = act(g, "p1", { type: "activateAbility", cardId: soul, index: 0 });
+    g = resolveAll(g);
+    const pick = g.stack.map((id) => g.cards[id]!).find((c) => c.cardChoice)!;
+    g = act(g, "p1", { type: "chooseCards", cardId: pick.instanceId, cardIds: [elem] });
+    g = resolveAll(g);
+    expect(g.cards[elem]!.zone).toBe("battlefield");
+    expect(hasKeyword(g, g.cards[elem]!, "Haste")).toBe(true);
+    // Horde of Notions : l'Élémental du cimetière se lance gratuitement.
+    g = act(g, "p1", { type: "moveCard", cardId: elem, to: "graveyard", force: true });
+    [g, horde] = put(g, "p1", real("Horde of Notions"));
+    g = mana(g, "p1", "WUBRG");
+    g = act(g, "p1", { type: "activateAbility", cardId: horde, index: 0, targets: [{ kind: "card", id: elem }] });
+    g = resolveAll(g);
+    g = act(g, "p1", { type: "castSpell", cardId: elem });
+    g = resolveAll(g);
+    expect(g.cards[elem]!.zone).toBe("battlefield");
+    for (const name of ["Bane of Progress", "Living Death", "Shroudstomper", "Endurance", "Cavalier of Dawn", "Tyrant of Discord", "Greenwarden of Murasa", "Cavalier of Gales", "Cavalier of Thorns", "Fury", "Incandescent Soulstoke", "Horde of Notions"]) {
+      expect(cardSupport(real(name)).level, name).toBe("full");
+    }
   });
 });

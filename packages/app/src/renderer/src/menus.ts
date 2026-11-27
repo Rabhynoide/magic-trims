@@ -149,7 +149,7 @@ export function cardMenu(view: GameView, card: CardView): MenuItem[] {
   }
 
   // Rebond, cascade : un sort exilé qu'on peut lancer sans payer son coût.
-  if (zone === "exile" && card.ownerId === me && !card.hidden) {
+  if ((zone === "exile" || zone === "graveyard") && card.ownerId === me && !card.hidden) {
     const state = stateFromView(view);
     const instance = id ? state.cards[id] : undefined;
     if (instance && exilePermissionHolds(state, instance)) {

@@ -12,7 +12,7 @@ import { manaOptions } from "./mana.js";
 import { parsePermanentAbilities } from "./triggers.js";
 import { areTeammates } from "./modes.js";
 import { joinModes, keywordList, selfToTilde } from "./text.js";
-import { playerHasShroud, printedEvoke } from "./statics.js";
+import { playerHasShroud, printedEvoke, typeLineHasCreatureType } from "./statics.js";
 
 export { selfToTilde };
 import type { CardData, CardInstance, GameState, PlayerId } from "./types.js";
@@ -54,18 +54,24 @@ export interface GraveyardFilter {
   whose: "you" | "any";
   /** « another target creature card » : pas la source de la capacité. */
   another?: boolean;
+  /** « target Elemental card » : un type de créature. */
+  subtype?: string;
 }
 
 /** « carte de créature (valeur de mana 3 ou moins) de ton cimetière ». */
 export function graveyardLabel(f: GraveyardFilter): string {
   const FR: Record<string, string> = { creature: "créature", artifact: "artefact", enchantment: "enchantement", land: "terrain", planeswalker: "planeswalker", instant: "éphémère", sorcery: "rituel" };
-  const type = f.types.length > 0 ? ` de ${f.types.map((t) => FR[t] ?? t).join(" ou ")}` : "";
+  const type = f.subtype ? ` ${f.subtype}` : f.types.length > 0 ? ` de ${f.types.map((t) => FR[t] ?? t).join(" ou ")}` : "";
   const mv = f.maxManaValue !== undefined ? ` (valeur de mana ${f.maxManaValue} ou moins)` : "";
   return `carte${type}${mv} ${f.whose === "you" ? "de ton cimetière" : "d'un cimetière"}`;
 }
 
 /** « another target creature card with mana value 3 or less from your graveyard » ; `null` si non compris. */
 function parseGraveyardTarget(text: string): GraveyardFilter | null {
+  const sub = /^(another )?target ([A-Z][a-z]+) card from (your|a) graveyard$/.exec(text.trim());
+  if (sub && !/^(Creature|Artifact|Enchantment|Land|Planeswalker|Instant|Sorcery)$/.test(sub[2]!)) {
+    return { types: [], subtype: sub[2]!, whose: sub[3]!.toLowerCase() === "your" ? "you" : "any", ...(sub[1] ? { another: true } : {}) };
+  }
   const m = /^(another )?target ((?:creature|artifact|enchantment|land|planeswalker|instant|sorcery)(?: or (?:creature|artifact|enchantment|land|planeswalker|instant|sorcery))* )?card(?: with mana value (\d+) or less)? from (your|a) graveyard$/i.exec(text.trim());
   if (!m) return null;
   return {
@@ -115,7 +121,28 @@ export type Effect = EffectBase & { ifControls?: { filter: PermanentFilter; atLe
 type EffectBase =
   | { type: "draw"; who: Who; count: Amount }
   | { type: "destroy"; target: number }
-  | { type: "destroyAll"; filter: PermanentFilter }
+  /** `countersOnSelf` : Bane of Progress, un marqueur +1/+1 sur la source par permanent détruit. */
+  | { type: "destroyAll"; filter: PermanentFilter; countersOnSelf?: boolean }
+  /** « you may exile it » : la carte de l'événement (morte) quitte le cimetière pour l'exil. */
+  | { type: "exileEventCard" }
+  /** Cavalier of Gales : « shuffle it into its owner's library ». */
+  | { type: "shuffleEventCard" }
+  /** Cavalier of Gales : mettre N cartes de sa main sur le dessus de sa bibliothèque. */
+  | { type: "handToTop"; count: number; drawFirst?: number }
+  /** Incandescent Soulstoke : une carte de sa main sur le champ de bataille (au choix), célérité, sacrifiée à la fin du tour. */
+  | { type: "putFromHand"; subtype: string; haste: boolean; sacrificeAtEnd: boolean }
+  /** Horde of Notions : la carte ciblée du cimetière se joue gratuitement ce tour-ci. */
+  | { type: "playFromGraveyard"; target: number }
+  /** Living Death. */
+  | { type: "livingDeath" }
+  /** Endurance : le joueur met son cimetière au-dessous de sa bibliothèque, dans un ordre aléatoire. */
+  | { type: "graveyardToBottom"; who: Who }
+  /** Cavalier of Dawn : le contrôleur de la cible (détruite) crée un jeton. */
+  | { type: "tokenForController"; target: number; token: TokenSpec }
+  /** Cavalier of Thorns : révéler N cartes, un terrain sur le champ de bataille, le reste au cimetière. */
+  | { type: "revealLandRestGraveyard"; count: number }
+  /** Tyrant of Discord : l'adversaire sacrifie un permanent au hasard, et recommence tant que c'est un non-terrain. */
+  | { type: "randomSacrificeLoop"; player: number }
   /** `returnAtEnd` : revient sous le contrôle de son propriétaire au début de sa prochaine étape de fin. */
   | { type: "exile"; target: number; returnAtEnd?: boolean }
   /** The Eternal Wanderer −4 : chaque joueur garde la créature choisie et sacrifie les autres. */
@@ -229,7 +256,8 @@ type EffectBase =
   /** Jeton prédéfini : Treasure, Food, Clue, Blood. */
   | { type: "namedToken"; name: string; count: Amount; tapped: boolean }
   /** « Scry 2 » : le contrôleur range les cartes du dessus avant le reste de la résolution (seulement en premier effet). */
-  | { type: "scry"; count: number };
+  /** `shuffleEventFirst` : Cavalier of Gales, la carte morte est d'abord mélangée dans la bibliothèque. */
+  | { type: "scry"; count: number; shuffleEventFirst?: boolean };
 
 export interface TokenSpec {
   power: string;
@@ -644,6 +672,8 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
   let revealing: Extract<Effect, { type: "shuffleIntoLibrary" }> | null = null;
   let approach = false;
   let keepOne = false;
+  // Les phrases qui complètent un effet déjà lu (Living Death, Cavalier of Thorns, Tyrant of Discord).
+  const followUps: RegExp[] = [];
   let pendingIf: { from: number; cond: NonNullable<Effect["ifControls"]> } | null = null;
   const flushIf = () => {
     if (pendingIf) for (const e of result.effects.slice(pendingIf.from)) e.ifControls = pendingIf.cond;
@@ -653,6 +683,11 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     flushIf();
     let s = sentence.replace(/\.$/, "");
     if (HARMLESS.some((re) => re.test(sentence))) continue;
+    const followUp = followUps.findIndex((re) => re.test(s));
+    if (followUp >= 0) {
+      followUps.splice(followUp, 1);
+      continue;
+    }
     let m: RegExpExecArray | null;
     // « If you control eight or more lands, draw a card. »
     if ((m = /^if you control (\w+) or more (.+?), (.+)$/i.exec(s))) {
@@ -767,6 +802,7 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       // Le regard n'est géré qu'avant les autres effets (la résolution attend le choix du joueur).
       const n = amount(m[1]!);
       if (result.effects.length === 0 && typeof n === "number") result.effects.push({ type: "scry", count: n });
+      else if (result.effects.length === 1 && result.effects[0]!.type === "shuffleEventCard" && typeof n === "number") result.effects = [{ type: "scry", count: n, shuffleEventFirst: true }];
       else result.unknown.push(sentence);
       continue;
     }
@@ -903,8 +939,43 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       const filter = parsePermanentFilter(m[2]!)!;
       const t = target({ label: permanentLabel(filter), permanent: filter, ...(/up to/i.test(m[1] ?? "") ? { upTo: true } : {}), ...(/another/i.test(m[1] ?? "") ? { another: true } : {}) });
       result.effects.push({ type: "pumpTarget", target: t, power: m[3] ? parseInt(m[3], 10) : 0, toughness: m[4] ? parseInt(m[4], 10) : 0, keywords: m[5] ?? m[6] ? keywordList(m[5] ?? m[6]!) : [] });
+    } else if ((m = new RegExp(`^you gain ${NUM} life and draw ${NUM} cards?$`, "i").exec(s))) {
+      result.effects.push({ type: "life", who: "you", amount: amount(m[1]!) }, { type: "draw", who: "you", count: amount(m[2]!) });
+    } else if ((m = new RegExp(`^put ${NUM} cards from your hand on top of your library in any order$`, "i").exec(s))) {
+      // « Draw three cards, then put two cards… » : la pioche se fait avant le choix.
+      const prev = result.effects.at(-1);
+      if (prev?.type === "draw" && prev.who === "you" && typeof prev.count === "number") {
+        result.effects.pop();
+        result.effects.push({ type: "handToTop", count: amount(m[1]!) as number, drawFirst: prev.count });
+      } else result.effects.push({ type: "handToTop", count: amount(m[1]!) as number });
+    } else if (/^shuffle it into its owner's library$/i.test(s)) {
+      result.effects.push({ type: "shuffleEventCard" });
+    } else if ((m = /^you may put an? (\w+) creature card from your hand onto the battlefield$/i.exec(s))) {
+      result.effects.push({ type: "putFromHand", subtype: m[1]!.charAt(0).toUpperCase() + m[1]!.slice(1).toLowerCase(), haste: false, sacrificeAtEnd: false });
+    } else if (/^that creature gains haste until end of turn$/i.test(s) && result.effects.at(-1)?.type === "putFromHand") {
+      (result.effects.at(-1) as Extract<Effect, { type: "putFromHand" }>).haste = true;
+    } else if (/^sacrifice it at the beginning of the next end step$/i.test(s) && result.effects.at(-1)?.type === "putFromHand") {
+      (result.effects.at(-1) as Extract<Effect, { type: "putFromHand" }>).sacrificeAtEnd = true;
+    } else if ((m = /^you may play (target \w+ card from your graveyard) without paying its mana cost$/i.exec(s)) && parseGraveyardTarget(m[1]!)) {
+      const filter = parseGraveyardTarget(m[1]!)!;
+      result.effects.push({ type: "playFromGraveyard", target: target({ label: graveyardLabel(filter), graveyard: filter }) });
+    } else if (/^put a \+1\/\+1 counter on ~ for each permanent destroyed this way$/i.test(s) && result.effects.at(-1)?.type === "destroyAll") {
+      (result.effects.at(-1) as Extract<Effect, { type: "destroyAll" }>).countersOnSelf = true;
+    } else if (/^each player exiles all creature cards from their graveyard$/i.test(s)) {
+      result.effects.push({ type: "livingDeath" });
+      followUps.push(/^sacrifices all creatures they control$/i, /^puts all cards they exiled this way onto the battlefield$/i);
+    } else if ((m = /^(up to one )?target player puts all the cards from their graveyard on the bottom of their library in a random order$/i.exec(s))) {
+      result.effects.push({ type: "graveyardToBottom", who: { target: target({ label: "joueur", player: true, ...(m[1] ? { upTo: true } : {}) }) } });
+    } else if ((m = /^its controller creates (.+)$/i.exec(s)) && parseToken(m[1]!.replace(/^an? /i, "")) && result.targets.length > 0) {
+      result.effects.push({ type: "tokenForController", target: result.targets.length - 1, token: parseToken(m[1]!.replace(/^an? /i, ""))! });
+    } else if ((m = new RegExp(`^reveal the top ${NUM} cards of your library$`, "i").exec(s)) && /^put a land card from among them onto the battlefield and the rest into your graveyard\.?$/i.test(sentences[sentences.indexOf(sentence) + 1] ?? "")) {
+      result.effects.push({ type: "revealLandRestGraveyard", count: amount(m[1]!) as number });
+      followUps.push(/^put a land card from among them onto the battlefield and the rest into your graveyard$/i);
+    } else if (/^target opponent chooses a permanent they control at random and sacrifices it$/i.test(s)) {
+      result.effects.push({ type: "randomSacrificeLoop", player: target({ label: "adversaire", player: true, opponent: true }) });
+      followUps.push(/^if a nonland permanent is sacrificed this way, repeat this process$/i);
     } else if ((m = /^(destroy|exile) all (.+)$/i.exec(s))) {
-      const filter = parsePermanentFilter(m[2]!);
+      const filter = parsePermanentFilter(m[2]!.replace(/^(\w+) and (\w+)$/, "$1 or $2"));
       if (!filter) {
         result.unknown.push(sentence);
         continue;
@@ -1113,6 +1184,7 @@ export function isLegalTarget(g: GameState, spec: TargetSpec, target: Target, ca
     const typeLine = (data?.faces?.[0]?.typeLine ?? data?.typeLine ?? "").toLowerCase();
     if (f.types.length > 0 && !f.types.some((t) => new RegExp(`\\b${t}\\b`).test(typeLine))) return false;
     if (f.maxManaValue !== undefined && (data?.manaValue ?? 0) > f.maxManaValue) return false;
+    if (f.subtype && !typeLineHasCreatureType(data?.faces?.[0]?.typeLine ?? data?.typeLine ?? "", data?.faces?.[0]?.oracleText ?? data?.oracleText ?? "", f.subtype)) return false;
     return true;
   }
   return false;

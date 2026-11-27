@@ -274,6 +274,22 @@ function parseTriggerBody(text: string): { effects: SpellEffects; optional: bool
   if (/^you may look at the top X cards of your library, where X is that creature's power\. If you do, put one of those cards on top of your library and the rest on the bottom of your library in any order\.?$/i.test(text)) {
     return fixed({ type: "lookTopKeepOne" }, true);
   }
+  // Greenwarden of Murasa, Cavalier of Thorns : « you may exile it. If you do, … ».
+  const exileIt = /^you may exile it\. If you do, (.+)$/i.exec(text);
+  if (exileIt) {
+    const rest = parseSpellEffects(cap(exileIt[1]!), "~");
+    return { effects: { ...rest, effects: [{ type: "exileEventCard" }, ...rest.effects] }, optional: true };
+  }
+  // Fury : 4 blessures réparties ; chaque choix de cible vaut 1 blessure (la même cible peut revenir).
+  const divided = /^it deals (\d+) damage divided as you choose among any number of target creatures and\/or planeswalkers\.?$/i.exec(text);
+  if (divided) {
+    const n = parseInt(divided[1]!, 10);
+    const spec = { label: "créature ou planeswalker (1 blessure par choix)", permanent: { types: ["creature", "planeswalker"], notTypes: [] }, upTo: true };
+    return {
+      effects: { targets: Array.from({ length: n }, () => spec), effects: Array.from({ length: n }, (_, i) => ({ type: "damage" as const, target: i, amount: 1 })), unknown: [] },
+      optional: false,
+    };
+  }
   // Havoc Eater : une cible facultative par adversaire (quatre au plus).
   if (/^for each opponent, goad up to one target creature that opponent controls\. Put X \+1\/\+1 counters on ~, where X is the total power of creatures goaded this way\.?$/i.test(text)) {
     const spec = { label: "créature d'un adversaire (une par adversaire)", permanent: { types: ["creature"], notTypes: [], controller: "notYou" as const }, upTo: true };
@@ -391,6 +407,14 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
       continue;
     }
     const m = /^(When|Whenever|At) (.+?), (.+)$/.exec(tilde);
+    // « Whenever ~ enters or attacks » : deux capacités déclenchées au même effet.
+    const both = m && /^~ enters or attacks$/i.test(m[2]!) ? parseTriggerBody(m[3]!) : null;
+    if (both && both.effects.unknown.length === 0 && both.effects.effects.length > 0) {
+      for (const condition of [{ on: "enters", self: true, another: false, creature: false, whose: "you" }, { on: "combat", attacks: true, blocks: false }] as TriggerCondition[]) {
+        result.triggers.push({ text: line, condition, effects: both.effects, ifUntapped: false, optional: both.optional });
+      }
+      continue;
+    }
     if (m) {
       const condition = parseTriggerCondition(m[2]!);
       let body = m[3]!;
