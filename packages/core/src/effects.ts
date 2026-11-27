@@ -83,6 +83,8 @@ export interface PermanentFilter {
   state?: "attacking" | "blocking" | "tapped" | "untapped";
   /** « with total power and toughness 5 or less » (Cut Down). */
   maxTotalPT?: number;
+  /** Un sous-type (« Enchant Forest »). */
+  subtype?: string;
 }
 
 /** Condition entre les deux permanents échangés, vérifiée à la résolution. */
@@ -122,7 +124,7 @@ export type Effect =
   /** Marqueurs sur la source de la capacité (« put a +1/+1 counter on ~ »). */
   | { type: "counterSelf"; kind: string; count: number }
   /** Mana d'une couleur au choix (« Add one mana of any color »), choisie à l'activation. */
-  | { type: "manaAny"; count: number }
+  | { type: "manaAny"; count: number | "greatestPower" }
   /** « Return ~ from your graveyard to your hand. » */
   | { type: "returnSelf" }
   /** « ~ gets +1/+1 until end of turn. » */
@@ -276,6 +278,8 @@ function parsePermanentFilter(text: string): PermanentFilter | null {
       filter.controller = controller;
     }
   }
+  const basic = /^(plains|island|swamp|mountain|forest)$/.exec(t);
+  if (basic) return { ...filter, types: ["land"], subtype: basic[1]!.charAt(0).toUpperCase() + basic[1]!.slice(1) };
   const state = /^(attacking|blocking|tapped|untapped) /.exec(t);
   if (state) {
     filter.state = state[1] as PermanentFilter["state"];
@@ -321,7 +325,7 @@ export function permanentLabel(f: PermanentFilter): string {
     planeswalker: "planeswalker",
     legendary: "légendaire",
   };
-  let label = f.types.length > 0 ? f.types.map((t) => labels[t]).join(" ou ") : "permanent";
+  let label = f.subtype ? f.subtype : f.types.length > 0 ? f.types.map((t) => labels[t]).join(" ou ") : "permanent";
   if (f.notTypes.length > 0) label += ` non-${f.notTypes.map((t) => labels[t]).join(", non-")}`;
   if (f.state) label += { attacking: " attaquant(e)", blocking: " bloqueur(se)", tapped: " engagé(e)", untapped: " dégagé(e)" }[f.state];
   if (f.controller === "you") label += " que tu contrôles";
@@ -479,6 +483,10 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
     if (keywords.every((k) => KEYWORD_HELP[k])) {
       return [{ type: "grantAll", filter: { types: ["creature"], notTypes: [], controller: "you" }, keywords }];
     }
+  }
+  // Selvala : approximation, les X mana sont tous de la couleur choisie.
+  if (/^add x mana in any combination of colors, where x is the greatest power among creatures you control$/i.test(s)) {
+    return [{ type: "manaAny", count: "greatestPower" }];
   }
   if ((m = /^add (one|two|three) mana of any (?:one )?color$/i.exec(s))) {
     return [{ type: "manaAny", count: amount(m[1]!) as number }];
@@ -953,6 +961,7 @@ export function permanentMatches(facts: PermanentFacts, filter: PermanentFilter,
   if (filter.state === "attacking" && !facts.attacking) return false;
   if (filter.state === "blocking" && !facts.blocking) return false;
   if (filter.maxTotalPT !== undefined && (facts.power ?? 0) + (facts.toughness ?? 0) > filter.maxTotalPT) return false;
+  if (filter.subtype && !new RegExp(`\\b${filter.subtype}\\b`).test(facts.typeLine.split("—")[1] ?? "")) return false;
   return true;
 }
 
@@ -1085,6 +1094,7 @@ function permanentLineStatus(line: string, typeLine: string, name: string): Line
   if (printedEvoke(line)) return { title: "Évocation", status: "auto" };
   const abilities = parsePermanentAbilities(line, name, typeLine);
   if (/^\{T\}: Add /.test(line) && manaOptions(typeLine, line).length > 0) return { title: "Capacité de mana", status: "auto" };
+  if (/^(?:\w+ — )?\{T\}: For each color among permanents you control, add one mana of that color\.?$/.test(line)) return { title: "Capacité de mana", status: "auto" };
   if (abilities.triggers.length > 0) return { title: "Capacité déclenchée", status: "auto" };
   const activated = abilities.activated[0];
   if (activated) {

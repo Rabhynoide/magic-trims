@@ -322,6 +322,7 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
       const askType = async (): Promise<string | null | undefined> => {
         const what = view.settings.enforceRules ? chooseTypeOf(data, f.face ?? 0) : null;
         if (!what) return undefined;
+        if (what === "color") return ui.ask("Couleur choisie (W, U, B, R ou G)", "G", "text");
         if (what === "card") return ui.ask("Type choisi (artifact, creature, enchantment, instant ou sorcery)", "creature", "text");
         return ui.ask("Type de créature choisi (en anglais : Elemental, Elf…)", mostCommonCreatureType(stateFromView(view), view.viewerId), "text");
       };

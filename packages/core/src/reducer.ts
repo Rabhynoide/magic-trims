@@ -49,6 +49,7 @@ import {
   evokeOptions,
   type EvokeCost,
   chooseTypeOf,
+  colorsAmongPermanents,
   costReductions,
   mostCommonCreatureType,
   hasCreatureType,
@@ -1189,8 +1190,8 @@ export function moveCardTo(
     // « As ~ enters, choose a creature type » : sans choix (posée à la main, copie), le type le plus courant.
     const entered = g.cards[id]!;
     const what = !entered.faceDown && chooseTypeOf(g.cardData[entered.cardId], entered.faceIndex);
-    if (what && !entered.chosenType) entered.chosenType = what === "card" ? "creature" : mostCommonCreatureType(g, entered.controllerId);
-    if (what) log(g, null, `${cardName(g, entered)} : type choisi « ${entered.chosenType} ».`);
+    if (what && !entered.chosenType) entered.chosenType = what === "card" ? "creature" : what === "color" ? "G" : mostCommonCreatureType(g, entered.controllerId);
+    if (what) log(g, null, `${cardName(g, entered)} : ${what === "color" ? "couleur choisie" : "type choisi"} « ${entered.chosenType} ».`);
     emitEnters(g, entered, from === "stack");
   }
   return g.cards[id]!;
@@ -2169,8 +2170,12 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         break;
       case "manaAny": {
         const color = ability?.color ?? "B";
-        caster.manaPool[color] += effect.count;
-        log(g, null, `${caster.name} ajoute ${formatMana(Array(effect.count).fill(color))}.`);
+        const count =
+          effect.count === "greatestPower"
+            ? Math.max(0, ...caster.zones.battlefield.filter((id) => isCreature(g, g.cards[id]!)).map((id) => creatureStats(g, g.cards[id]!).power))
+            : effect.count;
+        caster.manaPool[color] += count;
+        log(g, null, `${caster.name} ajoute ${formatMana(Array(count).fill(color))}.`);
         break;
       }
       case "returnSelf": {
@@ -2583,9 +2588,14 @@ function untap(g: GameState, card: CardInstance): void {
 }
 
 /** Le type choisi en arrivant : un type de créature (un mot), ou un type de carte (Cloud Key). */
-function checkChosenType(what: "creature" | "card", value: string | undefined): string | undefined {
+function checkChosenType(what: "creature" | "card" | "color", value: string | undefined): string | undefined {
   if (value === undefined || value === "") return undefined;
   const v = value.trim();
+  if (what === "color") {
+    const c = COLOR_LETTERS[v.toLowerCase()] ?? v.toUpperCase();
+    if (!["W", "U", "B", "R", "G"].includes(c)) throw new ActionError("Choisis une couleur : W, U, B, R ou G.");
+    return c;
+  }
   if (what === "card") {
     const t = v.toLowerCase();
     if (!["artifact", "creature", "enchantment", "instant", "sorcery"].includes(t)) throw new ActionError("Choisis : artifact, creature, enchantment, instant ou sorcery.");
@@ -2594,6 +2604,8 @@ function checkChosenType(what: "creature" | "card", value: string | undefined): 
   if (!/^[A-Za-z][A-Za-z'-]*$/.test(v)) throw new ActionError("Type de créature invalide (un seul mot, en anglais : Elemental, Elf…).");
   return v.charAt(0).toUpperCase() + v.slice(1).toLowerCase();
 }
+
+const COLOR_LETTERS: Record<string, string> = { white: "W", blue: "U", black: "B", red: "R", green: "G", blanc: "W", bleu: "U", noir: "B", rouge: "R", vert: "G" };
 
 const COMBAT_STEPS: TurnStep[] = ["beginCombat", "declareAttackers", "declareBlockers", "combatDamage", "endCombat"];
 
@@ -2819,13 +2831,44 @@ function faceTypeLine(g: GameState, card: CardInstance, faceIndex: number): stri
 /** Mana que la carte (sur sa face visible) peut produire en s'engageant. */
 /** Les restrictions des choix de mana de la carte (le type choisi remplacé par celui de la carte). */
 function cardManaRestrictions(g: GameState, card: CardInstance): ({ subtype: string; abilities: boolean } | undefined)[] {
+  return cardManaDetailed(g, card).map((o) => o.only);
+}
+
+/**
+ * Les choix de mana d'un permanent : ceux de son texte, la capacité « For each
+ * color among permanents you control » (Faeburrow Elder, Bloom Tender), et le
+ * mana en plus des auras (Utopia Sprawl, Fertile Ground : un choix par couleur).
+ */
+function cardManaDetailed(g: GameState, card: CardInstance): { mana: ManaType[]; only?: { subtype: string; abilities: boolean } }[] {
   const data = g.cardData[card.cardId];
   if (!data) return [];
   const face = data.faces?.[card.faceIndex];
-  return manaOptionsDetailed(face?.typeLine ?? data.typeLine, face?.oracleText ?? data.oracleText).map((o) =>
-    o.only ? { subtype: o.only.subtype === "chosen" ? (card.chosenType ?? "") : o.only.subtype, abilities: o.only.abilities } : undefined,
-  );
+  const oracleText = face?.oracleText ?? data.oracleText;
+  let options: { mana: ManaType[]; only?: { subtype: string; abilities: boolean } }[] = manaOptionsDetailed(face?.typeLine ?? data.typeLine, oracleText).map((o) => ({
+    mana: o.mana,
+    ...(o.only ? { only: { subtype: o.only.subtype === "chosen" ? (card.chosenType ?? "") : o.only.subtype, abilities: o.only.abilities } } : {}),
+  }));
+  if (/^(?:\w+ — )?\{T\}: For each color among permanents you control, add one mana of that color\.?$/m.test(oracleText)) {
+    const colors = colorsAmongPermanents(g, card.controllerId);
+    if (colors.length > 0) options.push({ mana: colors as ManaType[] });
+  }
+  if (options.length === 0) return options;
+  for (const id of g.players[card.controllerId]?.zones.battlefield ?? []) {
+    const aura = g.cards[id]!;
+    if (aura.attachedTo !== card.instanceId) continue;
+    for (const st of staticsOf(g, aura)) {
+      if (st.kind !== "auraManaBonus") continue;
+      if (st.color === "chosen") {
+        const c = aura.chosenType;
+        if (c && isManaType(c)) options = options.map((o) => ({ ...o, mana: [...o.mana, c] }));
+      } else {
+        options = options.flatMap((o) => (["W", "U", "B", "R", "G"] as ManaType[]).map((c) => ({ ...o, mana: [...o.mana, c] })));
+      }
+    }
+  }
+  return options;
 }
+
 
 /** Ce mana réservé peut-il payer ce sort (ou cette capacité) ? */
 function restrictionFits(r: { subtype: string; abilities: boolean }, spell: { typeLine: string; oracleText: string; ability?: boolean } | undefined): boolean {
@@ -2834,11 +2877,8 @@ function restrictionFits(r: { subtype: string; abilities: boolean }, spell: { ty
   return typeLineHasCreatureType(spell.typeLine, spell.oracleText, r.subtype);
 }
 
-export function cardManaOptions(g: GameState, card: CardInstance) {
-  const data = g.cardData[card.cardId];
-  if (!data) return [];
-  const face = data.faces?.[card.faceIndex];
-  return manaOptions(face?.typeLine ?? data.typeLine, face?.oracleText ?? data.oracleText);
+export function cardManaOptions(g: GameState, card: CardInstance): ManaType[][] {
+  return cardManaDetailed(g, card).map((o) => o.mana);
 }
 
 function currentTypeLine(g: GameState, card: CardInstance): string {

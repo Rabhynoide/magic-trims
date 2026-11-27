@@ -23,7 +23,9 @@ export type StaticAbility =
    */
   | { kind: "costReduction"; amount: number; colors: string[]; types: string[]; notTypes: string[]; chosenType?: boolean; everyone?: boolean; colored?: string; anyColor?: boolean }
   /** « As ~ enters, choose a creature type » (ou un type de carte : Cloud Key). */
-  | { kind: "chooseType"; what: "creature" | "card" }
+  | { kind: "chooseType"; what: "creature" | "card" | "color" }
+  /** Utopia Sprawl, Fertile Ground : le terrain enchanté produit un mana de plus (de la couleur choisie, ou au choix). */
+  | { kind: "auraManaBonus"; color: "chosen" | "any" }
   /** Herald's Horn : à l'entretien, la carte du dessus en main si c'est une créature du type choisi. */
   | { kind: "heraldsHorn" }
   /** « Equipped creature has haste and shroud. », « Enchanted creature gets +2/+2. » */
@@ -33,6 +35,8 @@ export type StaticAbility =
   | { kind: "anthem"; others: boolean; keywords: string[]; power: number; toughness: number; subtype?: string; chosenType?: boolean }
   /** « ~'s power and toughness are each equal to the number of cards in your hand. » */
   | { kind: "ptEqualsHand" }
+  /** Faeburrow Elder : « gets +1/+1 for each color among permanents you control ». */
+  | { kind: "ptPerColor" }
   /** « Players have no maximum hand size. » */
   | { kind: "noMaxHandSizeAll" }
   /** « This land enters tapped. » */
@@ -157,8 +161,13 @@ export function parseStaticLine(line: string): StaticAbility | null {
   if ((m = /^no more than one creature can (attack|block) each combat$/i.exec(l))) return { kind: "maxOne", attack: m[1]!.toLowerCase() === "attack" };
   if (/^~ can't (attack|block)( or (attack|block))?$/i.test(l)) return { kind: "restriction" };
   if (/^~'s power and toughness are each equal to the number of cards in your hand$/i.test(l)) return { kind: "ptEqualsHand" };
+  if (/^~ gets \+1\/\+1 for each color among permanents you control$/i.test(l)) return { kind: "ptPerColor" };
   if (/^as ~ enters, choose a creature type$/i.test(l)) return { kind: "chooseType", what: "creature" };
   if (/^as ~ enters, choose artifact, creature, enchantment, instant, or sorcery$/i.test(l)) return { kind: "chooseType", what: "card" };
+  if (/^as ~ enters, choose a color$/i.test(l)) return { kind: "chooseType", what: "color" };
+  if ((m = /^whenever enchanted (?:land|forest|plains|island|swamp|mountain) is tapped for mana, its controller adds an additional one mana of (the chosen color|any color)$/i.exec(l))) {
+    return { kind: "auraManaBonus", color: /chosen/i.test(m[1]!) ? "chosen" : "any" };
+  }
   // Herald's Horn, Urza's Incubator, Cloud Key, Morophon : le type choisi.
   if ((m = /^(creature )?spells (?:you cast )?of the chosen type (?:you cast )?cost (\{\d+\}|(?:\{[WUBRG]\})+) less to cast$/i.exec(l))) {
     const everyone = !/you cast/i.test(l);
@@ -425,7 +434,7 @@ export function mostCommonCreatureType(g: GameState, playerId: PlayerId): string
 }
 
 /** Ce que la carte fait choisir en arrivant (« As ~ enters, choose a creature type »). */
-export function chooseTypeOf(data: CardData | undefined, faceIndex = 0): "creature" | "card" | null {
+export function chooseTypeOf(data: CardData | undefined, faceIndex = 0): "creature" | "card" | "color" | null {
   const s = staticsOfData(data, faceIndex).find((x) => x.kind === "chooseType");
   return s && s.kind === "chooseType" ? s.what : null;
 }
@@ -541,4 +550,15 @@ export function evokeOptions(
     }
   }
   return { ...(printed ? { printed } : {}), ...(granted ? { granted } : {}) };
+}
+
+/** Les couleurs parmi les permanents que contrôle le joueur. */
+export function colorsAmongPermanents(g: GameState, playerId: PlayerId): string[] {
+  const found = new Set<string>();
+  for (const id of g.players[playerId]?.zones.battlefield ?? []) {
+    const c = g.cards[id]!;
+    if (c.faceDown) continue;
+    for (const color of g.cardData[c.cardId]?.colors ?? []) found.add(color);
+  }
+  return (["W", "U", "B", "R", "G"] as string[]).filter((c) => found.has(c));
 }

@@ -326,7 +326,7 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
       continue;
     }
     // « When there are nine or more … counters on ~, exile it » : une règle d'état, lue comme un effet statique.
-    const stateRule = /^When there are |^At the beginning of your upkeep, look at the top card of your library\. If it's a creature card of the chosen type/i.test(tilde) ? parseStaticLine(tilde) : null;
+    const stateRule = /^When there are |^At the beginning of your upkeep, look at the top card of your library\. If it's a creature card of the chosen type|^Whenever enchanted \w+ is tapped for mana, its controller adds an additional/i.test(tilde) ? parseStaticLine(tilde) : null;
     if (stateRule) {
       result.statics.push(stateRule);
       continue;

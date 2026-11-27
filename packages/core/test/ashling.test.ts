@@ -213,7 +213,7 @@ describe("Deck Ashling : recherches de terrains", () => {
 describe("Deck Ashling : bilan", () => {
   it("compte les cartes entièrement gérées", () => {
     const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "", manaCost: c.manaCost ?? "" })).level);
-    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(57);
+    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(61);
   });
 });
 
@@ -337,6 +337,62 @@ describe("Deck Ashling : terrains engagés sous condition", () => {
     [g] = put(g, "p1", basic("Island"), 1);
     expect(act(g, "p1", { type: "playLand", cardId: verdure }).cards[verdure]!.tapped).toBe(false);
     for (const name of ["Flamekin Village", "Primal Beyond", "Overgrown Tomb", "Sodden Verdure"]) {
+      expect(cardSupport(real(name)).level, name).toBe("full");
+    }
+  });
+});
+
+describe("Deck Ashling : mana en plus", () => {
+  it("Utopia Sprawl : une Forêt, et un mana de plus de la couleur choisie", () => {
+    let g = toMain(newTestGame(2));
+    let forest: string, island: string, sprawl: string;
+    [g, forest] = put(g, "p1", basic("Forest"));
+    [g, island] = put(g, "p1", basic("Island"));
+    [g, sprawl] = inHand(g, "p1", real("Utopia Sprawl"));
+    g = mana(g, "p1", "G");
+    expect(() => act(g, "p1", { type: "castSpell", cardId: sprawl, targets: [{ kind: "card", id: island }], chosenType: "U" })).toThrow();
+    g = act(g, "p1", { type: "castSpell", cardId: sprawl, targets: [{ kind: "card", id: forest }], chosenType: "blue" });
+    g = resolveAll(g);
+    expect(g.cards[sprawl]!.attachedTo).toBe(forest);
+    expect(g.cards[sprawl]!.chosenType).toBe("U");
+    g = act(g, "p1", { type: "tapForMana", cardId: forest });
+    expect(g.players.p1!.manaPool.G).toBe(1);
+    expect(g.players.p1!.manaPool.U).toBe(1);
+  });
+
+  it("Fertile Ground : un mana de plus au choix", () => {
+    let g = toMain(newTestGame(2));
+    let forest: string, ground: string;
+    [g, forest] = put(g, "p1", basic("Forest"));
+    [g, ground] = put(g, "p1", real("Fertile Ground"));
+    g.cards[ground]!.attachedTo = forest;
+    expect(() => act(g, "p1", { type: "tapForMana", cardId: forest })).toThrow(/Choisis/);
+    g = act(g, "p1", { type: "tapForMana", cardId: forest, choice: 3 });
+    expect(g.players.p1!.manaPool.G).toBe(1);
+    expect(g.players.p1!.manaPool.R).toBe(1);
+  });
+
+  it("Faeburrow Elder et Bloom Tender : un mana par couleur parmi mes permanents", () => {
+    let g = toMain(newTestGame(2));
+    let elder: string, tender: string;
+    [g, elder] = put(g, "p1", real("Faeburrow Elder", { colors: ["G", "W"] }));
+    [g, tender] = put(g, "p1", real("Bloom Tender", { colors: ["G"] }));
+    [g] = put(g, "p1", fakeCard("Ours rouge", { typeLine: "Creature — Bear", power: "2", toughness: "2", manaCost: "{R}", colors: ["R"] }));
+    expect(creatureStats(g, g.cards[elder]!)).toEqual({ power: 3, toughness: 3 });
+    g = act(g, "p1", { type: "tapForMana", cardId: tender });
+    expect(g.players.p1!.manaPool).toMatchObject({ W: 1, G: 1, R: 1, U: 0, B: 0 });
+  });
+
+  it("Selvala : X mana, X étant la plus grande force", () => {
+    let g = toMain(newTestGame(2));
+    let selvala: string;
+    [g, selvala] = put(g, "p1", real("Selvala, Heart of the Wilds", { colors: ["G"] }));
+    [g] = put(g, "p1", fakeCard("Gros", { typeLine: "Creature — Beast", power: "5", toughness: "5", manaCost: "{4}{G}" }));
+    g = mana(g, "p1", "G");
+    g = act(g, "p1", { type: "activateAbility", cardId: selvala, index: 0, color: "U" });
+    g = resolveAll(g);
+    expect(g.players.p1!.manaPool.U).toBe(5);
+    for (const name of ["Utopia Sprawl", "Fertile Ground", "Faeburrow Elder", "Bloom Tender"]) {
       expect(cardSupport(real(name)).level, name).toBe("full");
     }
   });
