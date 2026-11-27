@@ -7,7 +7,7 @@
  * vie, créer des jetons, contrer un sort. Ce qu'il ne reconnaît pas reste à
  * appliquer à la main, et le journal le rappelle.
  */
-import { COMBAT_KEYWORDS, hasKeyword } from "./combat.js";
+import { COMBAT_KEYWORDS, creatureStats, hasKeyword } from "./combat.js";
 import { manaOptions } from "./mana.js";
 import { parsePermanentAbilities } from "./triggers.js";
 import { areTeammates } from "./modes.js";
@@ -42,6 +42,8 @@ export interface PermanentFilter {
   notTypes: string[];
   controller?: "you" | "notYou";
   state?: "attacking" | "blocking" | "tapped" | "untapped";
+  /** « with total power and toughness 5 or less » (Cut Down). */
+  maxTotalPT?: number;
 }
 
 export interface SpellFilter {
@@ -54,7 +56,7 @@ export interface SpellFilter {
  * Un nombre : fixe, X (choisi au lancement), ou « that much » d'une capacité
  * déclenchée (la quantité de l'événement : PV gagnés ou perdus).
  */
-export type Amount = number | "X" | "-X" | "event" | "-event" | "dealt" | "hand" | "given";
+export type Amount = number | "X" | "-X" | "event" | "-event" | "dealt" | "hand" | "given" | "devotion" | "-devotion" | "lost";
 
 /** Qui subit l'effet : « you », une cible, ou le joueur de l'événement déclencheur (« that player », « they »). */
 export type Who = "you" | "opponents" | "all" | "event" | { target: number } | { controllerOf: number };
@@ -92,7 +94,11 @@ export type Effect =
   | { type: "exchangeControl"; a: number; b: number }
   /** « If you have 40 or more life, you win the game. » */
   | { type: "winIf"; life?: number; handExactly?: number }
-  | { type: "loseGame" };
+  | { type: "loseGame" }
+  /** « You lose life equal to that permanent's mana value. » (valeur de mana de la cible n° `target`) */
+  | { type: "loseLifeManaValue"; target: number }
+  /** Peer into the Abyss : piocher la moitié de sa bibliothèque et perdre la moitié de ses PV (arrondi au supérieur). */
+  | { type: "halfLibraryHalfLife"; who: Who };
 
 export interface TokenSpec {
   power: string;
@@ -139,7 +145,7 @@ const COLORS: Record<string, string> = { white: "W", blue: "U", black: "B", red:
 const CARD_TYPES = ["artifact", "battle", "creature", "enchantment", "land", "planeswalker"];
 
 /** Phrases sans effet de jeu à appliquer (rappels, précisions). */
-const HARMLESS = [/^(it|they) can't be regenerated\.?$/i, /^~ can't be countered\.?$/i];
+const HARMLESS = [/^(it|they) can't be regenerated\.?$/i, /^~ can't be countered\.?$/i, /^round up each time\.?$/i];
 
 
 /**
@@ -149,6 +155,11 @@ const HARMLESS = [/^(it|they) can't be regenerated\.?$/i, /^~ can't be countered
 function parsePermanentFilter(text: string): PermanentFilter | null {
   let t = text.trim().toLowerCase();
   const filter: PermanentFilter = { types: [], notTypes: [] };
+  const total = / with total power and toughness (\d+) or less$/.exec(t);
+  if (total) {
+    filter.maxTotalPT = parseInt(total[1]!, 10);
+    t = t.slice(0, total.index);
+  }
   const suffixes: [RegExp, PermanentFilter["controller"]][] = [
     [/ (an opponent controls|you don't control)$/, "notYou"],
     [/ you control$/, "you"],
@@ -208,6 +219,7 @@ export function permanentLabel(f: PermanentFilter): string {
   if (f.state) label += { attacking: " attaquant(e)", blocking: " bloqueur(se)", tapped: " engagé(e)", untapped: " dégagé(e)" }[f.state];
   if (f.controller === "you") label += " que tu contrôles";
   if (f.controller === "notYou") label += " d'un adversaire";
+  if (f.maxTotalPT !== undefined) label += ` (force + endurance ≤ ${f.maxTotalPT})`;
   return label;
 }
 
@@ -252,6 +264,12 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
     return effects;
   }
   if (/^you gain life equal to the damage dealt this way$/i.test(s)) return [{ type: "life", who: "you", amount: "dealt" }];
+  if (/^you gain life equal to the life lost this way$/i.test(s)) return [{ type: "life", who: "you", amount: "lost" }];
+  if (/^each opponent loses X life, where X is your devotion to black$/i.test(s)) return [{ type: "life", who: "opponents", amount: "-devotion" }];
+  if (/^you lose life equal to that permanent's mana value$/i.test(s) && lastTarget() >= 0) return [{ type: "loseLifeManaValue", target: lastTarget() }];
+  if (/^target player draws cards equal to half the number of cards in their library and loses half their life$/i.test(s)) {
+    return [{ type: "halfLibraryHalfLife", who: { target: target({ label: "joueur", player: true }) } }];
+  }
   if (/^you gain X life and draw X cards, where X is the number of permanents you own that your opponents control$/i.test(s)) {
     return [
       { type: "life", who: "you", amount: "given" },
@@ -511,6 +529,9 @@ export interface PermanentFacts {
   tapped: boolean;
   attacking: boolean;
   blocking: boolean;
+  /** Force et endurance actuelles (pour « total power and toughness »). */
+  power?: number;
+  toughness?: number;
 }
 
 export function permanentMatches(facts: PermanentFacts, filter: PermanentFilter, casterId: PlayerId): boolean {
@@ -521,6 +542,7 @@ export function permanentMatches(facts: PermanentFacts, filter: PermanentFilter,
   if (filter.state === "untapped" && facts.tapped) return false;
   if (filter.state === "attacking" && !facts.attacking) return false;
   if (filter.state === "blocking" && !facts.blocking) return false;
+  if (filter.maxTotalPT !== undefined && (facts.power ?? 0) + (facts.toughness ?? 0) > filter.maxTotalPT) return false;
   return true;
 }
 
@@ -531,8 +553,10 @@ export function spellMatches(typeLine: string, filter: SpellFilter): boolean {
 /** Le permanent correspond-il au filtre, du point de vue du lanceur ? */
 export function matchesPermanent(g: GameState, card: CardInstance, filter: PermanentFilter, casterId: PlayerId): boolean {
   if (card.zone !== "battlefield") return false;
+  const stats = filter.maxTotalPT !== undefined ? creatureStats(g, card) : undefined;
   return permanentMatches(
     {
+      ...(stats ?? {}),
       typeLine: card.faceDown ? "Creature" : faceData(g, card).typeLine,
       controllerId: card.controllerId,
       tapped: card.tapped,
@@ -582,9 +606,12 @@ export function spellEffectsOf(g: GameState, card: CardInstance, faceIndex = car
 }
 
 /** Valeur d'un nombre d'effet, avec la valeur de X choisie au lancement. */
-export function resolveAmount(a: Amount, x: number, eventAmount = 0, context: { dealt?: number; hand?: number; given?: number } = {}): number {
+export function resolveAmount(a: Amount, x: number, eventAmount = 0, context: { dealt?: number; hand?: number; given?: number; devotion?: number; lost?: number } = {}): number {
   if (a === "dealt") return context.dealt ?? 0;
   if (a === "given") return context.given ?? 0;
+  if (a === "devotion") return context.devotion ?? 0;
+  if (a === "-devotion") return -(context.devotion ?? 0);
+  if (a === "lost") return context.lost ?? 0;
   if (a === "hand") return context.hand ?? 0;
   if (a === "X") return x;
   if (a === "-X") return -x;

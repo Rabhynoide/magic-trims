@@ -93,9 +93,10 @@ describe("Lecture des effets", () => {
     ]);
     expect(parse("Destroy target creature or enchantment an opponent controls. You lose life equal to that permanent's mana value.")).toMatchObject({
       targets: [{ permanent: { types: ["creature", "enchantment"], controller: "notYou" } }],
-      unknown: ["You lose life equal to that permanent's mana value."],
+      effects: [{ type: "destroy", target: 0 }, { type: "loseLifeManaValue", target: 0 }],
+      unknown: [],
     });
-    expect(parse("Destroy target creature with total power and toughness 5 or less.").effects).toEqual([]);
+    expect(parse("Destroy target creature with total power and toughness 5 or less.").targets[0]!.permanent).toMatchObject({ maxTotalPT: 5 });
   });
 
   it("dit ce que le moteur gère de chaque carte", () => {
@@ -135,12 +136,8 @@ describe("Détail par capacité", () => {
       ["Lien de vie", "auto"],
       ["Célérité", "auto"],
     ]);
-    const swarm = abilityReport(
-      spell("Feed the Swarm", "Destroy target creature or enchantment an opponent controls. You lose life equal to that permanent's mana value.", "Sorcery"),
-    );
-    expect(swarm).toEqual([
-      expect.objectContaining({ status: "partial", manual: ["You lose life equal to that permanent's mana value."] }),
-    ]);
+    const bones = abilityReport(spell("Read the Bones", "Scry 2, then draw two cards. You lose 2 life.", "Sorcery"));
+    expect(bones).toEqual([expect.objectContaining({ status: "partial", manual: ["Scry 2"] })]);
   });
 });
 

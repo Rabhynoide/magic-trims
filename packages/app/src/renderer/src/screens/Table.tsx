@@ -6,6 +6,7 @@ import {
   RESPONSE_STEPS,
   STEP_LABELS,
   abilitiesOf,
+  creatureStats,
   hasKeyword,
   stateFromView,
   permanentLabel,
@@ -336,6 +337,7 @@ function canTargetCard(view: GameView, spec: TargetSpec, card: CardView, sourceI
     if (!spec.choice && has("Hexproof") && !sameSide(view, card.controllerId, view.viewerId)) return false;
     return permanentMatches(
       {
+        ...(instance && spec.permanent.maxTotalPT !== undefined ? creatureStats(g, instance) : {}),
         typeLine,
         controllerId: card.controllerId,
         tapped: card.tapped,

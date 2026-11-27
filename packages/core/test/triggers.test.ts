@@ -80,7 +80,7 @@ describe("Lecture des capacités déclenchées", () => {
     const opportunist = parse(
       creature("Morbid Opportunist", "Whenever one or more other creatures die, draw a card. This ability triggers only once each turn."),
     );
-    expect(opportunist.triggers).toEqual([]);
+    expect(opportunist.triggers[0]).toMatchObject({ oncePerTurn: true, condition: { on: "dies", self: false, batched: true } });
     expect(parse(permanent("Optional", "Whenever you gain life, you may draw a card.")).triggers[0]).toMatchObject({ optional: true });
     expect(parse(permanent("Unclear", "Whenever you gain life, its controller may pay 1 life.")).triggers).toEqual([]);
   });
