@@ -12,7 +12,7 @@ import { manaOptions } from "./mana.js";
 import { parsePermanentAbilities } from "./triggers.js";
 import { areTeammates } from "./modes.js";
 import { joinModes, keywordList, selfToTilde } from "./text.js";
-import { playerHasShroud } from "./statics.js";
+import { playerHasShroud, printedEvoke } from "./statics.js";
 
 export { selfToTilde };
 import type { CardData, CardInstance, GameState, PlayerId } from "./types.js";
@@ -145,6 +145,8 @@ export type Effect =
   | { type: "exchangeControl"; a: number; b: number; relation?: ExchangeRelation }
   /** Chaos Warp : le propriétaire mélange le permanent dans sa bibliothèque ; `revealPermanent` : puis révèle et met en jeu un permanent. */
   | { type: "shuffleIntoLibrary"; target: number; revealPermanent?: boolean }
+  /** Ashling : « create a token that's a copy of it » (la carte sacrifiée), avec la célérité et un sacrifice à la fin du tour. */
+  | { type: "copyEventCard"; haste?: boolean; endStepUnless?: string }
   /** Paradox Haze : « that player gets an additional upkeep step after this step ». */
   | { type: "extraUpkeep" }
   /** Wedding Ring : « target opponent creates a token that's a copy of it ». */
@@ -687,6 +689,20 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
         continue;
       }
     }
+    // Ashling : « create a token that's a copy of it. The token gains haste until end of turn.
+    // At the beginning of your next end step, sacrifice it unless you pay {W}{U}{B}{R}{G}. »
+    if (/^create a token that's a copy of it$/i.test(s)) {
+      result.effects.push({ type: "copyEventCard" });
+      continue;
+    }
+    if (/^the token gains haste until end of turn$/i.test(s) && prev?.type === "copyEventCard") {
+      prev.haste = true;
+      continue;
+    }
+    if ((m = /^at the beginning of your next end step, sacrifice it unless you pay ((?:\{[^}]+\})+)$/i.exec(s)) && prev?.type === "copyEventCard") {
+      prev.endStepUnless = m[1]!;
+      continue;
+    }
     // Chaos Warp.
     if ((m = /^the owner of target (.+?) shuffles it into their library$/i.exec(s))) {
       const filter = parsePermanentFilter(m[1]!);
@@ -1004,7 +1020,7 @@ export interface CardSupport {
   unknown: string[];
 }
 
-const HANDLED_KEYWORDS = new Set([...COMBAT_KEYWORDS, "Flash", "Exploit", "Read ahead"].map((k) => k.toLowerCase()));
+const HANDLED_KEYWORDS = new Set([...COMBAT_KEYWORDS, "Flash", "Exploit", "Read ahead", "Evoke"].map((k) => k.toLowerCase()));
 
 /** Ce que le moteur fait d'une ligne de texte d'un permanent. */
 interface LineStatus {
@@ -1029,6 +1045,7 @@ export function auraTarget(typeLine: string, oracleText: string): TargetSpec | n
 
 function permanentLineStatus(line: string, typeLine: string, name: string): LineStatus {
   if (/^enchant /i.test(line) && auraTarget(typeLine, line)) return { title: "Aura", status: "auto" };
+  if (printedEvoke(line)) return { title: "Évocation", status: "auto" };
   const abilities = parsePermanentAbilities(line, name, typeLine);
   if (/^\{T\}: Add /.test(line) && manaOptions(typeLine, line).length > 0) return { title: "Capacité de mana", status: "auto" };
   if (abilities.triggers.length > 0) return { title: "Capacité déclenchée", status: "auto" };
@@ -1120,6 +1137,7 @@ export const KEYWORD_HELP: Record<string, { name: string; help: string }> = {
   "read ahead": { name: "Lecture anticipée", help: "En lançant la saga, tu choisis le chapitre de départ ; les chapitres sautés ne se déclenchent pas." },
   exploit: { name: "Exploitation", help: "En arrivant, tu peux sacrifier une créature (le moteur te le demande)." },
   flash: { name: "Flash", help: "Peut se lancer à tout moment où l'on a la priorité." },
+  evoke: { name: "Évocation", help: "Peut se lancer pour son coût d'évocation ; elle est alors sacrifiée en arrivant." },
 };
 
 /**

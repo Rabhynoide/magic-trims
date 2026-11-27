@@ -56,6 +56,8 @@ export type StaticAbility =
    * joueurs dans ce moteur, la limite est donc toujours respectée.
    */
   | { kind: "attackLimitSelf" }
+  /** Ashling : « Elemental permanent spells you cast from your hand gain evoke {4} as you cast them. » */
+  | { kind: "grantEvoke"; subtype: string; mana: string }
   /**
    * Darksteel Mutation, Witness Protection : la créature enchantée perd ses capacités et devient
    * autre chose (types, force et endurance de base, mots-clés, couleurs, nom).
@@ -92,6 +94,9 @@ export function parseStaticLine(line: string): StaticAbility | null {
   let m: RegExpExecArray | null;
   if (/^you have no maximum hand size$/i.test(l)) return { kind: "noMaxHandSize" };
   if (/^no more than one creature can attack ~ each combat$/i.test(l)) return { kind: "attackLimitSelf" };
+  if ((m = /^(\w+) permanent spells you cast from your hand gain evoke ((?:\{[^}]+\})+) as you cast them$/i.exec(l))) {
+    return { kind: "grantEvoke", subtype: m[1]!.charAt(0).toUpperCase() + m[1]!.slice(1).toLowerCase(), mana: m[2]! };
+  }
   if (/^players have no maximum hand size$/i.test(l)) return { kind: "noMaxHandSizeAll" };
   if (/^~ enters tapped$/i.test(l)) return { kind: "entersTapped" };
   if (/^you can't play lands$/i.test(l)) return { kind: "cantPlayLands" };
@@ -355,4 +360,48 @@ export function creaturesCantAttack(g: GameState, playerId: PlayerId): boolean {
 /** Au plus une créature attaque (bloque) à chaque combat (Silent Arbiter). */
 export function maxOneCreature(g: GameState, attack: boolean): boolean {
   return battlefield(g).some((c) => staticsOf(g, c).some((s) => s.kind === "maxOne" && s.attack === attack));
+}
+
+/** Coût d'évocation : du mana, ou exiler une carte d'une couleur de sa main (Endurance, Fury). */
+export interface EvokeCost {
+  mana: string;
+  exileColor?: string;
+}
+
+/** « Evoke {1}{B} », « Evoke—Exile a green card from your hand. » */
+export function printedEvoke(oracleText: string): EvokeCost | null {
+  for (const raw of oracleText.split("\n")) {
+    const line = raw.replace(/\([^)]*\)/g, "").trim();
+    let m = /^Evoke(?: |—)((?:\{[^}]+\})+)\.?$/i.exec(line);
+    if (m) return { mana: m[1]! };
+    m = /^Evoke—Exile an? (white|blue|black|red|green) card from your hand\.?$/i.exec(line);
+    if (m) return { mana: "", exileColor: COLOR_WORDS[m[1]!.toLowerCase()]! };
+  }
+  return null;
+}
+
+/**
+ * Les évocations possibles pour lancer cette carte : la sienne, et celle que donne un permanent
+ * (Ashling : les sorts de permanent Élémentaux lancés depuis la main).
+ */
+export function evokeOptions(
+  g: GameState,
+  playerId: PlayerId,
+  data: CardData | undefined,
+  faceIndex: number,
+  fromHand: boolean,
+): { printed?: EvokeCost; granted?: EvokeCost } {
+  if (!data) return {};
+  const face = data.faces?.[faceIndex];
+  const typeLine = face?.typeLine ?? data.typeLine;
+  if (/\b(Instant|Sorcery|Land)\b/.test(typeLine)) return {};
+  const printed = printedEvoke(face?.oracleText ?? data.oracleText);
+  let granted: EvokeCost | undefined;
+  if (fromHand) {
+    for (const c of g.players[playerId]?.zones.battlefield.map((id) => g.cards[id]!) ?? []) {
+      const s = staticsOf(g, c).find((x) => x.kind === "grantEvoke");
+      if (s && s.kind === "grantEvoke" && new RegExp(`\\b${s.subtype}\\b`).test(typeLine)) granted = { mana: s.mana };
+    }
+  }
+  return { ...(printed ? { printed } : {}), ...(granted ? { granted } : {}) };
 }

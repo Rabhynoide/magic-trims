@@ -79,6 +79,10 @@ export type GameAction =
       chapter?: number;
       /** Payer le coût alternatif du sort (« You may pay {1}{B} rather than pay this spell's mana cost »). */
       alternative?: boolean;
+      /** Lancer pour son coût d'évocation : `true` celui de la carte, `"granted"` celui donné par un permanent (Ashling). */
+      evoke?: boolean | "granted";
+      /** Évocation « Exile a green card from your hand » : la carte exilée. */
+      evokeExile?: CardInstanceId;
     }
   /**
    * Active la capacité n° `index` (parmi les capacités activées reconnues de

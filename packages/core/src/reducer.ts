@@ -42,6 +42,8 @@ import {
   staticsOf,
   type StaticAbility,
   type DamageSource,
+  evokeOptions,
+  type EvokeCost,
 } from "./statics.js";
 import { canAttack, canBlock, cantAttack, cantBlock, creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatState } from "./combat.js";
 import { MAX_HAND_SIZE, STEP_LABELS, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
@@ -388,7 +390,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     emit(g, { type: "landPlayed", playerId: actor.id });
   },
 
-  castSpell(g, actor, { cardId, face, x, targets, sacrifice, alternative, chapter }) {
+  castSpell(g, actor, { cardId, face, x, targets, sacrifice, alternative, chapter, evoke, evokeExile }) {
     const card = getCard(g, cardId);
     const fromCommand = card.zone === "command" && card.isCommander;
     if (card.ownerId !== actor.id || (card.zone !== "hand" && !fromCommand)) {
@@ -435,7 +437,22 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     if (aura && (chosen.length !== 1 || !isLegalTarget(g, aura, chosen[0]!, actor.id, card.instanceId))) {
       throw new ActionError(`Choisis ce que l'aura enchante : un(e) ${aura.label}.`);
     }
-    const costText = alternative ? effects!.alternativeCost! : faceData?.manaCost || data.manaCost;
+    // Évocation : le coût de la carte, ou celui que donne Ashling.
+    let evokeCost: EvokeCost | undefined;
+    if (evoke) {
+      const options = evokeOptions(g, actor.id, data, faceIndex, card.zone === "hand");
+      evokeCost = evoke === "granted" ? options.granted : (options.printed ?? options.granted);
+      if (!evokeCost) throw new ActionError("Ce sort ne peut pas être lancé pour un coût d'évocation.");
+    }
+    let exiled: CardInstance | undefined;
+    if (evokeCost?.exileColor) {
+      exiled = evokeExile ? g.cards[evokeExile] : undefined;
+      const colorName = { W: "blanche", U: "bleue", B: "noire", R: "rouge", G: "verte" }[evokeCost.exileColor] ?? evokeCost.exileColor;
+      if (!exiled || exiled.zone !== "hand" || exiled.ownerId !== actor.id || exiled.instanceId === card.instanceId || !g.cardData[exiled.cardId]?.colors.includes(evokeCost.exileColor)) {
+        throw new ActionError(`Choisis une carte ${colorName} de ta main à exiler.`);
+      }
+    }
+    const costText = evokeCost ? evokeCost.mana : alternative ? effects!.alternativeCost! : faceData?.manaCost || data.manaCost;
     const tax = fromCommand ? 2 * (actor.commanderCasts[card.instanceId] ?? 0) : 0;
     const name = cardName(g, card);
     // Coût supplémentaire : sacrifier un permanent (Village Rites…).
@@ -452,10 +469,15 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const payment = payMana(g, actor, costText, xValue, tax - reduction, card.instanceId, `lancer ${name}`);
     if (sacrificed) {
       const sacName = cardName(g, sacrificed);
-      moveCardTo(g, sacrificed.instanceId, "graveyard", "top");
+      sacrificePermanent(g, sacrificed);
       log(g, actor.id, `${actor.name} sacrifie ${sacName}.`);
     }
 
+    if (exiled) {
+      const exiledName = cardName(g, exiled);
+      moveCardTo(g, exiled.instanceId, "exile", "top");
+      log(g, actor.id, `${actor.name} exile ${exiledName} de sa main pour l'évocation.`);
+    }
     actor.spellsCast = { turn: g.turn.number, count: castThisTurn + 1 };
     actor.castNames = [...(actor.castNames ?? []), faceData?.name ?? data.name];
     const fromHand = card.zone === "hand";
@@ -464,6 +486,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     emit(g, { type: "cast", playerId: actor.id, cardId: cast.instanceId, typeLine });
     cast.faceIndex = faceIndex;
     if (alternative) cast.alternative = true;
+    if (evokeCost) cast.evoked = true;
     // Lecture anticipée : le chapitre de départ (1 par défaut).
     const chapters = sagaChapters(data, faceIndex);
     if (chapter !== undefined && chapters > 0 && /\bRead ahead\b/i.test(faceData?.oracleText ?? data.oracleText)) {
@@ -481,6 +504,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const details = [
       x !== undefined ? `X = ${xValue}` : "",
       alternative ? "coût alternatif" : "",
+      evokeCost ? "évocation" : "",
       tax > 0 ? `taxe de commandant {${tax}}` : "",
       reduction > 0 ? `réduction de {${reduction}}` : "",
     ]
@@ -1108,6 +1132,7 @@ export function moveCardTo(
     delete card.modes;
     delete card.alternative;
     delete card.castFromHand;
+    if (to !== "battlefield") delete card.evoked;
   }
   card.controllerId = to === "battlefield" || to === "stack" ? (options.controllerId ?? card.controllerId) : card.ownerId;
   if (from === "battlefield" && to !== "battlefield") card.controllerId = card.ownerId;
@@ -1463,6 +1488,10 @@ function flushTriggers(g: GameState): boolean {
       instance.ability.eventZone = ev.type === "dies" ? "graveyard" : ev.to;
     } else if (ev.type === "attacks") {
       instance.ability.eventCardId = ev.cardId;
+    } else if (ev.type === "sacrificed") {
+      instance.ability.eventCardId = ev.cardId;
+      instance.ability.eventDataId = ev.dataId;
+      instance.ability.eventFaceIndex = ev.faceIndex;
     }
     if ("playerId" in ev) instance.ability.eventPlayerId = ev.playerId;
     if ("amount" in ev) instance.ability.eventAmount = ev.amount;
@@ -1806,7 +1835,7 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         if (self2?.zone === "battlefield") {
           const name = cardName(g, self2);
           const victim = self2.controllerId;
-          moveCardTo(g, self2.instanceId, "graveyard", "top");
+          sacrificePermanent(g, self2);
           log(g, null, `${g.players[victim]?.name ?? caster.name} sacrifie ${name}.`);
           // Bronze Bombshell : « If the player does, ~ deals 7 damage to the player. »
           if (effect.thenDamage) dealt += dealDamage(g, name, { kind: "player", id: victim }, effect.thenDamage, damageFrom);
@@ -1924,7 +1953,7 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         const kept = new Set(source.choices?.[effects.indexOf(effect)] ?? []);
         for (const p of g.turnOrder.map((id) => g.players[id]!).filter((p) => !p.hasConceded)) {
           const doomed = p.zones.battlefield.map((id) => g.cards[id]!).filter((c) => isCreature(g, c) && !kept.has(c.instanceId));
-          for (const c of doomed) moveCardTo(g, c.instanceId, "graveyard", "top");
+          for (const c of doomed) sacrificePermanent(g, c);
           if (doomed.length > 0) log(g, null, `${p.name} sacrifie ${doomed.map((c) => cardName(g, c)).join(", ")}.`);
         }
         break;
@@ -1933,6 +1962,21 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         g.turn.extraUpkeeps = (g.turn.extraUpkeeps ?? 0) + 1;
         log(g, null, `${g.players[g.turn.activePlayerId]!.name} aura une étape d'entretien supplémentaire.`);
         break;
+      case "copyEventCard": {
+        // Ashling : un jeton copie de l'Élémental sacrifié, avec la célérité, sacrifié à la fin du tour sauf paiement.
+        const dataId = ability?.eventDataId;
+        if (!dataId || !g.cardData[dataId]) break;
+        const instance = newInstance(g, dataId, caster.id, "battlefield");
+        instance.faceIndex = ability?.eventFaceIndex ?? 0;
+        instance.isToken = true;
+        instance.summoningSick = true;
+        if (effect.haste) instance.grants = ["haste"];
+        if (effect.endStepUnless) instance.grantedTriggers = [`At the beginning of your end step, sacrifice this permanent unless you pay ${effect.endStepUnless}.`];
+        caster.zones.battlefield.push(instance.instanceId);
+        emitEnters(g, instance);
+        log(g, null, `${caster.name} crée un jeton copie de ${cardName(g, instance)}.`);
+        break;
+      }
       case "copyToken": {
         const t = targets[effect.player];
         const self3 = ability ? g.cards[ability.sourceId] : undefined;
@@ -2172,7 +2216,7 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
           break;
         }
         const name = cardName(g, chosen);
-        moveCardTo(g, chosen.instanceId, "graveyard", "top");
+        sacrificePermanent(g, chosen);
         log(g, null, `${caster.name} sacrifie ${name}.`);
         // Exploit : « quand ~ exploite une créature ».
         if (ability && ability.text === "Exploit") emit(g, { type: "exploits", cardId: ability.sourceId });
@@ -2335,6 +2379,9 @@ function resolveTop(g: GameState, stackId?: CardInstanceId): void {
       log(g, null, `${name} n'a plus de cible valide : elle va au cimetière.`);
       return;
     }
+    const evoked = card.evoked;
+    // Évoquée : elle se sacrifie en arrivant (une capacité déclenchée, en même temps que les siennes).
+    if (evoked) card.grantedTriggers = [...(card.grantedTriggers ?? []), EVOKE_TRIGGER];
     const entered = moveCardTo(g, id, "battlefield", "top", { controllerId: card.controllerId });
     if (host?.kind === "card") {
       entered.attachedTo = host.id;
@@ -2404,6 +2451,24 @@ function payLife(g: GameState, actor: PlayerState, amount: number): void {
  * le moment et les cibles, paie le coût, puis met la capacité sur la pile
  * (ou l'applique tout de suite pour une capacité de mana).
  */
+/** Évocation : la capacité déclenchée donnée au permanent évoqué. */
+const EVOKE_TRIGGER = "When this permanent enters, sacrifice this permanent.";
+
+/** Sacrifie un permanent (« Whenever you sacrifice… » se déclenche : Ashling). */
+function sacrificePermanent(g: GameState, card: CardInstance): void {
+  const event: TriggerEvent = {
+    type: "sacrificed",
+    cardId: card.instanceId,
+    controllerId: card.controllerId,
+    dataId: card.originalCardId ?? card.cardId,
+    faceIndex: card.faceIndex,
+    isToken: card.isToken,
+    typeLine: currentTypeLine(g, card),
+  };
+  moveCardTo(g, card.instanceId, "graveyard", "top");
+  emit(g, event);
+}
+
 /** Dégage un permanent ; « Whenever ~ becomes untapped » (Daring Thief) se déclenche s'il était engagé. */
 function untap(g: GameState, card: CardInstance): void {
   if (!card.tapped) return;
@@ -2530,7 +2595,7 @@ function activateAbility(
   };
   if (sacrificed) {
     const sacName = cardName(g, sacrificed);
-    moveCardTo(g, sacrificed.instanceId, "graveyard", "top");
+    sacrificePermanent(g, sacrificed);
     costParts.push(`en sacrifiant ${sacName}`);
   }
   const how = costParts.length > 0 ? ` (${costParts.join(", ")})` : "";
@@ -2538,12 +2603,12 @@ function activateAbility(
     // Capacité de mana : pas de pile.
     log(g, actor.id, `${actor.name} active ${name}${how}.`);
     const source = { ...card, controllerId: actor.id, ability: stackAbility } as CardInstance;
-    if (cost.sacrificeSelf) moveCardTo(g, card.instanceId, "graveyard", "top");
+    if (cost.sacrificeSelf) sacrificePermanent(g, card);
     applySpellEffects(g, source, ability.effects.effects, [], []);
     return;
   }
   if (cost.sacrificeSelf) {
-    moveCardTo(g, card.instanceId, "graveyard", "top");
+    sacrificePermanent(g, card);
     costParts.push("en le sacrifiant");
   }
   if (cost.discardSelf) {
@@ -3062,7 +3127,7 @@ function checkStateBasedActions(g: GameState): void {
         if ((g.events ?? []).some((e) => e.type === "lore" && e.cardId === card.instanceId)) continue;
         if (g.stack.some((id) => g.cards[id]!.ability?.sourceId === card.instanceId)) continue;
         const name = cardName(g, card);
-        moveCardTo(g, card.instanceId, "graveyard", "top");
+        sacrificePermanent(g, card);
         log(g, null, `${name} a fini son dernier chapitre : elle est sacrifiée.`);
       }
       // Nine Lives : exilée à neuf marqueurs.

@@ -32,6 +32,8 @@ export type TriggerEvent =
   | { type: "attacks"; cardId: CardInstanceId }
   | { type: "blocks"; cardId: CardInstanceId }
   | { type: "exploits"; cardId: CardInstanceId }
+  /** Un permanent est sacrifié (Ashling). */
+  | { type: "sacrificed"; cardId: CardInstanceId; controllerId: PlayerId; dataId: string; faceIndex: number; isToken: boolean; typeLine: string }
   /** Un permanent change de contrôleur. */
   | { type: "controlChanged"; cardId: CardInstanceId; controllerId: PlayerId }
   /** Un permanent engagé se dégage. */
@@ -70,6 +72,8 @@ export type TriggerCondition =
   | { on: "cast"; whose: Whose; types: string[]; notTypes: string[] }
   /** « Whenever ~ attacks », « … blocks », « … attacks or blocks ». */
   | { on: "combat"; attacks: boolean; blocks: boolean; anyCreature?: boolean; defender?: "you" }
+  /** « Whenever you sacrifice a nontoken Elemental » : `subtype` (ou type), `nontoken`. */
+  | { on: "sacrificed"; whose: Whose; subtype?: string; nontoken: boolean }
   /** Bronze Bombshell : « When a player other than ~'s owner controls it ». */
   | { on: "controlledByNonOwner" }
   /** « When ~ exploits a creature ». */
@@ -182,6 +186,10 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   if (/^~ becomes untapped$/i.test(t)) return { on: "untapped" };
   if (/^a creature attacks you(?: or a planeswalker you control)?$/i.test(t)) return { on: "combat", attacks: true, blocks: false, anyCreature: true, defender: "you" };
   if (/^a player other than ~'s owner controls it$/i.test(t)) return { on: "controlledByNonOwner" };
+  if ((m = /^you sacrifice an? (nontoken )?(\w+)$/i.exec(t))) {
+    const what = m[2]!.toLowerCase();
+    return { on: "sacrificed", whose: "you", nontoken: !!m[1], ...(what === "permanent" ? {} : { subtype: m[2]! }) };
+  }
   if (/^~ is dealt damage$/i.test(t)) return { on: "damaged" };
   if ((m = /^(~|a creature|a creature you control|a creature an opponent controls) deals combat damage to (a player|an opponent|one of your opponents|you)$/i.exec(t))) {
     const who = m[1]!.toLowerCase();
@@ -234,7 +242,8 @@ function parseTriggerBody(text: string): { effects: SpellEffects; optional: bool
   // Solitary Confinement : « sacrifice ~ unless you discard a card ».
   const discard = /^(.+) unless you discard a card$/i.exec(bare);
   if (discard) return { effects: parseSpellEffects(cap(discard[1]!), "~"), optional: false, unless: { payer: "you", discard: 1 } };
-  const unlessPay = /^(.+) unless (?:you pay|that player pays) ((?:\{[^}]+\})+)$/i.exec(bare);
+  // Une seule phrase : « … unless you pay {1} » (pas la dernière phrase d'un texte plus long, comme Ashling).
+  const unlessPay = /\.\s/.test(bare) ? null : /^(.+) unless (?:you pay|that player pays) ((?:\{[^}]+\})+)$/i.exec(bare);
   if (unlessPay) {
     return { effects: parseSpellEffects(cap(unlessPay[1]!), "~"), optional: false, unless: { payer: /that player/i.test(text) ? "event" : "you", mana: unlessPay[2]! } };
   }
@@ -449,6 +458,10 @@ export function conditionMatches(
       if (c.on !== "combat" || !(event.type === "attacks" ? c.attacks : c.blocks)) return false;
       if (c.defender === "you" && g.combat?.attackers[event.cardId] !== source.controllerId) return false;
       return c.anyCreature ? true : event.cardId === source.instanceId;
+    case "sacrificed":
+      if (c.on !== "sacrificed" || (c.nontoken && event.isToken)) return false;
+      if (c.subtype && !new RegExp(`\\b${c.subtype}\\b`, "i").test(event.typeLine)) return false;
+      return whoseMatches(g, c.whose, source.controllerId, event.controllerId);
     case "controlChanged":
       return c.on === "controlledByNonOwner" && event.cardId === source.instanceId && g.cards[source.instanceId]?.ownerId !== event.controllerId;
     case "exploits":
