@@ -173,7 +173,11 @@ export type Effect =
   /** Une carte d'un cimetière va sur le champ de bataille (sous le contrôle du lanceur) ou dans la main de son propriétaire. */
   | { type: "fromGraveyard"; target: number; to: "battlefield" | "hand" | "libraryTop" }
   /** « Search your library for a land card, put it into your hand » : le lanceur choisit dans la fenêtre de choix. */
-  | { type: "search"; types: string[]; to: "hand" | "battlefield"; reveal: boolean; who?: Who; tapped?: boolean }
+  /**
+   * `types` : au moins un de ces types ou sous-types (« Forest or Island ») ; `basic` : terrain de base ;
+   * `count` : « up to two » ; `split` : Cultivate (la première carte sur le champ de bataille engagée, les autres en main).
+   */
+  | { type: "search"; types: string[]; to: "hand" | "battlefield"; reveal: boolean; who?: Who; tapped?: boolean; basic?: boolean; count?: number; split?: boolean }
   | { type: "shuffle"; who?: Who }
   /** « Target opponent reveals their hand. » */
   | { type: "revealHand"; who: Who }
@@ -603,7 +607,34 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     }
     if ((m = /^search your library for an? ((?:basic )?(?:land|creature|artifact|enchantment|instant|sorcery|planeswalker) )?card(?:,| and) (reveal it, )?(?:then )?put (?:it|that card) (into your hand|onto the battlefield)$/i.exec(s))) {
       const types = (m[1] ?? "").trim().toLowerCase().replace(/^basic /, "").split(" ").filter(Boolean);
-      result.effects.push({ type: "search", types, to: /hand/i.test(m[3]!) ? "hand" : "battlefield", reveal: !!m[2] });
+      result.effects.push({ type: "search", types, to: /hand/i.test(m[3]!) ? "hand" : "battlefield", reveal: !!m[2], ...(/^basic /i.test(m[1] ?? "") ? { basic: true } : {}) });
+      continue;
+    }
+    // Fetchlands, Farseek, Rampant Growth, Cultivate, Land Tax : terrains par type ou sous-type.
+    const LAND_WORDS = "(?:basic land|land|plains|island|swamp|mountain|forest)";
+    if (
+      (m = new RegExp(
+        `^search your library for (an?|up to (?:one|two|three)) ((?:${LAND_WORDS})(?:(?:,| or|, or) ${LAND_WORDS})*) cards?,? (?:and )?(reveal (?:it|them|those cards), )?(?:then )?put (?:it|that card|them|those cards) (into your hand|onto the battlefield( tapped)?)$`,
+        "i",
+      ).exec(s))
+    ) {
+      const words = m[2]!.toLowerCase().split(/,? or |, /).map((w) => w.trim()).filter(Boolean);
+      const basic = words.every((w) => w === "basic land");
+      const types = basic ? ["land"] : words.map((w) => w.replace(/^basic /, ""));
+      const n = /^up to/i.test(m[1]!) ? (amount(m[1]!.split(" ").at(-1)!) as number) : 1;
+      result.effects.push({
+        type: "search",
+        types,
+        to: /hand/i.test(m[4]!) ? "hand" : "battlefield",
+        reveal: !!m[3],
+        ...(m[5] ? { tapped: true } : {}),
+        ...(basic ? { basic: true } : {}),
+        ...(n > 1 ? { count: n } : {}),
+      });
+      continue;
+    }
+    if ((m = /^search your library for up to (two|three) basic land cards, reveal those cards, put one onto the battlefield tapped and the others? into your hand$/i.exec(s))) {
+      result.effects.push({ type: "search", types: ["land"], basic: true, to: "battlefield", tapped: true, reveal: true, count: amount(m[1]!) as number, split: true });
       continue;
     }
     if (/^flip a coin$/i.test(s)) continue;

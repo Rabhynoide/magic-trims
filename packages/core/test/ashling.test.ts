@@ -125,3 +125,94 @@ describe("Deck Ashling : évocation", () => {
     expect(cardSupport(real("Ashling, the Limitless")).level).toBe("full");
   });
 });
+
+/** Donne à la n-ième carte de la bibliothèque les données voulues. */
+function inLibrary(g: GameState, playerId: string, card: CardData, n: number): [GameState, string] {
+  g = structuredClone(g);
+  const id = g.players[playerId]!.zones.library[n]!;
+  g.cardData[g.cards[id]!.cardId] = { ...card, id: g.cards[id]!.cardId };
+  return [g, id];
+}
+const basic = (type: string) => fakeCard(type, { typeLine: `Basic Land — ${type}`, manaCost: "" });
+
+describe("Deck Ashling : recherches de terrains", () => {
+  it("Misty Rainforest va chercher une Forêt ou une Île", () => {
+    let g = toMain(newTestGame(2));
+    let fetch: string, forest: string, plains: string;
+    [g, fetch] = put(g, "p1", real("Misty Rainforest"));
+    [g, forest] = inLibrary(g, "p1", basic("Forest"), 5);
+    [g, plains] = inLibrary(g, "p1", basic("Plains"), 6);
+    g = act(g, "p1", { type: "activateAbility", cardId: fetch, index: 0 });
+    expect(g.players.p1!.life).toBe(39);
+    g = resolveAll(g);
+    const ability = g.stack.at(-1)!;
+    expect(g.cards[ability]!.cardChoice!.options).toContain(forest);
+    expect(g.cards[ability]!.cardChoice!.options).not.toContain(plains);
+    g = act(g, "p1", { type: "chooseCards", cardId: ability, cardIds: [forest] });
+    g = resolveAll(g);
+    expect(g.players.p1!.zones.battlefield).toContain(forest);
+    expect(g.cards[forest]!.tapped).toBe(false);
+  });
+
+  it("Farseek arrive engagé ; Cultivate : un terrain engagé et un en main", () => {
+    let g = toMain(newTestGame(2));
+    let farseek: string, cultivate: string, island: string, forest: string, swamp: string;
+    [g, farseek] = inHand(g, "p1", real("Farseek"));
+    [g, cultivate] = inHand(g, "p1", real("Cultivate"), 1);
+    [g, island] = inLibrary(g, "p1", basic("Island"), 3);
+    [g, forest] = inLibrary(g, "p1", basic("Forest"), 4);
+    [g, swamp] = inLibrary(g, "p1", basic("Swamp"), 5);
+    g = mana(g, "p1", "GC");
+    g = act(g, "p1", { type: "castSpell", cardId: farseek });
+    g = resolveAll(g);
+    let spell = g.stack.at(-1)!;
+    expect(g.cards[spell]!.cardChoice!.options).not.toContain(forest);
+    g = act(g, "p1", { type: "chooseCards", cardId: spell, cardIds: [island] });
+    g = resolveAll(g);
+    expect(g.cards[island]!.zone).toBe("battlefield");
+    expect(g.cards[island]!.tapped).toBe(true);
+    g = mana(g, "p1", "GCC");
+    g = act(g, "p1", { type: "castSpell", cardId: cultivate });
+    g = resolveAll(g);
+    spell = g.stack.at(-1)!;
+    // La bibliothèque a été mélangée par Farseek (nouvelles identités) : on prend les deux terrains proposés.
+    const [first, second] = g.cards[spell]!.cardChoice!.options as [string, string];
+    expect(g.cards[spell]!.cardChoice!.max).toBe(2);
+    g = act(g, "p1", { type: "chooseCards", cardId: spell, cardIds: [first, second] });
+    g = resolveAll(g);
+    expect(g.cards[first]!.zone).toBe("battlefield");
+    expect(g.cards[first]!.tapped).toBe(true);
+    expect(g.cards[second]!.zone).toBe("hand");
+    void forest;
+    void swamp;
+  });
+
+  it("Land Tax ne se déclenche que si un adversaire a plus de terrains", () => {
+    let g = toMain(newTestGame(2));
+    let a: string, b: string, c: string;
+    [g] = put(g, "p1", real("Land Tax"));
+    [g] = put(g, "p2", basic("Plains"));
+    [g, a] = inLibrary(g, "p1", basic("Plains"), 2);
+    [g, b] = inLibrary(g, "p1", basic("Island"), 3);
+    [g, c] = inLibrary(g, "p1", basic("Forest"), 4);
+    g = endTurn(g, "p1");
+    g = endTurn(g, "p2");
+    g = resolveAll(g);
+    const tax = g.stack.at(-1)!;
+    expect(g.cards[tax]!.ability?.awaitingDecision).toBe(true);
+    g = act(g, "p1", { type: "decideOptional", cardId: tax, accept: true });
+    g = act(g, "p1", { type: "chooseCards", cardId: tax, cardIds: [a, b, c] });
+    g = resolveAll(g);
+    for (const id of [a, b, c]) expect(g.cards[id]!.zone).toBe("hand");
+    for (const name of ["Misty Rainforest", "Windswept Heath", "Flooded Strand", "Scalding Tarn", "Bloodstained Mire", "Farseek", "Rampant Growth", "Cultivate", "Kodama's Reach", "Land Tax"]) {
+      expect(cardSupport(real(name)).level, name).toBe("full");
+    }
+  });
+});
+
+describe("Deck Ashling : bilan", () => {
+  it("compte les cartes entièrement gérées", () => {
+    const levels = (deck as OracleCard[]).map((c) => cardSupport(fakeCard(c.name, { typeLine: c.typeLine, oracleText: c.oracleText ?? "", manaCost: c.manaCost ?? "" })).level);
+    expect(levels.filter((l) => l === "full").length).toBeGreaterThanOrEqual(44);
+  });
+});

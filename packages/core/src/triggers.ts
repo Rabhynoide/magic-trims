@@ -109,6 +109,8 @@ export interface TriggeredAbility {
   unless?: Unless;
   /** « This ability triggers only once each turn. » */
   oncePerTurn?: boolean;
+  /** Condition vérifiée au déclenchement et à la résolution (« if an opponent controls more lands than you », Land Tax). */
+  onlyIf?: "opponentMoreLands";
 }
 
 export interface PermanentAbilities {
@@ -339,6 +341,12 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         body = body.replace(/\s*This ability triggers only once each turn\.?$/i, "");
       }
       let ifUntapped = false;
+      let onlyIf: TriggeredAbility["onlyIf"];
+      const moreLands = /^if an opponent controls more lands than you, (.+)$/i.exec(body);
+      if (moreLands) {
+        onlyIf = "opponentMoreLands";
+        body = moreLands[1]!;
+      }
       const wasCast = /^if it was cast, (.+)$/i.exec(body);
       if (wasCast && condition?.on === "enters") {
         condition.ifCast = true;
@@ -364,6 +372,7 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         ...(parsed.payLife ? { payLife: parsed.payLife } : {}),
         ...(parsed.unless ? { unless: parsed.unless } : {}),
         ...(oncePerTurn ? { oncePerTurn } : {}),
+        ...(onlyIf ? { onlyIf } : {}),
       });
       continue;
     }
@@ -487,4 +496,15 @@ export function conditionMatches(
     default:
       return c.on === event.type && whoseMatches(g, c.whose, source.controllerId, event.playerId);
   }
+}
+
+/** La condition « if … » d'une capacité déclenchée est-elle remplie pour ce joueur ? */
+export function triggerConditionHolds(g: GameState, onlyIf: TriggeredAbility["onlyIf"], controllerId: PlayerId): boolean {
+  if (onlyIf === "opponentMoreLands") {
+    const lands = (id: PlayerId) =>
+      g.players[id]!.zones.battlefield.filter((c) => /\bLand\b/.test(g.cardData[g.cards[c]!.cardId]?.typeLine ?? "")).length;
+    const mine = lands(controllerId);
+    return g.turnOrder.some((id) => id !== controllerId && !g.players[id]!.hasConceded && !areTeammates(g, id, controllerId) && lands(id) > mine);
+  }
+  return true;
 }

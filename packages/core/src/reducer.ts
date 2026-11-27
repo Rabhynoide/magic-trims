@@ -27,7 +27,7 @@ import {
   type Target,
   type Who,
 } from "./effects.js";
-import { abilitiesOf, conditionMatches, parsePermanentAbilities, sagaChapters, stackTrigger, type TriggeredAbility, type TriggerEvent } from "./triggers.js";
+import { abilitiesOf, triggerConditionHolds, conditionMatches, parsePermanentAbilities, sagaChapters, stackTrigger, type TriggeredAbility, type TriggerEvent } from "./triggers.js";
 import {
   attackTaxPerCreature,
   cantGainLife,
@@ -1451,6 +1451,7 @@ function flushTriggers(g: GameState): boolean {
       [...own, ...given].forEach(({ trigger, index, grantedText }) => {
         if (!conditionMatches(g, trigger.condition, event, card)) return;
         if (trigger.ifUntapped && card.tapped) return;
+        if (trigger.onlyIf && !triggerConditionHolds(g, trigger.onlyIf, card.controllerId)) return;
         // « One or more … » et « only once each turn » : une seule fois pour cette action (et ce tour).
         const once = trigger.oncePerTurn || (trigger.condition.on === "dies" && trigger.condition.batched);
         if (once && pending.some((p) => p.source.instanceId === card.instanceId && p.index === index)) return;
@@ -1546,6 +1547,12 @@ function resolveAbility(g: GameState, card: CardInstance): void {
     return;
   }
   const trigger = stackTrigger(g.cardData[card.cardId], ability);
+  // « if an opponent controls more lands than you » : revérifié à la résolution (règle 603.4).
+  if (trigger?.onlyIf && !triggerConditionHolds(g, trigger.onlyIf, card.controllerId)) {
+    log(g, null, `La capacité de ${ability.sourceName} ne fait rien : sa condition n'est plus remplie.`);
+    moveCardTo(g, card.instanceId, "graveyard", "top");
+    return;
+  }
   // « … unless that player pays » : le payeur répond d'abord (entretien cumulatif : un marqueur d'âge avant).
   if (trigger?.unless && ability.unlessPaid === undefined) {
     const source = g.cards[ability.sourceId];
@@ -1800,7 +1807,7 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
           if (!c || c.zone !== "library") continue;
           const name = cardName(g, c);
           const owner = g.players[c.ownerId]!;
-          if (effect.to === "hand") moveCardTo(g, id, "hand", "top");
+          if (effect.to === "hand" || (effect.split && id !== chosen[0])) moveCardTo(g, id, "hand", "top");
           else moveCardTo(g, id, "battlefield", "top", { controllerId: owner.id, tapped: effect.tapped ?? false });
           log(g, null, `${owner.name} ${effect.reveal || effect.to === "battlefield" ? `prend ${name}` : "prend une carte"} dans sa bibliothèque.`);
         }
@@ -2302,8 +2309,11 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
         }
         chooser = g.players[id]!;
       }
-      options = chooser.zones.library.filter((id) => typeOk(id, effect.types));
-      label = `Choisis ${effect.types.length > 0 ? `une carte (${effect.types.join(", ")})` : "une carte"} de ta bibliothèque`;
+      const isBasic = (id: CardInstanceId) => /\bBasic\b/.test(g.cardData[g.cards[id]!.cardId]?.typeLine ?? "");
+      options = chooser.zones.library.filter((id) => typeOk(id, effect.types) && (!effect.basic || isBasic(id)));
+      const what = effect.basic ? "terrain de base" : effect.types.join(", ");
+      const n = effect.count ?? 1;
+      label = `Choisis ${n > 1 ? `jusqu'à ${n} cartes` : "une carte"}${what ? ` (${what})` : ""} de ta bibliothèque${effect.split ? " : la première va sur le champ de bataille engagée, les autres en main" : ""}`;
       for (const id of options) addRevealed(g.cards[id]!, [chooser.id]);
     } else {
       const who = effect.who;
@@ -2319,7 +2329,7 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
       card.choices = { ...(card.choices ?? {}), [index]: [] };
       continue;
     }
-    card.cardChoice = { index, options, min, max: 1, label, ...(chooser.id !== controller.id ? { playerId: chooser.id } : {}) };
+    card.cardChoice = { index, options, min, max: effect.type === "search" ? Math.min(effect.count ?? 1, options.length) : 1, label, ...(chooser.id !== controller.id ? { playerId: chooser.id } : {}) };
     log(g, null, `${chooser.name} choisit une carte pour ${cardName(g, card)}.`);
     return true;
   }
