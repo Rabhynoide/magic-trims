@@ -56,6 +56,8 @@ export interface GraveyardFilter {
   another?: boolean;
   /** « target Elemental card » : un type de créature. */
   subtype?: string;
+  /** « legendary card » (Kethis). */
+  legendary?: boolean;
 }
 
 /** « carte de créature (valeur de mana 3 ou moins) de ton cimetière ». */
@@ -63,7 +65,7 @@ export function graveyardLabel(f: GraveyardFilter): string {
   const FR: Record<string, string> = { creature: "créature", artifact: "artefact", enchantment: "enchantement", land: "terrain", planeswalker: "planeswalker", instant: "éphémère", sorcery: "rituel" };
   const type = f.subtype ? ` ${f.subtype}` : f.types.length > 0 ? ` de ${f.types.map((t) => FR[t] ?? t).join(" ou ")}` : "";
   const mv = f.maxManaValue !== undefined ? ` (valeur de mana ${f.maxManaValue} ou moins)` : "";
-  return `carte${type}${mv} ${f.whose === "you" ? "de ton cimetière" : "d'un cimetière"}`;
+  return `carte${f.legendary ? " légendaire" : ""}${type}${mv} ${f.whose === "you" ? "de ton cimetière" : "d'un cimetière"}`;
 }
 
 /** « another target creature card with mana value 3 or less from your graveyard » ; `null` si non compris. */
@@ -182,6 +184,11 @@ type EffectBase =
   | { type: "returnCards"; count: number | "X"; chosenType?: boolean; allIfForetold?: boolean; sacrificeAtEnd?: boolean }
   /** Horde of Notions : la carte ciblée du cimetière se joue gratuitement ce tour-ci. */
   | { type: "playFromGraveyard"; target: number }
+  /**
+   * Kethis : « Until end of turn, each legendary card in your graveyard gains "You may play this card from your graveyard." »
+   * Les cartes du filtre présentes au cimetière à la résolution peuvent être jouées (`lands`) ou lancées depuis le cimetière ce tour-ci.
+   */
+  | { type: "graveyardPlayable"; filter: GraveyardFilter; lands: boolean }
   /** Living Death. */
   | { type: "livingDeath" }
   /** Endurance : le joueur met son cimetière au-dessous de sa bibliothèque, dans un ordre aléatoire. */
@@ -1383,6 +1390,9 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     } else if ((m = /^you may play (target \w+ card from your graveyard) without paying its mana cost$/i.exec(s)) && parseGraveyardTarget(m[1]!)) {
       const filter = parseGraveyardTarget(m[1]!)!;
       result.effects.push({ type: "playFromGraveyard", target: target({ label: graveyardLabel(filter), graveyard: filter }) });
+    } else if ((m = /^until end of turn, each (legendary )?((?:creature|artifact|enchantment|land|planeswalker|instant|sorcery) )?card in your graveyard gains "you may (play|cast) ~ from your graveyard\.?"$/i.exec(s))) {
+      const filter: GraveyardFilter = { types: m[2] ? [m[2].trim().toLowerCase()] : [], whose: "you", ...(m[1] ? { legendary: true } : {}) };
+      result.effects.push({ type: "graveyardPlayable", filter, lands: m[3]!.toLowerCase() === "play" });
     } else if (/^put a \+1\/\+1 counter on ~ for each permanent destroyed this way$/i.test(s) && result.effects.at(-1)?.type === "destroyAll") {
       (result.effects.at(-1) as Extract<Effect, { type: "destroyAll" }>).countersOnSelf = true;
     } else if (/^search your library for a creature card that shares a creature type with the sacrificed creature and has mana value equal to 1 plus that creature's mana value$/i.test(s)) {
@@ -1675,6 +1685,7 @@ export function isLegalTarget(g: GameState, spec: TargetSpec, target: Target, ca
     const typeLine = (data?.faces?.[0]?.typeLine ?? data?.typeLine ?? "").toLowerCase();
     if (f.types.length > 0 && !f.types.some((t) => new RegExp(`\\b${t}\\b`).test(typeLine))) return false;
     if (f.maxManaValue !== undefined && (data?.manaValue ?? 0) > f.maxManaValue) return false;
+    if (f.legendary && !/\bLegendary\b/.test(data?.faces?.[0]?.typeLine ?? data?.typeLine ?? "")) return false;
     if (f.subtype && !typeLineHasCreatureType(data?.faces?.[0]?.typeLine ?? data?.typeLine ?? "", data?.faces?.[0]?.oracleText ?? data?.oracleText ?? "", f.subtype)) return false;
     return true;
   }

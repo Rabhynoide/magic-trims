@@ -225,6 +225,8 @@ export interface CardInstance {
     ignoreTiming?: boolean;
     whileOnStack?: CardInstanceId;
     reason: string;
+    /** Les terrains aussi peuvent être joués ainsi (« You may play this card from your graveyard », Kethis). */
+    lands?: boolean;
     /** Le joueur qui peut la lancer, s'il n'est pas son propriétaire (Etali). */
     caster?: PlayerId;
     /** Présage : à lancer pour ce coût à un tour ultérieur à `turn` (sans limite de durée). */

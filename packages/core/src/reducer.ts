@@ -41,6 +41,7 @@ import {
   type Who,
   type PermanentFilter,
   type TokenSpec,
+  graveyardLabel,
   type CopyExcept,
 } from "./effects.js";
 import { abilitiesOf, colorsOfCost, manaValueOfCost, triggerConditionHolds, conditionMatches, parsePermanentAbilities, sagaChapters, stackTrigger, type TriggeredAbility, type TriggerEvent } from "./triggers.js";
@@ -423,7 +424,9 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
 
   playLand(g, actor, { cardId, face, chosenType, untap }) {
     const card = getCard(g, cardId);
-    if (card.ownerId !== actor.id || card.zone !== "hand") throw new ActionError("Joue un terrain de ta main.");
+    // Kethis : un terrain qu'on peut jouer depuis son cimetière ce tour-ci.
+    const fromGraveyard = card.zone === "graveyard" && card.ownerId === actor.id && exilePermissionHolds(g, card) && card.castPermission?.lands === true;
+    if (card.ownerId !== actor.id || (card.zone !== "hand" && !fromGraveyard)) throw new ActionError("Joue un terrain de ta main.");
     const faceIndex = face ?? 0;
     if (!/\bLand\b/.test(faceTypeLine(g, card, faceIndex))) throw new ActionError(`${cardName(g, card)} n'est pas un terrain.`);
     assertSorceryTiming(g, actor, "jouer un terrain");
@@ -471,7 +474,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     if ((card.ownerId !== actor.id && !permission) || (card.zone !== "hand" && !fromCommand && !permission)) {
       throw new ActionError("Lance un sort de ta main ou ton commandant depuis la zone de commandement.");
     }
-    if (permission && (evoke || alternative)) throw new ActionError("Ce sort se lance sans payer son coût : pas d'évocation ni de coût alternatif.");
+    if ((permission?.free || permission?.foretell) && (evoke || alternative)) throw new ActionError("Ce sort se lance sans payer son coût : pas d'évocation ni de coût alternatif.");
     const faceIndex = face ?? 0;
     const data = g.cardData[card.cardId]!;
     const faceData = data.faces?.[faceIndex];
@@ -842,8 +845,8 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     log(g, actor.id, targets.length > 0 ? `${actor.name} vise ${targets.map((t) => targetName(g, t)).join(", ")} avec la capacité de ${ability.sourceName}.` : `${actor.name} ne choisit aucune cible pour la capacité de ${ability.sourceName}.`);
   },
 
-  activateAbility(g, actor, { cardId, index, targets, sacrifice, color }) {
-    activateAbility(g, actor, cardId, index, targets ?? [], sacrifice, color);
+  activateAbility(g, actor, { cardId, index, targets, sacrifice, color, exile }) {
+    activateAbility(g, actor, cardId, index, targets ?? [], sacrifice, color, exile);
   },
 
   decideOptional(g, actor, { cardId, accept, choice, x }) {
@@ -2256,6 +2259,20 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         if (!c || c.zone !== "graveyard") break;
         c.castPermission = { free: true, turn: g.turn.number, ignoreTiming: true, reason: "Horde of Notions" };
         log(g, null, `${caster.name} peut jouer ${cardName(g, c)} depuis son cimetière sans payer son coût ce tour-ci.`);
+        break;
+      }
+      case "graveyardPlayable": {
+        // Seules les cartes déjà au cimetière à la résolution sont concernées (règle 611.2c).
+        const spec = { label: graveyardLabel(effect.filter), graveyard: effect.filter };
+        const names: string[] = [];
+        for (const id of caster.zones.graveyard) {
+          const c = g.cards[id]!;
+          if (!isLegalTarget(g, spec, { kind: "card", id }, caster.id)) continue;
+          if (!effect.lands && /\bLand\b/.test(faceTypeLine(g, c, 0))) continue;
+          c.castPermission = { free: false, turn: g.turn.number, reason: `${sourceName}, depuis le cimetière`, ...(effect.lands ? { lands: true } : {}) };
+          names.push(cardName(g, c));
+        }
+        log(g, null, names.length > 0 ? `${caster.name} peut ${effect.lands ? "jouer" : "lancer"} ce tour-ci depuis son cimetière : ${names.join(", ")}.` : `${caster.name} n'a aucune carte concernée dans son cimetière.`);
         break;
       }
       case "exile":
@@ -3674,6 +3691,7 @@ function activateAbility(
   targets: Target[],
   sacrificeId: CardInstanceId | undefined,
   color: ManaType | undefined,
+  exileIds: CardInstanceId[] = [],
 ): void {
   if (!g.settings.enforceRules) throw new ActionError("L'hôte n'applique pas les règles : gère cette capacité à la main.");
   const card = getCard(g, cardId);
@@ -3717,6 +3735,19 @@ function activateAbility(
     sacrificed = getCard(g, sacrificeId);
     if (sacrificed.controllerId !== actor.id || !matchesPermanent(g, sacrificed, cost.sacrifice, actor.id)) {
       throw new ActionError(`Il faut sacrifier un(e) ${permanentLabel(cost.sacrifice)} que tu contrôles.`);
+    }
+  }
+  // Kethis : les cartes du cimetière à exiler, toutes différentes et autres que la source.
+  let toExile: CardInstance[] = [];
+  if (cost.exileFromGraveyard) {
+    const { count, filter } = cost.exileFromGraveyard;
+    const label = graveyardLabel(filter).replace(/^carte/, "cartes").replace(/ légendaire/, " légendaires");
+    const spec = { label, graveyard: filter };
+    const ids = [...new Set(exileIds)];
+    if (ids.length !== count || ids.length !== exileIds.length) throw new ActionError(`Choisis ${count} ${count > 1 ? label : graveyardLabel(filter)} à exiler.`);
+    toExile = ids.map((id) => getCard(g, id));
+    if (toExile.some((c) => c.instanceId === card.instanceId || !isLegalTarget(g, spec, { kind: "card", id: c.instanceId }, actor.id))) {
+      throw new ActionError(`Il faut exiler ${count} ${count > 1 ? label : graveyardLabel(filter)}.`);
     }
   }
   const specs = ability.effects.targets;
@@ -3780,6 +3811,11 @@ function activateAbility(
   if (cost.discardSelf) {
     moveCardTo(g, card.instanceId, "graveyard", "top");
     costParts.push("en le défaussant");
+  }
+  if (toExile.length > 0) {
+    const names = toExile.map((c) => cardName(g, c));
+    for (const c of toExile) moveCardTo(g, c.instanceId, "exile", "top");
+    costParts.push(`en exilant ${names.join(" et ")} de son cimetière`);
   }
   if (cost.exileSelf) {
     const fromGraveyard = card.zone === "graveyard";

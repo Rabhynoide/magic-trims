@@ -103,6 +103,8 @@ export type GameAction =
       targets?: Target[];
       /** Le permanent sacrifié pour le coût (« Sacrifice a creature »). */
       sacrifice?: CardInstanceId;
+      /** Les cartes de son cimetière exilées pour le coût (Kethis). */
+      exile?: CardInstanceId[];
       /** La couleur pour « Add one mana of any color ». */
       color?: ManaType;
     }
