@@ -44,7 +44,17 @@ npm run dist    # fabrique l'installateur Windows dans packages/app/release/
 
 Si `npm run app` affiche « Electron uninstall », lance `node scripts/install-electron.mjs` (téléchargement du binaire d'Electron, normalement fait par `npm install`).
 
-L'installateur est aussi fabriqué automatiquement par GitHub Actions à chaque modification de `main` : onglet **Actions** du dépôt → dernier passage → **MagicTrims-installateur-windows**.
+L'installateur est aussi fabriqué automatiquement par GitHub Actions à chaque modification de `main`, et publié comme **release** (version `0.1.<numéro du passage>`) : https://github.com/Rabhynoide/magic-trims/releases/latest → `MagicTrims-Setup-….exe`.
+
+### Mises à jour
+
+L'appli installée avec le `.exe` cherche une nouvelle release au démarrage (puis toutes les deux heures). S'il y en a une, un bandeau « Nouvelle version disponible » apparaît en haut de l'accueil et du salon : le bouton **Mettre à jour** la télécharge, l'installe et relance l'appli. Le bandeau est caché pendant une partie.
+
+L'appli lancée avec `npm run app` ne se met pas à jour toute seule : `git pull` puis `npm install`.
+
+Dans le salon, un joueur dont l'appli n'a pas la même version que celle de l'hôte porte la pastille « autre version » (détail au survol). La version de chacun est aussi affichée sur l'accueil.
+
+Windows peut afficher un avertissement SmartScreen à la première installation (l'installateur n'est pas signé) : **Informations complémentaires → Exécuter quand même**.
 
 ### Jouer
 

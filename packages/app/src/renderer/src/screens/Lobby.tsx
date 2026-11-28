@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { GAME_MODES, type CardData, type ResolvedDeck, type GameModeType, type LobbyConfig, type PlayerId } from "@magic-trims/core";
+import {
+  formatAppVersion,
+  GAME_MODES,
+  sameAppVersion,
+  type CardData,
+  type GameModeType,
+  type LobbyConfig,
+  type LobbyPlayer,
+  type PlayerId,
+  type ResolvedDeck,
+} from "@magic-trims/core";
 import { Chat } from "../components/Chat";
 import { supportOf } from "../cards";
 import { session, useSession } from "../session";
@@ -95,6 +105,12 @@ export function Lobby() {
   const startingLife = config.settings?.startingLife ?? mode.defaults.startingLife ?? 40;
   const amArchenemy = config.mode === "archenemy" && (config.archenemyId ?? lobby.players[0]?.id) === s.playerId;
 
+  // Versions de l'appli : tout le monde devrait avoir celle de l'hôte.
+  const hostApp = lobby.players.find((p) => p.isHost)?.app;
+  const versionDiffers = (p: LobbyPlayer) =>
+    !p.isBot && !p.isHost && hostApp !== undefined && (p.app === undefined || !sameAppVersion(p.app, hostApp));
+  const outdated = lobby.players.filter(versionDiffers);
+
   const playerCountText = useMemo(
     () => (mode.minPlayers === mode.maxPlayers ? `${mode.minPlayers}` : `${mode.minPlayers} à ${mode.maxPlayers}`),
     [mode],
@@ -119,6 +135,13 @@ export function Lobby() {
           <h2>
             Joueurs ({lobby.players.length}/{lobby.maxPlayers})
           </h2>
+          {outdated.length > 0 && (
+            <p className="version-warning">
+              {outdated.map((p) => p.name).join(", ")} {outdated.length > 1 ? "n'ont" : "n'a"} pas la même version de
+              l'appli que l'hôte ({formatAppVersion(hostApp!)}). La partie peut se comporter bizarrement : mettez-vous
+              tous à jour (bouton « Mettre à jour » en haut de l'écran, ou git pull).
+            </p>
+          )}
           <ul className="player-list">
             {lobby.players.map((p) => (
               <li key={p.id} className={p.connected ? "" : "disconnected"}>
@@ -128,6 +151,14 @@ export function Lobby() {
                   {p.isBot && <span className="badge">bot</span>}
                   {p.id === s.playerId && <span className="badge badge-me">toi</span>}
                   {!p.connected && <span className="badge badge-warn">déconnecté</span>}
+                  {versionDiffers(p) && (
+                    <span
+                      className="badge badge-warn"
+                      title={`Sa version : ${p.app ? formatAppVersion(p.app) : "ancienne (inconnue)"}\nHôte : ${formatAppVersion(hostApp!)}`}
+                    >
+                      autre version
+                    </span>
+                  )}
                   {s.isHost && !p.isHost && (
                     <button className="link danger" onClick={() => session.client?.kick(p.id)}>
                       Exclure

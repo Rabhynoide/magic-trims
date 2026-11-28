@@ -13,6 +13,29 @@ export const PROTOCOL_VERSION = 1;
 /** Port utilisé par défaut pour héberger une partie. */
 export const DEFAULT_PORT = 47474;
 
+/** Version de l'appli d'un joueur (affichée dans le salon). */
+export interface AppVersion {
+  /** Numéro de version, ex. `0.1.212`. */
+  version: string;
+  /** Commit du code, quand il est connu (identifie exactement le code joué). */
+  commit?: string;
+}
+
+/**
+ * Deux joueurs ont-ils le même code ? On compare le commit quand les deux le
+ * connaissent (une appli lancée avec `npm run app` garde le numéro de version
+ * du dépôt), sinon le numéro de version.
+ */
+export function sameAppVersion(a: AppVersion, b: AppVersion): boolean {
+  if (a.commit && b.commit) return a.commit === b.commit;
+  return a.version === b.version;
+}
+
+/** Texte court d'une version, ex. `0.1.212 (3fa9c2e)`. */
+export function formatAppVersion(v: AppVersion): string {
+  return v.commit ? `${v.version} (${v.commit.slice(0, 7)})` : v.version;
+}
+
 export interface LobbyPlayer {
   id: PlayerId;
   name: string;
@@ -30,6 +53,8 @@ export interface LobbyPlayer {
   } | null;
   /** Nombre de machinations (mode Archenemy). */
   schemeCount: number;
+  /** Version de son appli (absente pour un bot ou une appli trop ancienne). */
+  app?: AppVersion;
 }
 
 /** Réglages de la partie choisis par l'hôte dans le salon. */
@@ -60,6 +85,8 @@ export type ClientMessage =
       token?: string;
       /** Clé secrète connue seulement de l'appli qui héberge. */
       hostKey?: string;
+      /** Version de l'appli du joueur, pour signaler les différences dans le salon. */
+      app?: AppVersion;
     }
   | { type: "setDeck"; deck: ResolvedDeck; schemes?: CardData[] }
   /** Hôte seulement. */

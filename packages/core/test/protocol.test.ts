@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeJoinCode, DEFAULT_PORT, encodeJoinCode } from "../src/protocol.js";
+import { decodeJoinCode, DEFAULT_PORT, encodeJoinCode, formatAppVersion, sameAppVersion } from "../src/protocol.js";
 
 describe("code de connexion", () => {
   it("encode et décode une adresse et un port", () => {
@@ -30,5 +30,19 @@ describe("code de connexion", () => {
   it("refuse un code invalide", () => {
     expect(() => decodeJoinCode("ABC")).toThrow("Code de connexion invalide.");
     expect(() => encodeJoinCode("300.1.1.1", 1)).toThrow();
+  });
+});
+
+describe("versions de l'appli", () => {
+  it("compare le commit quand les deux le connaissent, sinon le numéro", () => {
+    expect(sameAppVersion({ version: "0.1.0", commit: "abc" }, { version: "0.1.9", commit: "abc" })).toBe(true);
+    expect(sameAppVersion({ version: "0.1.9", commit: "abc" }, { version: "0.1.9", commit: "def" })).toBe(false);
+    expect(sameAppVersion({ version: "0.1.9", commit: "abc" }, { version: "0.1.9" })).toBe(true);
+    expect(sameAppVersion({ version: "0.1.9" }, { version: "0.1.10" })).toBe(false);
+  });
+
+  it("affiche le commit en abrégé", () => {
+    expect(formatAppVersion({ version: "0.1.9", commit: "3fa9c2e81b" })).toBe("0.1.9 (3fa9c2e)");
+    expect(formatAppVersion({ version: "0.1.9" })).toBe("0.1.9");
   });
 });

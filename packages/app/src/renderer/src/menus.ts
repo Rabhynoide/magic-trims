@@ -11,7 +11,8 @@ import {
   exilePermissionHolds,
   foretellCost,
   flattenModes,
-  modesTargeted,
+  modesAtCast,
+  modesMax,
   mostCommonCreatureType,
   stateFromView,
   sagaChapters,
@@ -390,10 +391,11 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
             if (value === null) return;
             x = Math.max(0, Math.floor(Number(value) || 0));
           }
-          // Modes avec des cibles (Ashling's Command) : choisis d'abord, leurs cibles suivent.
+          // Modes avec des cibles (Ashling's Command), un coût (Spree) ou un commandant (Akroma's Will) : choisis d'abord, leurs cibles suivent.
           let modes: number[] | undefined;
-          if (parsed?.modes && modesTargeted(parsed)) {
-            const picked = await ui.chooseModes(`Modes de ${f.name}`, parsed.modes.list.map((m) => m.label), parsed.modes.min, parsed.modes.max);
+          if (parsed?.modes && modesAtCast(parsed)) {
+            const withCommander = view.players[view.viewerId]?.zones.battlefield.some((c) => !c.hidden && c.isCommander) ?? false;
+            const picked = await ui.chooseModes(`Modes de ${f.name}`, parsed.modes.list.map((m) => m.label), parsed.modes.min, modesMax(parsed.modes, withCommander));
             if (!picked) return;
             modes = picked;
           }
@@ -453,8 +455,10 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
       const items: MenuItem[] = [{ label: `Lancer ${f.name}${f.manaCost ? ` ${f.manaCost}` : ""}`, onClick: cast(false) }];
       // Coût alternatif (Baleful Mastery) : une seconde entrée.
       const faceText = (faces ? faces[f.face ?? 0]?.oracleText : data.oracleText) ?? "";
-      const alt = view.settings.enforceRules && /\b(Instant|Sorcery)\b/.test(f.typeLine) ? parseSpellEffects(faceText, f.name).alternativeCost : undefined;
-      if (alt) items.push({ label: `Lancer ${f.name} pour ${alt} (coût alternatif)`, onClick: cast(true) });
+      const altEffects = view.settings.enforceRules && /\b(Instant|Sorcery)\b/.test(f.typeLine) ? parseSpellEffects(faceText, f.name) : undefined;
+      const alt = altEffects?.alternativeCost;
+      if (alt && altEffects?.alternativeIf === "commander") items.push({ label: `Lancer ${f.name} sans payer son coût (si tu contrôles un commandant)`, onClick: cast(true) });
+      else if (alt) items.push({ label: `Lancer ${f.name} pour ${alt} (coût alternatif)`, onClick: cast(true) });
       // Évocation : la sienne, et celle que donne Ashling (sacrifiée en arrivant).
       if (view.settings.enforceRules && card.zone === "hand") {
         const evoke = evokeOptions(stateFromView(view), view.viewerId, data, f.face ?? 0, true);

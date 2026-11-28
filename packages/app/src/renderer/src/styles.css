@@ -253,6 +253,9 @@ textarea:focus {
   color: var(--text-dim);
   margin: 0;
 }
+.app-version {
+  font-size: 12px;
+}
 .home-grid {
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr);
@@ -460,6 +463,41 @@ textarea:focus {
 .toast-info {
   background: #23344d;
   color: #cfe0f5;
+}
+
+.update-banner {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: calc(100vw - 32px);
+  padding: 8px 10px 8px 16px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.4);
+}
+.update-banner.update-error {
+  border-color: var(--danger);
+}
+.update-banner progress {
+  width: 140px;
+  accent-color: var(--accent);
+}
+.update-banner a {
+  color: var(--accent-strong);
+}
+
+.version-warning {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: #4d3a17;
+  color: #f0cd8a;
 }
 
 .context-menu {
@@ -1393,11 +1431,44 @@ textarea:focus {
   background: var(--bg-sunken);
   border: 1px solid var(--border);
 }
+.combat-panel .attack-targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.combat-panel .attack-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.combat-panel .attack-target.active {
+  border-color: var(--danger);
+  color: var(--danger);
+  font-weight: 600;
+}
+.combat-panel .attack-target-count {
+  font-size: 11px;
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--danger);
+  color: var(--bg-elevated);
+}
 .combat-panel .hint {
   color: var(--text-dim);
   font-size: 13px;
 }
 
+.sound-settings {
+  font-size: 13px;
+  color: var(--text-dim);
+  gap: 6px;
+}
+.sound-settings input[type="range"] {
+  width: 80px;
+}
+.sound-settings input[type="checkbox"] {
+  width: auto;
 .deck-support {
   margin: 6px 0;
   font-size: 13px;

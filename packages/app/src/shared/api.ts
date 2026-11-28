@@ -1,4 +1,5 @@
 import type {
+  AppVersion,
   CardData,
   CentralConnection,
   CentralJoinResult,
@@ -42,6 +43,34 @@ export interface CentralApi {
   unshareDeck(conn: CentralConnection, id: string): Promise<CentralResult<void>>;
 }
 
+/** Où en est la mise à jour de l'appli installée. */
+export type UpdateStatus =
+  | { state: "idle" }
+  | { state: "checking" }
+  /** À jour (ou vérification impossible, sans gêner le joueur). */
+  | { state: "none" }
+  | { state: "available"; version: string }
+  | { state: "downloading"; version: string; percent: number }
+  /** Téléchargée : s'installe au clic (ou tout de suite si le joueur l'a demandé). */
+  | { state: "ready"; version: string }
+  | { state: "error"; message: string; version?: string }
+  /** Appli lancée depuis le code : pas de mise à jour automatique. */
+  | { state: "unsupported"; reason: string };
+
+export interface UpdatesApi {
+  status(): Promise<UpdateStatus>;
+  /** Appelé à chaque changement ; renvoie de quoi se désabonner. */
+  onStatus(listener: (status: UpdateStatus) => void): () => void;
+  check(): Promise<void>;
+  /** Télécharge la nouvelle version, l'installe et relance l'appli. */
+  install(): Promise<void>;
+}
+
+export interface AppInfo extends AppVersion {
+  /** Vrai pour l'appli installée (.exe), faux avec `npm run app`. */
+  packaged: boolean;
+}
+
 /** Ce que le processus principal d'Electron offre à l'interface (via le preload). */
 export interface MagicApi {
   startHost(options: { resume: boolean }): Promise<HostInfo>;
@@ -53,6 +82,8 @@ export interface MagicApi {
   /** Cherche les cartes imprimées dans une langue (`null` : on garde l'anglais). */
   localizeCards(cards: CardToLocalize[], lang: string): Promise<Record<string, LocalizedCard | null>>;
   central: CentralApi;
+  appInfo(): Promise<AppInfo>;
+  updates: UpdatesApi;
 }
 
 declare global {

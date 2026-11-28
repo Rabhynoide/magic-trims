@@ -116,7 +116,9 @@ class Session {
 
   private async join(url: string, name: string, extra: { hostKey?: string; token?: string }) {
     this.client?.close();
-    const client = new GameClient({ url, name, ...extra });
+    const info = await window.magic?.appInfo().catch(() => undefined);
+    const app = info ? { version: info.version, ...(info.commit ? { commit: info.commit } : {}) } : undefined;
+    const client = new GameClient({ url, name, ...extra, ...(app ? { app } : {}) });
     this.client = client;
     this.rawView = null;
     this.set({ connecting: true, chat: [], view: null, lobby: null });
@@ -153,9 +155,13 @@ class Session {
     }
   }
 
+  /** Heure de la dernière action envoyée par ce joueur (pour le son de priorité). */
+  lastActAt = 0;
+
   /** Envoie une action ; affiche l'erreur si l'hôte la refuse. */
   async act(action: GameAction): Promise<boolean> {
     if (!this.client) return false;
+    this.lastActAt = Date.now();
     const result = await this.client.act(action);
     if (!result.ok && result.error) this.toast(result.error);
     return result.ok;

@@ -131,7 +131,7 @@ describe("Détail par capacité", () => {
     );
     expect(report.map((r) => [r.title, r.status])).toEqual([
       ["Lien de vie", "auto"],
-      ["Ward {2}", "manual"],
+      ["Garde ({2})", "auto"],
       ["Capacité déclenchée", "auto"],
       ["Capacité activée", "auto"],
     ]);
