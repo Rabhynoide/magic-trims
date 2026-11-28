@@ -25,6 +25,7 @@ import {
   isLegalTarget,
   matchesPermanent,
   resolveAmount,
+  type Amount,
   spellEffectsOf,
   flattenModes,
   modesAtCast,
@@ -2046,18 +2047,19 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
       .map((id) => g.cards[id]!)
       .filter((c) => matchesPermanent(g, c, filter, caster.id));
 
-  const makeTokens = (token: TokenSpec, owners: PlayerState[], n: number, tapped: boolean) => {
+  const makeTokens = (token: TokenSpec, owners: PlayerState[], n: number, tapped: boolean, combat: { attacking?: boolean; exileEndOfCombat?: boolean } = {}) => {
     const power = token.power === "X" ? String(x) : token.power;
     const toughness = token.toughness === "X" ? String(x) : token.toughness;
-    const name = token.subtypes.join(" ") || "Créature";
-    const id = `token:${power}/${toughness}:${token.colors.join("")}:${name}:${token.keywords.join(",")}:${token.artifact ? "a" : ""}`;
+    const kind = token.subtypes.join(" ") || "Créature";
+    const name = token.name ?? kind;
+    const id = `token:${power}/${toughness}:${token.colors.join("")}:${name}:${token.keywords.join(",")}:${token.artifact ? "a" : ""}${token.legendary ? ":l" : ""}`;
     g.cardData[id] ??= {
       id,
       oracleId: id,
       name,
       manaCost: "",
       manaValue: 0,
-      typeLine: `Token ${token.artifact ? "Artifact " : ""}Creature — ${name}`,
+      typeLine: `${token.legendary ? "Legendary " : ""}Token ${token.artifact ? "Artifact " : ""}Creature — ${kind}`,
       oracleText: token.keywords.join(", "),
       colors: token.colors,
       colorIdentity: token.colors,
@@ -2075,9 +2077,13 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         instance.tapped = tapped;
         instance.summoningSick = true;
         owner.zones.battlefield.push(instance.instanceId);
+        // « Enters tapped and attacking » : attaque sans avoir été déclaré attaquant (pas de déclencheur « attacks »).
+        const defender = combat.attacking ? attackDefender(g, self?.instanceId, owner.id) : undefined;
+        if (defender && g.combat) g.combat.attackers[instance.instanceId] = defender;
+        if (combat.exileEndOfCombat && g.combat) (g.endOfCombatExile ??= []).push(instance.instanceId);
         emitEnters(g, instance);
       }
-      if (n > 0) log(g, null, `${owner.name} crée ${n > 1 ? `${n} jetons` : "un jeton"} ${name} ${power}/${toughness}.`);
+      if (n > 0) log(g, null, `${owner.name} crée ${n > 1 ? `${n} jetons` : "un jeton"} ${name} ${power}/${toughness}${combat.attacking && g.combat ? ", engagé(s) et attaquant(s)" : ""}.`);
     }
   };
   // Ephemerate : « Exile target creature you control, then return it… » (la carte exilée par ce sort).
@@ -2247,13 +2253,20 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         break;
       }
       case "putFromHand": {
-        const [id] = source.choices?.[effects.indexOf(effect)] ?? [];
-        const c = id ? g.cards[id] : undefined;
-        if (!c || c.zone !== "hand") break;
-        const entered = moveCardTo(g, c.instanceId, "battlefield", "top", { controllerId: caster.id });
-        if (effect.haste) entered.grants = [...new Set([...(entered.grants ?? []), "haste"])];
-        if (effect.sacrificeAtEnd) entered.grantedTriggers = [...(entered.grantedTriggers ?? []), "At the beginning of your end step, sacrifice this permanent."];
-        log(g, null, `${caster.name} met ${cardName(g, entered)} sur le champ de bataille${effect.haste ? " avec la célérité" : ""}.`);
+        const chosen = source.choices?.[effects.indexOf(effect)] ?? [];
+        // Shadowfax : le défenseur est fixé avant que les créatures n'arrivent.
+        const defender = effect.attacking ? attackDefender(g, self?.instanceId, caster.id) : undefined;
+        for (const id of effect.any ? chosen : chosen.slice(0, 1)) {
+          const c = g.cards[id];
+          if (!c || c.zone !== "hand") continue;
+          const entered = moveCardTo(g, c.instanceId, "battlefield", "top", { controllerId: caster.id });
+          if (effect.haste) entered.grants = [...new Set([...(entered.grants ?? []), "haste"])];
+          if (effect.sacrificeAtEnd) entered.grantedTriggers = [...(entered.grantedTriggers ?? []), "At the beginning of your end step, sacrifice this permanent."];
+          if (effect.attacking) entered.tapped = true;
+          if (defender && g.combat && entered.zone === "battlefield") g.combat.attackers[entered.instanceId] = defender;
+          const how = effect.haste ? " avec la célérité" : defender && g.combat ? `, engagé(e) et attaquant ${g.players[defender]!.name}` : effect.attacking ? ", engagé(e)" : "";
+          log(g, null, `${caster.name} met ${cardName(g, entered)} sur le champ de bataille${how}.`);
+        }
         break;
       }
       case "extraLand": {
@@ -2844,7 +2857,10 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         }
         break;
       case "token":
-        makeTokens(effect.token, effect.forOpponents ? opponentsOf(g, caster.id) : [caster], amountOf(effect.count), effect.tapped);
+        makeTokens(effect.token, effect.forOpponents ? opponentsOf(g, caster.id) : [caster], amountOf(effect.count), effect.tapped, {
+          ...(effect.attacking ? { attacking: true } : {}),
+          ...(effect.exileEndOfCombat ? { exileEndOfCombat: true } : {}),
+        });
         break;
       case "tokenForController": {
         const owner = legal[effect.target] ? controllers[effect.target] : undefined;
@@ -3205,21 +3221,30 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
     }
     // Incandescent Soulstoke : une créature du type de sa main ; Growth Spiral : un terrain (facultatif).
     if (effect.type === "putFromHand") {
-      if (effect.drawFirst && !card.drewFirst) {
-        drawCards(g, controller, effect.drawFirst);
+      if (effect.drawFirst !== undefined && !card.drewFirst) {
+        drawCards(g, controller, drawFirstCount(g, controller, effect.drawFirst, card.xValue ?? 0));
         card.drewFirst = true;
       }
+      // Shadowfax : force inférieure à celle de la source (au moment du choix ; 0 si elle a quitté le champ).
+      const source = card.ability ? g.cards[card.ability.sourceId] : undefined;
+      const maxPower = effect.lesserPower ? (source?.zone === "battlefield" && isCreature(g, source) ? creatureStats(g, source).power : 0) : Infinity;
       const options = controller.zones.hand.filter((id) => {
         const d = g.cardData[g.cards[id]!.cardId];
         const t = d?.faces?.[0]?.typeLine ?? d?.typeLine ?? "";
         if (effect.land) return /\bLand\b/.test(t);
-        return /\bCreature\b/.test(t) && typeLineHasCreatureType(t, d?.faces?.[0]?.oracleText ?? d?.oracleText ?? "", effect.subtype ?? "");
+        if (effect.lesserPower && !((parseInt(d?.faces?.[0]?.power ?? d?.power ?? "0", 10) || 0) < maxPower)) return false;
+        return /\bCreature\b/.test(t) && (!effect.subtype || typeLineHasCreatureType(t, d?.faces?.[0]?.oracleText ?? d?.oracleText ?? "", effect.subtype));
       });
       if (options.length === 0) {
         card.choices = { ...(card.choices ?? {}), [index]: [] };
         continue;
       }
-      card.cardChoice = { index, options, min: 0, max: 1, label: effect.land ? "Tu peux choisir un terrain de ta main à mettre sur le champ de bataille" : `Choisis une créature ${effect.subtype} de ta main à mettre sur le champ de bataille` };
+      const label = effect.land
+        ? "Tu peux choisir un terrain de ta main à mettre sur le champ de bataille"
+        : effect.any
+          ? "Choisis les cartes de créature de ta main à mettre sur le champ de bataille (autant que tu veux)"
+          : `Tu peux choisir une carte de créature${effect.subtype ? ` ${effect.subtype}` : ""}${effect.lesserPower ? ` de force inférieure à ${maxPower}` : ""} de ta main à mettre sur le champ de bataille${effect.attacking ? ", engagée et attaquante" : ""}`;
+      card.cardChoice = { index, options, min: 0, max: effect.any ? options.length : 1, label };
       return true;
     }
     // Cavalier of Thorns : un terrain parmi les cartes révélées.
@@ -5048,4 +5073,28 @@ function zoneFrom(zone: Zone): string {
 
 function zoneTo(zone: Zone): string {
   return ZONE_NAMES[zone].to;
+}
+
+/**
+ * Joueur attaqué par une créature qui arrive « tapped and attacking » : celui
+ * qu'attaque la source (Kari Zev, Shadowfax), sinon celui d'un autre attaquant
+ * du joueur, sinon son seul adversaire. `undefined` hors combat.
+ */
+function attackDefender(g: GameState, sourceId: CardInstanceId | undefined, playerId: PlayerId): PlayerId | undefined {
+  if (!g.combat) return undefined;
+  const bySource = sourceId ? g.combat.attackers[sourceId] : undefined;
+  if (bySource) return bySource;
+  const other = Object.entries(g.combat.attackers).find(([id]) => g.cards[id]?.controllerId === playerId)?.[1];
+  if (other) return other;
+  const opponents = g.turnOrder.filter((id) => id !== playerId && !g.players[id]!.hasConceded);
+  return opponents.length === 1 ? opponents[0] : undefined;
+}
+
+/** Pioche faite avant un choix (Growth Spiral : 1 ; Last March : la plus grande endurance parmi vos créatures). */
+function drawFirstCount(g: GameState, controller: PlayerState, count: Amount, x: number): number {
+  const mine = () => controller.zones.battlefield.map((id) => g.cards[id]!);
+  return resolveAmount(count, x, 0, {
+    count: (filter) => mine().filter((c) => matchesPermanent(g, c, { ...filter, controller: "you" }, controller.id)).length,
+    quantity: (q) => ("greatest" in q ? Math.max(0, ...mine().filter((c) => isCreature(g, c) && matchesPermanent(g, c, q.filter, controller.id)).map((c) => creatureStats(g, c)[q.greatest])) : 0),
+  });
 }
