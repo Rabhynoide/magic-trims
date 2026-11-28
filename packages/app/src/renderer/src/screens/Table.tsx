@@ -908,8 +908,12 @@ function PlayerArea(props: {
   const { targeting } = useUi();
   const playerTarget = targeting?.specs[targeting.chosen.length]?.player && !p.hasConceded;
 
-  const battlefield = p.zones.battlefield.filter((c) => !c.attachedTo);
-  const attachmentsOf = (id: string | null) => (id ? p.zones.battlefield.filter((c) => c.attachedTo === id) : []);
+  // Une Aura ou un Équipement s'affiche sur la carte hôte, même si celle-ci est
+  // à un autre joueur (Pacifisme posé sur une créature adverse).
+  const allBattlefield = view.turnOrder.flatMap((pid) => view.players[pid]?.zones.battlefield ?? []);
+  const onBattlefield = new Set(allBattlefield.map((c) => c.instanceId).filter(Boolean));
+  const battlefield = p.zones.battlefield.filter((c) => !c.attachedTo || !onBattlefield.has(c.attachedTo));
+  const attachmentsOf = (id: string | null) => (id ? allBattlefield.filter((c) => c.attachedTo === id) : []);
   const creatures = battlefield.filter((c) => battlefieldRow(view, c) === "creatures");
   const others = battlefield.filter((c) => battlefieldRow(view, c) === "others");
   const lands = battlefield.filter((c) => battlefieldRow(view, c) === "lands");
@@ -922,6 +926,10 @@ function PlayerArea(props: {
       size={size}
       draggable
       attachments={attachmentsOf(c.instanceId)}
+      attachmentProps={(a) => ({
+        onMenu: (e) => openCardMenu(e, view, a),
+        ...(targeting ? targetProps(view, targeting, a) : {}),
+      })}
       onMenu={(e) => openCardMenu(e, view, c)}
       onDoubleClick={(e) => c.instanceId && tapOrProduce(e, view, c)}
       {...(targeting ? targetProps(view, targeting, c) : props.combat.cardProps(c))}
