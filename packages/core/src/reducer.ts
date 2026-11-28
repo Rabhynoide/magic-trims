@@ -1716,7 +1716,7 @@ function flushTriggers(g: GameState): boolean {
           for (let i = 0; i < copies; i++) pending.push({ source: card, dataId, faceIndex, index, controllerId: card.controllerId, event, trigger, batch: [event.cardId] });
           return;
         }
-        const once = trigger.oncePerTurn || (trigger.condition.on === "dies" && trigger.condition.batched);
+        const once = trigger.oncePerTurn || ((trigger.condition.on === "dies" || trigger.condition.on === "enters") && trigger.condition.batched);
         if (once && pending.some((p) => p.source.instanceId === card.instanceId && p.index === index)) return;
         if (trigger.oncePerTurn) {
           const live = g.cards[card.instanceId];
@@ -2902,6 +2902,14 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
           log(g, null, `${cardName(g, self)} se dégage.`);
         }
         break;
+      case "tap": {
+        const c = card(effect.target);
+        if (c && !c.tapped) {
+          c.tapped = true;
+          log(g, null, `${cardName(g, c)} s'engage.`);
+        }
+        break;
+      }
       case "tapSelf":
         if (self?.zone === "battlefield" && !self.tapped) {
           self.tapped = true;

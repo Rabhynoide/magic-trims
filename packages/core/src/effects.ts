@@ -12,7 +12,7 @@ import { grantedManaAbility, manaOptions, manaTapEffect } from "./mana.js";
 import { parsePermanentAbilities, parseWard } from "./triggers.js";
 import { areTeammates } from "./modes.js";
 import { joinModes, keywordList, NUMBER_WORDS, selfToTilde } from "./text.js";
-import { isChangeling, isCreatureSubtype, playerHasHexproof, playerHasShroud, printedEvoke, typeLineHasCreatureType } from "./statics.js";
+import { isChangeling, isCreatureSubtype, parseStaticLine, playerHasHexproof, playerHasShroud, printedEvoke, typeLineHasCreatureType } from "./statics.js";
 
 export { selfToTilde };
 import type { CardData, CardFace, CardInstance, GameState, PlayerId } from "./types.js";
@@ -287,6 +287,8 @@ type EffectBase =
   | { type: "sacrifice"; filter: PermanentFilter; another?: boolean; orElse?: Effect[] }
   /** « tap ~ ». */
   | { type: "tapSelf" }
+  /** « Tap target creature » (Dispatch). */
+  | { type: "tap"; target: number }
   | { type: "untapSelf" }
   /** Jinxed Choker : « deals damage to you equal to the number of charge counters on it ». */
   | { type: "selfCounterDamage"; kind: string }
@@ -592,6 +594,14 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
   }
   if ((m = /^(?:you )?draw that many cards$/i.exec(s))) return [{ type: "draw", who: "you", count: "event" }];
   if (/^attach ~ to (?:it|that creature)$/i.test(s) && lastTarget() < 0) return [{ type: "attachEvent" }];
+  // Dispatch : « Tap target creature. … exile that creature. » (la cible déjà choisie).
+  if ((m = /^tap target (.+)$/i.exec(s))) {
+    const filter = parsePermanentFilter(m[1]!);
+    if (filter) return [{ type: "tap", target: target({ label: permanentLabel(filter), permanent: filter }) }];
+  }
+  if ((m = /^(destroy|exile) (?:it|that creature|that permanent)$/i.exec(s)) && lastTarget() >= 0) {
+    return [{ type: m[1]!.toLowerCase() === "destroy" ? "destroy" : "exile", target: lastTarget() }];
+  }
   // The Great Henge : « put a +1/+1 counter on it and draw a card » (la créature arrivée).
   if ((m = new RegExp(`^put ${NUM} ([+-]1/[+-]1|\\w+) counters? on (?:it|that creature)(?: and draw ${NUM} cards?)?$`, "i").exec(s)) && lastTarget() < 0) {
     const n = amount(m[1]!);
@@ -1068,6 +1078,8 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     flushIf();
     let s = sentence.replace(/\.$/, "");
     if (HARMLESS.some((re) => re.test(sentence))) continue;
+    // « This spell costs {1} less to cast for each creature on the battlefield » : appliqué en le lançant (selfCostReduction).
+    if (parseStaticLine(sentence)?.kind === "selfCost") continue;
     const followUp = followUps.findIndex((re) => re.test(s));
     if (followUp >= 0) {
       followUps.splice(followUp, 1);
@@ -1075,6 +1087,8 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     }
     let m: RegExpExecArray | null;
     let dig: RegExpExecArray | null;
+    // Métal (« Metalcraft — If you control three or more artifacts, … ») : la condition est lue juste après.
+    s = s.replace(/^metalcraft — (?=if you control )/i, "");
     // « If you control eight or more lands, draw a card. »
     if ((m = /^if you control (\w+) or more (.+?), (.+)$/i.exec(s))) {
       const filter = parsePermanentFilter(`${m[2]!} you control`);
