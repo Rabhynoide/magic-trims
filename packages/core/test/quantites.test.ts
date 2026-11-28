@@ -168,7 +168,7 @@ describe("Quantités « égal à », « that many », « pour chaque »", () => 
     for (const name of ["Swords to Plowshares", "Toxic Deluge", "Krenko, Tin Street Kingpin", "Old Gnawbone"]) {
       expect(cardSupport(real(name)).level, name).toBe("full");
     }
-    // Last March : reste la mise en jeu depuis la main (famille 12) ; Robe : déclencheur d'équipement (famille 3).
-    expect(cardSupport(real("Last March of the Ents")).unknown).toEqual(["put any number of creature cards from your hand onto the battlefield."]);
+    // Last March : la mise en jeu depuis la main est gérée depuis la famille 12 ; Robe : déclencheur d'équipement (famille 3).
+    expect(cardSupport(real("Last March of the Ents")).unknown).toEqual([]);
   });
 });

@@ -170,7 +170,18 @@ type EffectBase =
   | { type: "payLifeOrTop"; life: number }
   /** Incandescent Soulstoke : une carte de sa main sur le champ de bataille (au choix), célérité, sacrifiée à la fin du tour. */
   /** Incandescent Soulstoke (`subtype`), Growth Spiral (`land`, pioche d'abord `drawFirst` cartes). */
-  | { type: "putFromHand"; subtype?: string; land?: boolean; drawFirst?: number; haste: boolean; sacrificeAtEnd: boolean }
+  /** Last March of the Ents (`any` : autant de créatures que voulu), Shadowfax (`lesserPower` : force inférieure à la source, `attacking` : engagée et attaquante). */
+  | {
+      type: "putFromHand";
+      subtype?: string;
+      land?: boolean;
+      drawFirst?: Amount;
+      haste: boolean;
+      sacrificeAtEnd: boolean;
+      any?: boolean;
+      lesserPower?: boolean;
+      attacking?: boolean;
+    }
   /** Explore : « You may play an additional land this turn. » */
   | { type: "extraLand"; count: number }
   /**
@@ -215,7 +226,8 @@ type EffectBase =
   | { type: "damage"; target: number | "event" | "you"; amount: Amount }
   | { type: "damageEach"; who: "opponents" | "players" | "creatures" | "yourOtherCreatures"; amount: Amount }
   | { type: "life"; who: Who; amount: Amount }
-  | { type: "token"; count: Amount; token: TokenSpec; tapped: boolean; forOpponents?: boolean }
+  /** `attacking` : « tapped and attacking » (même défenseur que la source) ; `exileEndOfCombat` : « Exile that token at end of combat » (Kari Zev). */
+  | { type: "token"; count: Amount; token: TokenSpec; tapped: boolean; forOpponents?: boolean; attacking?: boolean; exileEndOfCombat?: boolean }
   | { type: "counter"; target: number }
   /** Garde : contrer le sort ou la capacité qui a déclenché la capacité (« counter that spell or ability »). */
   | { type: "counterTriggering" }
@@ -367,6 +379,9 @@ export interface TokenSpec {
   /** Mots-clés du jeton (« with flying »). */
   keywords: string[];
   artifact: boolean;
+  /** Jeton nommé (« create Ragavan, a legendary 2/1 red Monkey creature token »). */
+  name?: string;
+  legendary?: boolean;
 }
 
 export interface SpellEffects {
@@ -1408,8 +1423,23 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       } else result.effects.push({ type: "handToTop", count: amount(m[1]!) as number });
     } else if (/^shuffle it into its owner's library$/i.test(s)) {
       result.effects.push({ type: "shuffleEventCard" });
-    } else if ((m = /^you may put an? (\w+) creature card from your hand onto the battlefield$/i.exec(s))) {
-      result.effects.push({ type: "putFromHand", subtype: m[1]!.charAt(0).toUpperCase() + m[1]!.slice(1).toLowerCase(), haste: false, sacrificeAtEnd: false });
+    } else if ((m = /^(?:you may )?put (an?|any number of) (?:(\w+) )?creature cards? (with lesser power )?from your hand onto the battlefield( tapped and attacking)?$/i.exec(s))) {
+      // Soulstoke (« an Elemental creature card »), Last March (« any number of creature cards »), Shadowfax (« with lesser power … tapped and attacking »).
+      const any = /^any/i.test(m[1]!);
+      const prev = result.effects.at(-1);
+      // Last March : « Draw cards equal to …, then put any number … » : la pioche se fait avant le choix.
+      const drawFirst = any && prev?.type === "draw" && prev.who === "you" ? prev.count : undefined;
+      if (drawFirst !== undefined) result.effects.pop();
+      result.effects.push({
+        type: "putFromHand",
+        ...(m[2] ? { subtype: m[2].charAt(0).toUpperCase() + m[2].slice(1).toLowerCase() } : {}),
+        ...(drawFirst !== undefined ? { drawFirst } : {}),
+        haste: false,
+        sacrificeAtEnd: false,
+        ...(any ? { any: true } : {}),
+        ...(m[3] ? { lesserPower: true } : {}),
+        ...(m[4] ? { attacking: true } : {}),
+      });
     } else if (/^you may put a land card from your hand onto the battlefield$/i.test(s)) {
       // Growth Spiral : la pioche se fait avant le choix du terrain.
       const prev = result.effects.at(-1);
@@ -1579,13 +1609,26 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       const count = amount(m[1]!) as number;
       if (m[3]!.toLowerCase() === "each") result.effects.push({ type: "counterAll", filter, kind: m[2]!, count });
       else result.effects.push({ type: "counterTarget", target: target({ label: permanentLabel(filter), permanent: filter }), kind: m[2]!, count });
-    } else if ((m = new RegExp(`^create ${NUM} (tapped )?(.+)$`, "i").exec(s))) {
+    } else if ((m = /^[Cc]reate ([A-Z][\w'-]*(?: [A-Z][\w'-]*)*), an? (legendary )?(.+ creature token(?: with .+)?)$/.exec(s)) && parseToken(m[3]!)) {
+      // Kari Zev : « create Ragavan, a legendary 2/1 red Monkey creature token ».
+      result.effects.push({ type: "token", count: 1, token: { ...parseToken(m[3]!)!, name: m[1]!, ...(m[2] ? { legendary: true } : {}) }, tapped: false });
+    } else if (
+      (m = /^(.+?) (?:enters|enter|enter the battlefield|enters the battlefield) tapped and attacking$/i.exec(s)) &&
+      result.effects.at(-1)?.type === "token" &&
+      (/^(it|they|that token|those tokens)$/i.test(m[1]!) || (result.effects.at(-1) as Extract<Effect, { type: "token" }>).token.name === m[1])
+    ) {
+      const last = result.effects.at(-1) as Extract<Effect, { type: "token" }>;
+      last.tapped = true;
+      last.attacking = true;
+    } else if (/^exile (?:that token|those tokens|it|them) at end of combat$/i.test(s) && result.effects.at(-1)?.type === "token") {
+      (result.effects.at(-1) as Extract<Effect, { type: "token" }>).exileEndOfCombat = true;
+    } else if ((m = new RegExp(`^create ${NUM} (tapped )?(.+?)( that(?:'s| are) tapped and attacking)?$`, "i").exec(s))) {
       const token = parseToken(m[3]!);
       if (!token) {
         result.unknown.push(sentence);
         continue;
       }
-      result.effects.push({ type: "token", count: amount(m[1]!), token, tapped: !!m[2] });
+      result.effects.push({ type: "token", count: amount(m[1]!), token, tapped: !!m[2] || !!m[4], ...(m[4] ? { attacking: true } : {}) });
     } else if ((m = /^counter target (?:(.+) )?spell$/i.exec(s))) {
       const spec = m[1] ? parseSpellFilter(m[1]) : { types: [], notTypes: [] };
       if (!spec) {
