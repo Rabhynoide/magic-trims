@@ -53,6 +53,7 @@ import {
   doesntUntap,
   entersTapped,
   entersTappedStatic,
+  landPlaysAllowed,
   entersUntappedChoice,
   hasNoMaxHandSize,
   maxOneCreature,
@@ -426,7 +427,9 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const faceIndex = face ?? 0;
     if (!/\bLand\b/.test(faceTypeLine(g, card, faceIndex))) throw new ActionError(`${cardName(g, card)} n'est pas un terrain.`);
     assertSorceryTiming(g, actor, "jouer un terrain");
-    if (actor.landsPlayed >= 1) throw new ActionError("Tu as déjà joué un terrain ce tour.");
+    if (actor.landsPlayed >= (g.settings.enforceRules ? landPlaysAllowed(g, actor.id) : 1)) {
+      throw new ActionError(actor.landsPlayed > 1 ? `Tu as déjà joué ${actor.landsPlayed} terrains ce tour.` : "Tu as déjà joué un terrain ce tour.");
+    }
     if (g.settings.enforceRules && cantPlayLands(g, actor.id)) throw new ActionError("Un de tes permanents t'empêche de jouer des terrains.");
     const what = chooseTypeOf(g.cardData[card.cardId], faceIndex);
     const chosen = what ? checkChosenType(what, chosenType) : undefined;
@@ -2211,6 +2214,12 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         log(g, null, `${caster.name} met ${cardName(g, entered)} sur le champ de bataille${effect.haste ? " avec la célérité" : ""}.`);
         break;
       }
+      case "extraLand": {
+        const prev = caster.extraLands?.turn === g.turn.number ? caster.extraLands.count : 0;
+        caster.extraLands = { turn: g.turn.number, count: prev + effect.count };
+        log(g, null, `${caster.name} peut jouer ${effect.count === 1 ? "un terrain supplémentaire" : `${effect.count} terrains supplémentaires`} ce tour-ci.`);
+        break;
+      }
       case "playFromGraveyard": {
         const c = card(effect.target);
         if (!c || c.zone !== "graveyard") break;
@@ -3105,18 +3114,23 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
       if (effect.count === "X") card.cardChoice.label = `Choisis ${count} ${what} de ton cimetière à mettre sur le champ de bataille`;
       return true;
     }
-    // Incandescent Soulstoke : une créature du type de sa main (facultatif).
+    // Incandescent Soulstoke : une créature du type de sa main ; Growth Spiral : un terrain (facultatif).
     if (effect.type === "putFromHand") {
+      if (effect.drawFirst && !card.drewFirst) {
+        drawCards(g, controller, effect.drawFirst);
+        card.drewFirst = true;
+      }
       const options = controller.zones.hand.filter((id) => {
         const d = g.cardData[g.cards[id]!.cardId];
         const t = d?.faces?.[0]?.typeLine ?? d?.typeLine ?? "";
-        return /\bCreature\b/.test(t) && typeLineHasCreatureType(t, d?.faces?.[0]?.oracleText ?? d?.oracleText ?? "", effect.subtype);
+        if (effect.land) return /\bLand\b/.test(t);
+        return /\bCreature\b/.test(t) && typeLineHasCreatureType(t, d?.faces?.[0]?.oracleText ?? d?.oracleText ?? "", effect.subtype ?? "");
       });
       if (options.length === 0) {
         card.choices = { ...(card.choices ?? {}), [index]: [] };
         continue;
       }
-      card.cardChoice = { index, options, min: 0, max: 1, label: `Choisis une créature ${effect.subtype} de ta main à mettre sur le champ de bataille` };
+      card.cardChoice = { index, options, min: 0, max: 1, label: effect.land ? "Tu peux choisir un terrain de ta main à mettre sur le champ de bataille" : `Choisis une créature ${effect.subtype} de ta main à mettre sur le champ de bataille` };
       return true;
     }
     // Cavalier of Thorns : un terrain parmi les cartes révélées.
@@ -3466,6 +3480,23 @@ function entersUntapped(g: GameState, card: CardInstance, choice: boolean): bool
     const basics = player.zones.battlefield.filter((id) => id !== card.instanceId && /\bBasic\b/.test(g.cardData[g.cards[id]!.cardId]?.typeLine ?? "")).length;
     return basics >= s.unlessBasics;
   }
+  if (s.unlessOpponents !== undefined) {
+    return g.turnOrder.filter((id) => id !== player.id && !g.players[id]!.hasConceded && !areTeammates(g, id, player.id)).length >= s.unlessOpponents;
+  }
+  if (s.unlessOpponentLands !== undefined) {
+    const lands = g.turnOrder
+      .filter((id) => id !== player.id && !g.players[id]!.hasConceded && !areTeammates(g, id, player.id))
+      .reduce((n, id) => n + g.players[id]!.zones.battlefield.filter((c) => /\bLand\b/.test(currentTypeLine(g, g.cards[c]!))).length, 0);
+    return lands >= s.unlessOpponentLands;
+  }
+  if (s.unlessControl) {
+    const types = s.unlessControl;
+    return player.zones.battlefield.some((id) => id !== card.instanceId && types.some((t) => new RegExp(`\\b${t}\\b`).test(currentTypeLine(g, g.cards[id]!))));
+  }
+  if (s.unlessLandsAtMost !== undefined || s.unlessLandsAtLeast !== undefined) {
+    const lands = player.zones.battlefield.filter((id) => id !== card.instanceId && /\bLand\b/.test(currentTypeLine(g, g.cards[id]!))).length;
+    return s.unlessLandsAtMost !== undefined ? lands <= s.unlessLandsAtMost : lands >= s.unlessLandsAtLeast!;
+  }
   if (!choice) return false;
   const offer = entersUntappedChoice(g, player.id, card, card.faceIndex);
   if (!offer?.possible) return false;
@@ -3475,7 +3506,8 @@ function entersUntapped(g: GameState, card: CardInstance, choice: boolean): bool
     return true;
   }
   if (offer.reveal) {
-    const shown = player.zones.hand.find((id) => id !== card.instanceId && typeLineHasCreatureType(g.cardData[g.cards[id]!.cardId]?.typeLine ?? "", g.cardData[g.cards[id]!.cardId]?.oracleText ?? "", offer.reveal!));
+    const lands = s.unlessRevealLand;
+    const shown = player.zones.hand.find((id) => id !== card.instanceId && (lands ? lands.some((t) => new RegExp(`\\b${t}\\b`).test(g.cardData[g.cards[id]!.cardId]?.typeLine ?? "")) : typeLineHasCreatureType(g.cardData[g.cards[id]!.cardId]?.typeLine ?? "", g.cardData[g.cards[id]!.cardId]?.oracleText ?? "", offer.reveal!)));
     if (shown) log(g, player.id, `${player.name} révèle ${cardName(g, g.cards[shown]!)} : ${cardName(g, card)} arrive dégagé.`);
     return true;
   }

@@ -84,7 +84,21 @@ export type StaticAbility =
       unlessReveal?: string;
       /** Overgrown Tomb : dégagé si l'on paie ce nombre de points de vie. */
       unlessLife?: number;
+      /** Port Town : dégagé si l'on révèle un terrain d'un de ces types (Plains, Island). */
+      unlessRevealLand?: string[];
+      /** Bountiful Promenade : dégagé si l'on a au moins ce nombre d'adversaires. */
+      unlessOpponents?: number;
+      /** Arena of Glory, Luxury Suite… : dégagé si les adversaires contrôlent au moins ce nombre de terrains. */
+      unlessOpponentLands?: number;
+      /** Dragonskull Summit : dégagé si l'on contrôle un terrain d'un de ces types (Swamp, Mountain). */
+      unlessControl?: string[];
+      /** Blackcleave Cliffs : dégagé si l'on contrôle au plus ce nombre d'autres terrains. */
+      unlessLandsAtMost?: number;
+      /** Deserted Beach : dégagé si l'on contrôle au moins ce nombre d'autres terrains. */
+      unlessLandsAtLeast?: number;
     }
+  /** Aesi, Azusa : « You may play an additional land on each of your turns. » */
+  | { kind: "extraLandPlays"; count: number }
   /**
    * « ~ doesn't untap during your untap step » (Traxos : `entersTapped`, « enters tapped and doesn't untap… ») ;
    * `attached` : « Enchanted creature doesn't untap during its controller's untap step » (Claustrophobia).
@@ -403,6 +417,30 @@ export function parseStaticLine(line: string): StaticAbility | null {
     const n = NUMBER_WORDS[m[1]!.toLowerCase()] ?? parseInt(m[1]!, 10);
     if (Number.isInteger(n)) return { kind: "entersTapped", unlessBasics: n };
   }
+  if ((m = /^~ enters tapped unless you control an? (\w+)(?:,? or an? (\w+))?$/i.exec(l)) && !/^(?:land|creature|permanent)$/i.test(m[1]!)) {
+    const cap = (w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+    return { kind: "entersTapped", unlessControl: [m[1]!, m[2]].filter((w): w is string => !!w).map(cap) };
+  }
+  if ((m = /^~ enters tapped unless you control (\w+) or (fewer|more) other lands$/i.exec(l))) {
+    const n = NUMBER_WORDS[m[1]!.toLowerCase()] ?? parseInt(m[1]!, 10);
+    if (Number.isInteger(n)) return m[2]!.toLowerCase() === "fewer" ? { kind: "entersTapped", unlessLandsAtMost: n } : { kind: "entersTapped", unlessLandsAtLeast: n };
+  }
+  if ((m = /^you may play (an|one|two|three) additional lands? on each of your turns$/i.exec(l))) {
+    const n = m[1]!.toLowerCase() === "an" ? 1 : NUMBER_WORDS[m[1]!.toLowerCase()];
+    if (n) return { kind: "extraLandPlays", count: n };
+  }
+  if ((m = /^as ~ enters, you may reveal an? (\w+) or (\w+) card from your hand\. if you don't, (?:~|it) enters tapped$/i.exec(l))) {
+    const cap = (w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+    return { kind: "entersTapped", unlessRevealLand: [cap(m[1]!), cap(m[2]!)] };
+  }
+  if ((m = /^~ enters tapped unless you have (\w+) or more opponents$/i.exec(l))) {
+    const n = NUMBER_WORDS[m[1]!.toLowerCase()] ?? parseInt(m[1]!, 10);
+    if (Number.isInteger(n)) return { kind: "entersTapped", unlessOpponents: n };
+  }
+  if ((m = /^~ enters tapped unless your opponents control (\w+) or more lands$/i.exec(l))) {
+    const n = NUMBER_WORDS[m[1]!.toLowerCase()] ?? parseInt(m[1]!, 10);
+    if (Number.isInteger(n)) return { kind: "entersTapped", unlessOpponentLands: n };
+  }
   if ((m = /^as ~ enters, you may reveal an? (\w+) card from your hand\. if you don't, (?:~|it) enters tapped$/i.exec(l))) {
     return { kind: "entersTapped", unlessReveal: m[1]!.charAt(0).toUpperCase() + m[1]!.slice(1).toLowerCase() };
   }
@@ -719,6 +757,11 @@ export function entersUntappedChoice(g: GameState, playerId: PlayerId, card: Car
     const possible = g.players[playerId]!.zones.hand.some((id) => id !== card.instanceId && typeLineHasCreatureType(handTypeLine(g, id), g.cardData[g.cards[id]!.cardId]?.oracleText ?? "", subtype));
     return { reveal: subtype, possible };
   }
+  if (s.unlessRevealLand) {
+    const types = s.unlessRevealLand;
+    const possible = g.players[playerId]!.zones.hand.some((id) => id !== card.instanceId && types.some((t) => new RegExp(`\\b${t}\\b`).test(handTypeLine(g, id))));
+    return { reveal: types.join(" ou "), possible };
+  }
   if (s.unlessLife) return { life: s.unlessLife, possible: g.players[playerId]!.life >= s.unlessLife };
   return null;
 }
@@ -760,6 +803,17 @@ export function castRestriction(g: GameState, playerId: PlayerId, typeLine: stri
     }
   }
   return null;
+}
+
+/** Nombre de terrains que ce joueur peut jouer ce tour (1 + Aesi, Azusa… + Explore). */
+export function landPlaysAllowed(g: GameState, playerId: PlayerId): number {
+  const player = g.players[playerId]!;
+  let n = 1;
+  for (const id of player.zones.battlefield) {
+    for (const s of staticsOf(g, g.cards[id]!)) if (s.kind === "extraLandPlays") n += s.count;
+  }
+  if (player.extraLands?.turn === g.turn.number) n += player.extraLands.count;
+  return n;
 }
 
 /** Un permanent empêche-t-il ce joueur de jouer des terrains (Aggressive Mining) ? */
