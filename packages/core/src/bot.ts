@@ -102,6 +102,8 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
     case "main2": {
       const play = firstValid(g, botId, mainPhaseCandidates(g, botId));
       if (play) return play;
+      const crew = g.turn.step === "main1" ? crewAction(g, botId) : null;
+      if (crew) return crew;
       return { type: "nextStep", to: g.turn.step === "main1" ? "declareAttackers" : "cleanup" };
     }
     case "declareAttackers":
@@ -126,6 +128,33 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
     default:
       return { type: "nextStep" };
   }
+}
+
+/**
+ * Avant d'attaquer, pilote un Véhicule qui pourrait attaquer avec des
+ * créatures qui, elles, ne le peuvent pas (mal d'invocation, défenseur).
+ */
+function crewAction(g: GameState, botId: PlayerId): GameAction | null {
+  const mine = g.players[botId]!.zones.battlefield.map((id) => g.cards[id]!);
+  const idle = mine.filter((c) => isCreature(g, c) && !c.tapped && !canAttack(g, c));
+  for (const vehicle of mine) {
+    if (vehicle.crewed || vehicle.tapped || isCreature(g, vehicle) || (vehicle.summoningSick && !hasKeyword(g, vehicle, "Haste"))) continue;
+    const index = abilitiesOf(g.cardData[vehicle.cardId], vehicle.faceIndex).activated.findIndex((a) => a.cost.crew !== undefined);
+    if (index < 0) continue;
+    const needed = abilitiesOf(g.cardData[vehicle.cardId], vehicle.faceIndex).activated[index]!.cost.crew!;
+    const crew: CardInstanceId[] = [];
+    let power = 0;
+    for (const c of [...idle].sort((a, b) => creatureStats(g, b).power - creatureStats(g, a).power)) {
+      if (power >= needed) break;
+      if (creatureStats(g, c).power <= 0) continue;
+      crew.push(c.instanceId);
+      power += creatureStats(g, c).power;
+    }
+    if (power < needed) continue;
+    const action: GameAction = { type: "activateAbility", cardId: vehicle.instanceId, index, crew };
+    if (applyAction(g, { actorId: botId, action }).ok) return action;
+  }
+  return null;
 }
 
 /** Le premier coup accepté par le moteur parmi les candidats. */

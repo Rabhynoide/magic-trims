@@ -84,7 +84,17 @@ function faceOf(g: GameState, card: CardInstance) {
 }
 
 export function isCreature(g: GameState, card: CardInstance): boolean {
-  return !card.faceDown ? /\bCreature\b/.test(faceOf(g, card).typeLine) : true;
+  return !card.faceDown ? !!card.crewed || /\bCreature\b/.test(faceOf(g, card).typeLine) : true;
+}
+
+/**
+ * La ligne de type d'un permanent, avec « Creature » quand c'est un Véhicule
+ * piloté (« Artifact — Vehicle » → « Artifact Creature — Vehicle »).
+ */
+export function crewedTypeLine(typeLine: string, card: Pick<CardInstance, "crewed">): string {
+  if (!card.crewed || /\bCreature\b/.test(typeLine)) return typeLine;
+  const dash = typeLine.indexOf("—");
+  return dash < 0 ? `${typeLine.trimEnd()} Creature` : `${typeLine.slice(0, dash).trimEnd()} Creature ${typeLine.slice(dash)}`;
 }
 
 /**

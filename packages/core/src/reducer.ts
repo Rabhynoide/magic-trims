@@ -56,6 +56,7 @@ import {
   doesntUntap,
   entersTapped,
   entersTappedStatic,
+  entersWithCounters,
   landPlaysAllowed,
   entersUntappedChoice,
   hasNoMaxHandSize,
@@ -79,7 +80,7 @@ import {
   legendRuleApplies,
   enterAsCopyOf,
 } from "./statics.js";
-import { canAttack, canBlock, cantAttack, cantAttackPlayer, cantBlock, unblockableBy, colorsOf, creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatKeyword, type CombatState } from "./combat.js";
+import { canAttack, canBlock, cantAttack, cantAttackPlayer, cantBlock, unblockableBy, colorsOf, creatureStats, crewedTypeLine, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatKeyword, type CombatState } from "./combat.js";
 import { MAX_HAND_SIZE, STEP_LABELS, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
 import {
   HIDDEN_ORDERED_ZONES,
@@ -683,10 +684,9 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       cast.chapter = chapter;
     }
     if (aura) cast.targets = [{ ...chosen[0]! }];
-    if (effects) {
-      cast.targets = effects.targets.length > 0 ? chosen.map((t) => ({ ...t })) : [];
-      if (x !== undefined) cast.xValue = xValue;
-    }
+    if (effects) cast.targets = effects.targets.length > 0 ? chosen.map((t) => ({ ...t })) : [];
+    // Aussi pour un permanent : « enters with X +1/+1 counters on it ».
+    if (x !== undefined && (effects || xValue > 0)) cast.xValue = xValue;
     emitTargeted(g, cast);
     const paid = [payment.spent.length > 0 ? formatMana(payment.spent) : "rien", payment.life + lifeX > 0 ? `${payment.life + lifeX} PV` : ""]
       .filter(Boolean)
@@ -916,8 +916,8 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     log(g, actor.id, targets.length > 0 ? `${actor.name} vise ${targets.map((t) => targetName(g, t)).join(", ")} avec la capacité de ${ability.sourceName}.` : `${actor.name} ne choisit aucune cible pour la capacité de ${ability.sourceName}.`);
   },
 
-  activateAbility(g, actor, { cardId, index, targets, sacrifice, color, exile }) {
-    activateAbility(g, actor, cardId, index, targets ?? [], sacrifice, color, exile);
+  activateAbility(g, actor, { cardId, index, targets, sacrifice, color, exile, crew }) {
+    activateAbility(g, actor, cardId, index, targets ?? [], sacrifice, color, exile, crew);
   },
 
   decideOptional(g, actor, { cardId, accept, choice, x }) {
@@ -1286,6 +1286,13 @@ export function moveCardTo(
       emit(g, { type: "lore", cardId: card.instanceId, from: start - 1, to: start });
     }
     delete card.chapter;
+    // « This Vehicle enters with X +1/+1 counters on it » : X est la valeur payée en le lançant (0 sinon).
+    if (!card.faceDown && g.settings.enforceRules) {
+      for (const { counter, count } of entersWithCounters(data, card.faceIndex)) {
+        const n = count === "X" ? (from === "stack" ? (card.xValue ?? 0) : 0) : count;
+        if (n > 0) card.counters[counter] = (card.counters[counter] ?? 0) + n;
+      }
+    }
   }
   if (from === "stack" && to !== "stack") {
     delete card.targets;
@@ -1312,6 +1319,7 @@ export function moveCardTo(
     delete card.damage;
     delete card.deathtouched;
     delete card.ptBoost;
+    delete card.crewed;
     delete card.grants;
     delete card.grantsUntil;
     delete card.grantedTriggers;
@@ -2077,6 +2085,7 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
       devotion: a === "devotion" || a === "-devotion" ? devotion() : 0,
       count: (filter, all) => (all ? allMatching(filter) : controlledMatching(filter)).length,
       quantity: (q) => {
+        if ("counters" in q) return self?.counters[q.counters] ?? 0;
         if ("greatest" in q) return Math.max(0, ...allMatching(q.filter).filter((c) => isCreature(g, c)).map((c) => creatureStats(g, c)[q.greatest]));
         if (q.of === "self") return self ? Math.max(0, creatureStats(g, self)[q.stat]) : 0;
         return Math.max(0, statsAtStart[q.of]?.[q.stat] ?? 0);
@@ -2933,6 +2942,12 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         if (self && n > 0) dealt += dealDamage(g, sourceName, { kind: "player", id: caster.id }, n, damageFrom);
         break;
       }
+      case "crewed":
+        if (self?.zone === "battlefield" && !self.crewed) {
+          self.crewed = true;
+          log(g, null, `${cardName(g, self)} devient une créature-artefact jusqu'à la fin du tour.`);
+        }
+        break;
       case "untapSelf":
         if (self?.zone === "battlefield" && self.tapped) {
           untap(g, self);
@@ -3922,6 +3937,7 @@ function activateAbility(
   sacrificeId: CardInstanceId | undefined,
   color: ManaType | undefined,
   exileIds: CardInstanceId[] = [],
+  crewIds: CardInstanceId[] = [],
 ): void {
   if (!g.settings.enforceRules) throw new ActionError("L'hôte n'applique pas les règles : gère cette capacité à la main.");
   const card = getCard(g, cardId);
@@ -3980,6 +3996,21 @@ function activateAbility(
       throw new ActionError(`Il faut exiler ${count} ${count > 1 ? label : graveyardLabel(filter)}.`);
     }
   }
+  // Équipage : d'autres créatures dégagées qu'on contrôle, de force totale au moins N (le mal d'invocation n'empêche pas de piloter).
+  let crew: CardInstance[] = [];
+  if (cost.crew !== undefined) {
+    const ids = [...new Set(crewIds)];
+    if (ids.length !== crewIds.length) throw new ActionError("Chaque créature ne pilote qu'une fois.");
+    crew = ids.map((id) => getCard(g, id));
+    for (const c of crew) {
+      if (c.instanceId === card.instanceId || c.zone !== "battlefield" || c.controllerId !== actor.id || !isCreature(g, c)) {
+        throw new ActionError(`${cardName(g, c)} ne peut pas piloter ${name} : il faut d'autres créatures que tu contrôles.`);
+      }
+      if (c.tapped) throw new ActionError(`${cardName(g, c)} est déjà engagé.`);
+    }
+    const power = crew.reduce((n, c) => n + Math.max(0, creatureStats(g, c).power), 0);
+    if (power < cost.crew) throw new ActionError(`Équipage ${cost.crew} : il faut engager des créatures de force totale ${cost.crew} ou plus (ici ${power}).`);
+  }
   const specs = ability.effects.targets;
   if (targets.length !== specs.length && !(targets.length >= requiredTargets(specs) && targets.length < specs.length)) {
     throw new ActionError(`Choisis ${specs.map((t) => `une cible (${t.label})`).join(", puis ")}.`);
@@ -3999,6 +4030,7 @@ function activateAbility(
     : cost.mana;
   const paid = manaCost ? payMana(g, actor, manaCost, 0, 0, cost.tap ? card.instanceId : undefined, `activer ${name}`, asSpell) : null;
   if (cost.tap) card.tapped = true;
+  for (const c of crew) c.tapped = true;
   if (cost.life > 0) payLife(g, actor, cost.life);
   if (cost.loyalty !== undefined) setCounter(card, "loyauté", (card.counters["loyauté"] ?? 0) + cost.loyalty);
   if (ability.oncePerTurn) card.usedAbilities = { turn: g.turn.number, indices: [...used, usedKey] };
@@ -4007,6 +4039,7 @@ function activateAbility(
     cost.tap ? "en l'engageant" : "",
     cost.life > 0 ? `${cost.life} PV` : "",
     cost.loyalty !== undefined ? `${cost.loyalty > 0 ? "+" : ""}${cost.loyalty} loyauté` : "",
+    crew.length > 0 ? `en engageant ${crew.map((c) => cardName(g, c)).join(", ")}` : "",
   ].filter(Boolean);
   const sourceName = g.cardData[card.cardId]?.faces?.[card.faceIndex]?.name ?? g.cardData[card.cardId]?.name ?? name;
   const stackAbility = {
@@ -4260,7 +4293,7 @@ export function cardManaOptions(g: GameState, card: CardInstance): ManaType[][] 
 function currentTypeLine(g: GameState, card: CardInstance): string {
   const data = g.cardData[card.cardId];
   if (!data) return "";
-  return data.faces?.[card.faceIndex]?.typeLine ?? data.typeLine;
+  return crewedTypeLine(data.faces?.[card.faceIndex]?.typeLine ?? data.typeLine, card);
 }
 
 function assertActive(g: GameState, actor: PlayerState): void {
@@ -5051,6 +5084,7 @@ function enterStep(g: GameState, step: TurnStep): void {
         delete card.damage;
         delete card.deathtouched;
         delete card.ptBoost;
+        delete card.crewed;
         delete card.grants;
         delete card.grantedTriggers;
       }

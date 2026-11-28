@@ -12,6 +12,7 @@ import {
   stackTrigger,
   flattenModes,
   creatureStats,
+  crewedTypeLine,
   hasKeyword,
   stateFromView,
   permanentLabel,
@@ -350,7 +351,7 @@ function canTargetCard(view: GameView, spec: TargetSpec, card: CardView, sourceI
   if (!id || id === sourceId) return false;
   const data = card.hidden ? undefined : cardData(view, card);
   const typeLine =
-    card.hidden || card.faceDown ? "Creature" : (data?.faces?.[(card as VisibleCardView).faceIndex]?.typeLine ?? data?.typeLine ?? "");
+    card.hidden || card.faceDown ? "Creature" : crewedTypeLine(data?.faces?.[(card as VisibleCardView).faceIndex]?.typeLine ?? data?.typeLine ?? "", card as VisibleCardView);
   if (card.zone === "battlefield") {
     if (!spec.permanent) return false;
     const g = stateFromView(view);

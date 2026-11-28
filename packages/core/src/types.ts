@@ -194,6 +194,8 @@ export interface CardInstance {
   deathtouched?: boolean;
   /** Planeswalker arrivé avec ses marqueurs de loyauté : il meurt quand il n'en a plus. */
   hasLoyalty?: boolean;
+  /** Véhicule piloté (« Crew N ») : une créature-artefact jusqu'à la fin du tour. */
+  crewed?: boolean;
   /** Bonus de force et d'endurance jusqu'à la fin du tour (+3/+3 d'une Croissance gigantesque…). */
   ptBoost?: { power: number; toughness: number };
   /** Contrôle pris « until end of turn » (Dihada −11, Threaten) : le joueur qui le récupère au nettoyage. */

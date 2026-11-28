@@ -112,6 +112,8 @@ export type GameAction =
       sacrifice?: CardInstanceId;
       /** Les cartes de son cimetière exilées pour le coût (Kethis). */
       exile?: CardInstanceId[];
+      /** Équipage : les créatures engagées pour piloter le Véhicule. */
+      crew?: CardInstanceId[];
       /** La couleur pour « Add one mana of any color ». */
       color?: ManaType;
     }
