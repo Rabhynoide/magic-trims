@@ -54,6 +54,7 @@ import {
   doesntUntap,
   entersTapped,
   entersTappedStatic,
+  landPlaysAllowed,
   entersUntappedChoice,
   hasNoMaxHandSize,
   maxOneCreature,
@@ -429,7 +430,9 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const faceIndex = face ?? 0;
     if (!/\bLand\b/.test(faceTypeLine(g, card, faceIndex))) throw new ActionError(`${cardName(g, card)} n'est pas un terrain.`);
     assertSorceryTiming(g, actor, "jouer un terrain");
-    if (actor.landsPlayed >= 1) throw new ActionError("Tu as déjà joué un terrain ce tour.");
+    if (actor.landsPlayed >= (g.settings.enforceRules ? landPlaysAllowed(g, actor.id) : 1)) {
+      throw new ActionError(actor.landsPlayed > 1 ? `Tu as déjà joué ${actor.landsPlayed} terrains ce tour.` : "Tu as déjà joué un terrain ce tour.");
+    }
     if (g.settings.enforceRules && cantPlayLands(g, actor.id)) throw new ActionError("Un de tes permanents t'empêche de jouer des terrains.");
     const what = chooseTypeOf(g.cardData[card.cardId], faceIndex);
     const chosen = what ? checkChosenType(what, chosenType) : undefined;
@@ -465,8 +468,10 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const card = getCard(g, cardId);
     const fromCommand = card.zone === "command" && card.isCommander;
     // Rebond, cascade : lancée depuis l'exil, avec la permission notée sur la carte.
-    const permission = (card.zone === "exile" || card.zone === "graveyard") && card.ownerId === actor.id && exilePermissionHolds(g, card) ? card.castPermission : undefined;
-    if (card.ownerId !== actor.id || (card.zone !== "hand" && !fromCommand && !permission)) {
+    // Etali : la permission peut aller à un autre joueur que le propriétaire de la carte.
+    const permitted = (card.castPermission?.caster ?? card.ownerId) === actor.id;
+    const permission = (card.zone === "exile" || card.zone === "graveyard") && permitted && exilePermissionHolds(g, card) ? card.castPermission : undefined;
+    if ((card.ownerId !== actor.id && !permission) || (card.zone !== "hand" && !fromCommand && !permission)) {
       throw new ActionError("Lance un sort de ta main ou ton commandant depuis la zone de commandement.");
     }
     if ((permission?.free || permission?.foretell) && (evoke || alternative)) throw new ActionError("Ce sort se lance sans payer son coût : pas d'évocation ni de coût alternatif.");
@@ -583,7 +588,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     actor.spellsCast = { turn: g.turn.number, count: castThisTurn + 1 };
     actor.castNames = [...(actor.castNames ?? []), faceData?.name ?? data.name];
     const fromHand = card.zone === "hand";
-    const cast = moveCardTo(g, cardId, "stack", "top");
+    const cast = moveCardTo(g, cardId, "stack", "top", { controllerId: actor.id });
     if (fromHand) cast.castFromHand = true;
     const castCost = faceData?.manaCost ?? data.manaCost;
     const record: CastRecord = {
@@ -593,6 +598,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       manaValue: (faceData ? manaValueOfCost(faceData.manaCost) : data.manaValue) + xValue * (castCost.match(/\{X\}/g)?.length ?? 0),
       fromHand,
       hasX: /\{X\}/.test(castCost),
+      ...(/^Changeling\b/m.test(faceData?.oracleText ?? data.oracleText) ? { changeling: true } : {}),
     };
     const history = actor.castHistory?.turn === g.turn.number ? actor.castHistory.spells : [];
     actor.castHistory = { turn: g.turn.number, spells: [...history, record] };
@@ -1697,7 +1703,7 @@ function flushTriggers(g: GameState): boolean {
         instance.ability.eventDataId = ev.dataId;
         instance.ability.eventFaceIndex = ev.faceIndex;
       }
-    } else if (ev.type === "attacks" || ev.type === "enters" || ev.type === "combatDamage" || ev.type === "playerDamage") {
+    } else if (ev.type === "attacks" || ev.type === "enters" || ev.type === "combatDamage" || ev.type === "playerDamage" || ev.type === "cast") {
       instance.ability.eventCardId = ev.cardId;
     } else if (ev.type === "targeted") {
       instance.ability.eventCardId = ev.spellId;
@@ -1915,6 +1921,35 @@ function opponentsOf(g: GameState, playerId: PlayerId): PlayerState[] {
   return g.turnOrder
     .map((id) => g.players[id]!)
     .filter((p) => !p.hasConceded && p.id !== playerId && !areTeammates(g, p.id, playerId));
+}
+
+/** Jetons prédéfinis (Treasure, Food, Clue, Blood) créés sous le contrôle du joueur. */
+function createNamedTokens(g: GameState, owner: PlayerState, name: string, n: number, tapped: boolean): void {
+  if (n <= 0) return;
+  const id = `token:${name}`;
+  g.cardData[id] ??= {
+    id,
+    oracleId: id,
+    name,
+    manaCost: "",
+    manaValue: 0,
+    typeLine: `Token Artifact — ${name}`,
+    oracleText: NAMED_TOKENS[name] ?? "",
+    colors: [],
+    colorIdentity: [],
+    keywords: [],
+    commanderLegality: "legal",
+    set: "tok",
+    collectorNumber: "0",
+  };
+  for (let i = 0; i < n; i++) {
+    const instance = newInstance(g, id, owner.id, "battlefield");
+    instance.isToken = true;
+    instance.tapped = tapped;
+    owner.zones.battlefield.push(instance.instanceId);
+    emitEnters(g, instance);
+  }
+  log(g, null, `${owner.name} crée ${n > 1 ? `${n} jetons` : "un jeton"} ${name}.`);
 }
 
 /** Applique les effets reconnus d'un sort qui se résout. Les cibles devenues invalides sont ignorées. */
@@ -2213,6 +2248,12 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         log(g, null, `${caster.name} met ${cardName(g, entered)} sur le champ de bataille${effect.haste ? " avec la célérité" : ""}.`);
         break;
       }
+      case "extraLand": {
+        const prev = caster.extraLands?.turn === g.turn.number ? caster.extraLands.count : 0;
+        caster.extraLands = { turn: g.turn.number, count: prev + effect.count };
+        log(g, null, `${caster.name} peut jouer ${effect.count === 1 ? "un terrain supplémentaire" : `${effect.count} terrains supplémentaires`} ce tour-ci.`);
+        break;
+      }
       case "playFromGraveyard": {
         const c = card(effect.target);
         if (!c || c.zone !== "graveyard") break;
@@ -2429,33 +2470,7 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
       }
       case "namedToken": {
         const n = amountOf(effect.count);
-        const text = NAMED_TOKENS[effect.name] ?? "";
-        const id = `token:${effect.name}`;
-        g.cardData[id] ??= {
-          id,
-          oracleId: id,
-          name: effect.name,
-          manaCost: "",
-          manaValue: 0,
-          typeLine: `Token Artifact — ${effect.name}`,
-          oracleText: text,
-          colors: [],
-          colorIdentity: [],
-          keywords: [],
-          commanderLegality: "legal",
-          set: "tok",
-          collectorNumber: "0",
-        };
-        for (const owner of effect.who ? whoOf(effect.who) : [caster]) {
-          for (let i = 0; i < n; i++) {
-            const instance = newInstance(g, id, owner.id, "battlefield");
-            instance.isToken = true;
-            instance.tapped = effect.tapped;
-            owner.zones.battlefield.push(instance.instanceId);
-            emitEnters(g, instance);
-          }
-          log(g, null, `${owner.name} crée ${n > 1 ? `${n} jetons` : "un jeton"} ${effect.name}.`);
-        }
+        for (const owner of effect.who ? whoOf(effect.who) : [caster]) createNamedTokens(g, owner, effect.name, n, effect.tapped);
         break;
       }
       case "manaBonus":
@@ -2661,14 +2676,18 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         break;
       }
       case "cascade": {
-        const spell = ability ? g.cards[ability.sourceId] : undefined;
-        const mv = spell ? (g.cardData[spell.cardId]?.manaValue ?? 0) : 0;
+        // Jodah : la valeur de mana du sort lancé (X compris), notée au lancement.
+        const spellId = effect.ofEvent ? ability?.eventCardId : ability?.sourceId;
+        const spell = spellId ? g.cards[spellId] : undefined;
+        const record = effect.ofEvent ? caster.castHistory?.spells.find((r) => r.cardId === spellId) : undefined;
+        const mv = record ? record.manaValue : spell ? (g.cardData[spell.cardId]?.manaValue ?? 0) : 0;
         const exiled: CardInstanceId[] = [];
         let hit: CardInstance | undefined;
         while (caster.zones.library.length > 0) {
           const c = moveCardTo(g, caster.zones.library[0]!, "exile", "top");
           const d = g.cardData[c.cardId];
-          if (d && !/\bLand\b/.test(d.faces?.[0]?.typeLine ?? d.typeLine) && d.manaValue < mv) {
+          const typeLine = d?.faces?.[0]?.typeLine ?? d?.typeLine ?? "";
+          if (d && !/\bLand\b/.test(typeLine) && (!effect.legendary || /\bLegendary\b/.test(typeLine)) && d.manaValue < mv) {
             hit = c;
             break;
           }
@@ -2677,9 +2696,41 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         g.rngState = shuffleInPlace(exiled, g.rngState);
         for (const id of exiled) moveCardTo(g, id, "library", "bottom");
         if (hit) {
-          hit.castPermission = { free: true, turn: g.turn.number, ignoreTiming: true, reason: "cascade", ...(spell ? { whileOnStack: spell.instanceId } : {}) };
-          log(g, null, `Cascade : ${caster.name} exile ${cardName(g, hit)} (et ${plural(exiled.length, "autre carte", "autres cartes")} mises dessous) et peut la lancer sans payer son coût.`);
-        } else log(g, null, `Cascade : aucune carte trouvée.`);
+          const reason = effect.ofEvent ? sourceName : "cascade";
+          hit.castPermission = { free: true, turn: g.turn.number, ignoreTiming: true, reason, ...(spell?.zone === "stack" ? { whileOnStack: spell.instanceId } : {}) };
+          log(g, null, `${effect.ofEvent ? sourceName : "Cascade"} : ${caster.name} exile ${cardName(g, hit)} (et ${plural(exiled.length, "autre carte", "autres cartes")} mises dessous) et peut la lancer sans payer son coût.`);
+        } else log(g, null, `${effect.ofEvent ? sourceName : "Cascade"} : aucune carte trouvée.`);
+        break;
+      }
+      case "digTop": {
+        const looked = caster.zones.library.slice(0, effect.count);
+        const chosen = (source.choices?.[effects.indexOf(effect)] ?? []).filter((id) => looked.includes(id));
+        const rest = looked.filter((id) => !chosen.includes(id));
+        for (const id of chosen) moveCardTo(g, id, "hand", "top");
+        if (effect.rest === "bottom") {
+          for (const id of rest) moveCardTo(g, id, "library", "bottom");
+        } else {
+          for (const id of rest) moveCardTo(g, id, "graveyard", "top");
+        }
+        const where = effect.rest === "bottom" ? "au-dessous de sa bibliothèque" : "au cimetière";
+        log(g, null, `${caster.name} ${effect.reveal ? "révèle" : "regarde"} ${plural(looked.length, "carte")} du dessus de sa bibliothèque, en prend ${chosen.length} et met le reste ${where}.`);
+        if (effect.treasurePerRest) createNamedTokens(g, caster, "Treasure", rest.length, false);
+        break;
+      }
+      case "exileTopEachCastFree": {
+        const exiled: string[] = [];
+        for (const pid of g.turnOrder) {
+          const p = g.players[pid]!;
+          if (p.hasConceded || p.zones.library.length === 0) continue;
+          const c = moveCardTo(g, p.zones.library[0]!, "exile", "top");
+          addRevealed(c, g.turnOrder);
+          exiled.push(cardName(g, c));
+          const d = g.cardData[c.cardId];
+          if (d && !/\bLand\b/.test(d.faces?.[0]?.typeLine ?? d.typeLine)) {
+            c.castPermission = { free: true, turn: g.turn.number, step: g.turn.step, ignoreTiming: true, reason: sourceName, caster: caster.id };
+          }
+        }
+        log(g, null, `${sourceName} : ${exiled.length > 0 ? `${exiled.join(", ")} exilée(s)` : "aucune carte exilée"} ; ${caster.name} peut lancer gratuitement les sorts parmi elles pendant cette étape.`);
         break;
       }
       case "defenderSacrifices": {
@@ -3121,18 +3172,23 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
       if (effect.count === "X") card.cardChoice.label = `Choisis ${count} ${what} de ton cimetière à mettre sur le champ de bataille`;
       return true;
     }
-    // Incandescent Soulstoke : une créature du type de sa main (facultatif).
+    // Incandescent Soulstoke : une créature du type de sa main ; Growth Spiral : un terrain (facultatif).
     if (effect.type === "putFromHand") {
+      if (effect.drawFirst && !card.drewFirst) {
+        drawCards(g, controller, effect.drawFirst);
+        card.drewFirst = true;
+      }
       const options = controller.zones.hand.filter((id) => {
         const d = g.cardData[g.cards[id]!.cardId];
         const t = d?.faces?.[0]?.typeLine ?? d?.typeLine ?? "";
-        return /\bCreature\b/.test(t) && typeLineHasCreatureType(t, d?.faces?.[0]?.oracleText ?? d?.oracleText ?? "", effect.subtype);
+        if (effect.land) return /\bLand\b/.test(t);
+        return /\bCreature\b/.test(t) && typeLineHasCreatureType(t, d?.faces?.[0]?.oracleText ?? d?.oracleText ?? "", effect.subtype ?? "");
       });
       if (options.length === 0) {
         card.choices = { ...(card.choices ?? {}), [index]: [] };
         continue;
       }
-      card.cardChoice = { index, options, min: 0, max: 1, label: `Choisis une créature ${effect.subtype} de ta main à mettre sur le champ de bataille` };
+      card.cardChoice = { index, options, min: 0, max: 1, label: effect.land ? "Tu peux choisir un terrain de ta main à mettre sur le champ de bataille" : `Choisis une créature ${effect.subtype} de ta main à mettre sur le champ de bataille` };
       return true;
     }
     // Cavalier of Thorns : un terrain parmi les cartes révélées.
@@ -3171,6 +3227,22 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
       }
       addRevealed(g.cards[top]!, [controller.id]);
       card.cardChoice = { index, options: [top], min: 0, max: 1, label: `Choisis ${data?.name ?? "le terrain"} pour le mettre sur le champ de bataille engagé (sinon il va dans ta main)` };
+      return true;
+    }
+    // Stock Up, Dihada −3 : les cartes à prendre parmi celles du dessus.
+    if (effect.type === "digTop") {
+      const looked = controller.zones.library.slice(0, effect.count);
+      for (const id of looked) addRevealed(g.cards[id]!, effect.reveal ? g.turnOrder : [controller.id]);
+      const options = effect.legendary ? looked.filter((id) => /\bLegendary\b/.test(currentTypeLine(g, g.cards[id]!))) : looked;
+      const max = effect.take === "any" ? options.length : Math.min(effect.take, options.length);
+      const min = effect.take === "any" ? 0 : max;
+      if (options.length === 0 || (min === options.length && max === options.length)) {
+        card.choices = { ...(card.choices ?? {}), [index]: options };
+        continue;
+      }
+      const what = effect.legendary ? "carte(s) légendaire(s)" : plural(max, "carte");
+      const rest = effect.rest === "bottom" ? "au-dessous de ta bibliothèque" : "au cimetière";
+      card.cardChoice = { index, options, min, max, label: effect.take === "any" ? `Choisis les ${what} à mettre dans ta main (le reste va ${rest})` : `Choisis ${what} à mettre dans ta main (le reste va ${rest})` };
       return true;
     }
     // Cream of the Crop : une des X cartes du dessus reste dessus.
@@ -3482,6 +3554,23 @@ function entersUntapped(g: GameState, card: CardInstance, choice: boolean): bool
     const basics = player.zones.battlefield.filter((id) => id !== card.instanceId && /\bBasic\b/.test(g.cardData[g.cards[id]!.cardId]?.typeLine ?? "")).length;
     return basics >= s.unlessBasics;
   }
+  if (s.unlessOpponents !== undefined) {
+    return g.turnOrder.filter((id) => id !== player.id && !g.players[id]!.hasConceded && !areTeammates(g, id, player.id)).length >= s.unlessOpponents;
+  }
+  if (s.unlessOpponentLands !== undefined) {
+    const lands = g.turnOrder
+      .filter((id) => id !== player.id && !g.players[id]!.hasConceded && !areTeammates(g, id, player.id))
+      .reduce((n, id) => n + g.players[id]!.zones.battlefield.filter((c) => /\bLand\b/.test(currentTypeLine(g, g.cards[c]!))).length, 0);
+    return lands >= s.unlessOpponentLands;
+  }
+  if (s.unlessControl) {
+    const types = s.unlessControl;
+    return player.zones.battlefield.some((id) => id !== card.instanceId && types.some((t) => new RegExp(`\\b${t}\\b`).test(currentTypeLine(g, g.cards[id]!))));
+  }
+  if (s.unlessLandsAtMost !== undefined || s.unlessLandsAtLeast !== undefined) {
+    const lands = player.zones.battlefield.filter((id) => id !== card.instanceId && /\bLand\b/.test(currentTypeLine(g, g.cards[id]!))).length;
+    return s.unlessLandsAtMost !== undefined ? lands <= s.unlessLandsAtMost : lands >= s.unlessLandsAtLeast!;
+  }
   if (!choice) return false;
   const offer = entersUntappedChoice(g, player.id, card, card.faceIndex);
   if (!offer?.possible) return false;
@@ -3491,7 +3580,8 @@ function entersUntapped(g: GameState, card: CardInstance, choice: boolean): bool
     return true;
   }
   if (offer.reveal) {
-    const shown = player.zones.hand.find((id) => id !== card.instanceId && typeLineHasCreatureType(g.cardData[g.cards[id]!.cardId]?.typeLine ?? "", g.cardData[g.cards[id]!.cardId]?.oracleText ?? "", offer.reveal!));
+    const lands = s.unlessRevealLand;
+    const shown = player.zones.hand.find((id) => id !== card.instanceId && (lands ? lands.some((t) => new RegExp(`\\b${t}\\b`).test(g.cardData[g.cards[id]!.cardId]?.typeLine ?? "")) : typeLineHasCreatureType(g.cardData[g.cards[id]!.cardId]?.typeLine ?? "", g.cardData[g.cards[id]!.cardId]?.oracleText ?? "", offer.reveal!)));
     if (shown) log(g, player.id, `${player.name} révèle ${cardName(g, g.cards[shown]!)} : ${cardName(g, card)} arrive dégagé.`);
     return true;
   }

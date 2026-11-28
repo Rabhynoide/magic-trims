@@ -116,10 +116,10 @@ describe("Déclencheurs « quand vous lancez un sort » filtrés : lecture", () 
     }
     // Traxos : « ne se dégage pas pendant votre étape de dégagement » est géré aussi (famille 23).
     expect(cardSupport(real("Traxos, Scourge of Kroog")).level).toBe("full");
-    // Jodah : la condition est lue, l'effet (cascade légendaire) reste à faire.
+    // Jodah : la condition est lue ; l'effet (cascade légendaire) est géré depuis la famille 8.
     const jodah = real("Jodah, the Unifier");
     expect(parseTriggerCondition("you cast a legendary spell from your hand")).not.toBeNull();
-    expect(cardSupport(jodah).level).not.toBe("full");
+    expect(cardSupport(jodah).level).toBe("full");
   });
 });
 

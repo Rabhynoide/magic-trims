@@ -57,6 +57,8 @@ export interface CastRecord {
   fromHand: boolean;
   /** « with {X} in its mana cost ». */
   hasX: boolean;
+  /** Changelin : un sort de chaque type de créature (« Whenever you cast an Elemental spell »). */
+  changeling?: boolean;
 }
 
 export interface CardFace {
@@ -225,6 +227,8 @@ export interface CardInstance {
     reason: string;
     /** Les terrains aussi peuvent être joués ainsi (« You may play this card from your graveyard », Kethis). */
     lands?: boolean;
+    /** Le joueur qui peut la lancer, s'il n'est pas son propriétaire (Etali). */
+    caster?: PlayerId;
     /** Présage : à lancer pour ce coût à un tour ultérieur à `turn` (sans limite de durée). */
     foretell?: string;
   };
@@ -335,6 +339,8 @@ export interface PlayerState {
   castNames?: string[];
   /** Terrains joués ce tour (un seul par tour, règle 305.2). */
   landsPlayed: number;
+  /** Terrains supplémentaires accordés pour un tour (Explore). */
+  extraLands?: { turn: number; count: number };
   /** Réserve de mana ; elle se vide à la fin de chaque étape (règle 500.4). */
   manaPool: ManaPool;
   /** Mana qui ne sert qu'à certains sorts (Primal Beyond : les Élémentaux) ; vidé avec la réserve. */
