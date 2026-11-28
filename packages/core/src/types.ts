@@ -241,6 +241,8 @@ export interface CardInstance {
   };
   /** Lancé depuis l'exil après avoir été présagé (« If this spell was foretold »). */
   foretold?: boolean;
+  /** Palace Jailer : exilée jusqu'à ce qu'un adversaire de ce joueur devienne le monarque. */
+  exiledUntilMonarch?: PlayerId;
   /** Hors phase avec le permanent auquel elle est attachée (règle 702.26g) : revient avec lui, pas seule. */
   phasedOutIndirectly?: boolean;
   /** Provoquée par ces joueurs (jusqu'à leur prochain tour) : doit attaquer, et un autre joueur si possible. */
@@ -364,8 +366,8 @@ export interface PlayerState {
   extraLands?: { turn: number; count: number };
   /** Réserve de mana ; elle se vide à la fin de chaque étape (règle 500.4). */
   manaPool: ManaPool;
-  /** Mana qui ne sert qu'à certains sorts (Primal Beyond : les Élémentaux) ; vidé avec la réserve. */
-  restrictedMana?: { mana: ManaType; subtype: string; abilities: boolean }[];
+  /** Mana qui ne sert qu'à certains sorts (Primal Beyond : les Élémentaux ; Vibranium : les artefacts) ; vidé avec la réserve. */
+  restrictedMana?: { mana: ManaType; subtype: string; abilities: boolean; anyAbility?: boolean }[];
   /** Arrêts pour répondre pendant le tour des autres (toutes les étapes clés par défaut). */
   priorityStops?: PriorityStops;
   hasConceded: boolean;
@@ -452,6 +454,11 @@ export interface GameState {
   delayedReturns?: { cardId: CardInstanceId; playerId: PlayerId }[];
   /** Myriade : les jetons exilés à la fin du combat. */
   endOfCombatExile?: CardInstanceId[];
+  /**
+   * Le monarque (règle 724) : il pioche une carte au début de son étape de fin, et le
+   * joueur dont une créature lui inflige des blessures de combat le devient. Absent : personne.
+   */
+  monarch?: PlayerId;
   /**
    * Équipes. En chacun pour soi, chaque joueur est seul dans son équipe.
    * L'ordre des joueurs à l'intérieur d'une équipe suit l'ordre du tour.

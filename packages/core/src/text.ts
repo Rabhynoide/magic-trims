@@ -47,3 +47,6 @@ export function keywordList(text: string): string[] {
     .map((k) => k.trim().toLowerCase())
     .filter(Boolean);
 }
+
+/** Pseudo-mot-clé donné par un équipement, une aura ou un effet : « can't be blocked ». */
+export const CANT_BE_BLOCKED = "can't be blocked";

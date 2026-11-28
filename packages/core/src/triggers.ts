@@ -88,6 +88,8 @@ export type TriggerCondition =
       nontoken?: boolean;
       token?: boolean;
       types?: string[];
+      /** Nakia : « Whenever your commander enters » (un commandant dont vous êtes le propriétaire). */
+      commander?: boolean;
     }
   /** `batched` : « one or more … die » se déclenche une fois par action, quel que soit le nombre de morts. */
   | { on: "dies"; self: boolean; others: boolean; whose: Whose; batched?: boolean; subtype?: string; legendary?: boolean; nontoken?: boolean }
@@ -98,8 +100,11 @@ export type TriggerCondition =
   /** `enchanted` : « enchanted player's upkeep » (aura sur un joueur) ; `first` : « first upkeep each turn ». */
   | { on: "step"; step: "upkeep" | "draw" | "main1" | "beginCombat" | "end"; whose: Whose; enchanted?: boolean; first?: boolean }
   | ({ on: "cast"; whose: Whose; self?: boolean } & CastFilter)
-  /** « Whenever ~ attacks », « … blocks », « … attacks or blocks ». */
-  | { on: "combat"; attacks: boolean; blocks: boolean; anyCreature?: boolean; defender?: "you" }
+  /**
+   * « Whenever ~ attacks », « … blocks », « … attacks or blocks ». `defender` : le joueur attaqué
+   * (« attacks you », « attacks one of your opponents », « attacks the monarch ») ; `attached` : « equipped creature attacks ».
+   */
+  | { on: "combat"; attacks: boolean; blocks: boolean; anyCreature?: boolean; defender?: "you" | "opponent" | "monarch"; attached?: boolean }
   /** « Whenever you sacrifice a nontoken Elemental » : `subtype` (ou type), `nontoken`. */
   | { on: "sacrificed"; whose: Whose; subtype?: string; nontoken: boolean }
   /** Bronze Bombshell : « When a player other than ~'s owner controls it ». */
@@ -288,7 +293,8 @@ export interface TriggeredAbility {
   /** « This ability triggers only once each turn. » */
   oncePerTurn?: boolean;
   /** Condition vérifiée au déclenchement et à la résolution (« if an opponent controls more lands than you », Land Tax). */
-  onlyIf?: "opponentMoreLands" | "uniqueName";
+  /** `noMonarch` : « if there is no monarch » ; `defenderMonarch` : « if that player is the monarch » (le joueur attaqué). */
+  onlyIf?: "opponentMoreLands" | "uniqueName" | "noMonarch" | "defenderMonarch";
 }
 
 export interface PermanentAbilities {
@@ -399,6 +405,12 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
     return { on: "combat", attacks: what.includes("attacks"), blocks: what.includes("blocks") };
   }
   if (/^~ exploits a creature$/i.test(t)) return { on: "exploits" };
+  // Monarque : « Whenever ~ attacks the monarch » (capacité donnée par Okoye), « equipped creature attacks the monarch » (The Spear of Bashenga).
+  if ((m = /^(~|equipped creature) attacks the monarch$/i.exec(t))) {
+    return { on: "combat", attacks: true, blocks: false, defender: "monarch", ...(m[1] === "~" ? {} : { anyCreature: true, attached: true }) };
+  }
+  if (/^a creature attacks one of your opponents$/i.test(t)) return { on: "combat", attacks: true, blocks: false, anyCreature: true, defender: "opponent" };
+  if (/^your commander enters(?: the battlefield)?$/i.test(t)) return { on: "enters", self: false, another: false, creature: false, whose: "you", commander: true };
   if (/^~ becomes untapped$/i.test(t)) return { on: "untapped" };
   if (/^a creature attacks you(?: or a planeswalker you control)?$/i.test(t)) return { on: "combat", attacks: true, blocks: false, anyCreature: true, defender: "you" };
   if (/^a player other than ~'s owner controls it$/i.test(t)) return { on: "controlledByNonOwner" };
@@ -727,6 +739,17 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         onlyIf = "opponentMoreLands";
         body = moreLands[1]!;
       }
+      // Monarque : « if there is no monarch » (M'Baku, The Spear of Bashenga), « if that player is the monarch » (M'Baku).
+      const noMonarch = /^if there is no monarch, (.+)$/i.exec(body);
+      if (noMonarch) {
+        onlyIf = "noMonarch";
+        body = noMonarch[1]!;
+      }
+      const defenderMonarch = /^if that player is the monarch, (.+)$/i.exec(body);
+      if (defenderMonarch && condition?.on === "combat" && condition.defender) {
+        onlyIf = "defenderMonarch";
+        body = defenderMonarch[1]!;
+      }
       // Guardian Project : « if it doesn't have the same name as another creature you control or a creature card in your graveyard ».
       const unique = /^if it doesn't have the same name as another creature you control or a creature card in your graveyard, (.+)$/i.exec(body);
       if (unique && condition?.on === "enters") {
@@ -832,6 +855,10 @@ export function conditionMatches(
       if (c.on !== "enters") return false;
       if (c.ifCast && !event.cast) return false;
       if (c.self) return event.cardId === source.instanceId;
+      if (c.commander) {
+        const entered = g.cards[event.cardId];
+        return Boolean(entered?.isCommander && entered.zone === "battlefield" && entered.ownerId === source.controllerId);
+      }
       if (c.orSelf && event.cardId === source.instanceId) return true;
       if (c.another && event.cardId === source.instanceId) return false;
       if (c.subtype || c.minPower !== undefined || c.legendary || c.nontoken || c.token || c.types) {
@@ -884,7 +911,14 @@ export function conditionMatches(
     case "attacks":
     case "blocks":
       if (c.on !== "combat" || !(event.type === "attacks" ? c.attacks : c.blocks)) return false;
-      if (c.defender === "you" && g.combat?.attackers[event.cardId] !== source.controllerId) return false;
+      if (c.defender) {
+        const attacked = g.combat?.attackers[event.cardId];
+        if (!attacked || event.type !== "attacks") return false;
+        if (c.defender === "you" && attacked !== source.controllerId) return false;
+        if (c.defender === "opponent" && !whoseMatches(g, "opponent", source.controllerId, attacked)) return false;
+        if (c.defender === "monarch" && attacked !== g.monarch) return false;
+      }
+      if (c.attached) return g.cards[source.instanceId]?.attachedTo === event.cardId;
       return c.anyCreature ? true : event.cardId === source.instanceId;
     case "sacrificed":
       if (c.on !== "sacrificed" || (c.nontoken && event.isToken)) return false;
@@ -974,6 +1008,9 @@ export function triggerConditionHolds(g: GameState, onlyIf: TriggeredAbility["on
     };
     return !player.zones.battlefield.some((id) => clash(id, "battlefield")) && !player.zones.graveyard.some((id) => clash(id, "graveyard"));
   }
+  if (onlyIf === "noMonarch") return !g.monarch;
+  // M'Baku : le joueur attaqué par la créature de l'événement est le monarque.
+  if (onlyIf === "defenderMonarch") return Boolean(eventCardId && g.monarch && g.combat?.attackers[eventCardId] === g.monarch);
   if (onlyIf === "opponentMoreLands") {
     const lands = (id: PlayerId) =>
       g.players[id]!.zones.battlefield.filter((c) => /\bLand\b/.test(g.cardData[g.cards[c]!.cardId]?.typeLine ?? "")).length;
