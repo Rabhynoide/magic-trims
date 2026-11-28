@@ -53,6 +53,8 @@ export interface GameView {
   turnOrder: PlayerId[];
   teams: PlayerId[][];
   archenemyId?: PlayerId;
+  /** Le monarque, s'il y en a un. */
+  monarch?: PlayerId;
   turn: GameState["turn"];
   priority: GameState["priority"];
   combat: GameState["combat"];
@@ -122,6 +124,7 @@ export function viewFor(g: GameState, viewerId: PlayerId): GameView {
     log: g.log.map((e) => ({ ...e })),
   };
   if (g.archenemyId) view.archenemyId = g.archenemyId;
+  if (g.monarch) view.monarch = g.monarch;
   return view;
 }
 

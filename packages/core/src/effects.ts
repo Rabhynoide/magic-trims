@@ -44,6 +44,8 @@ export interface TargetSpec {
   upTo?: boolean;
   /** « another target » : pas le permanent source de la capacité. */
   another?: boolean;
+  /** « … that player controls » : un permanent du joueur de l'événement (le joueur attaqué, pour The Spear of Bashenga). */
+  eventPlayer?: boolean;
 }
 
 export interface GraveyardFilter {
@@ -211,7 +213,10 @@ type EffectBase =
   /** Tyrant of Discord : l'adversaire sacrifie un permanent au hasard, et recommence tant que c'est un non-terrain. */
   | { type: "randomSacrificeLoop"; player: number }
   /** `returnAtEnd` : revient sous le contrôle de son propriétaire au début de sa prochaine étape de fin. */
-  | { type: "exile"; target: number; returnAtEnd?: boolean }
+  /** `untilMonarch` : Palace Jailer, l'exil dure jusqu'à ce qu'un adversaire du lanceur devienne le monarque. */
+  | { type: "exile"; target: number; returnAtEnd?: boolean; untilMonarch?: boolean }
+  /** « you become the monarch », « target opponent becomes the monarch » (règle 724). */
+  | { type: "monarch"; who: "you" | { target: number } }
   /** The Eternal Wanderer −4 : chaque joueur garde la créature choisie et sacrifie les autres. */
   | { type: "keepOnePerPlayer" }
   | { type: "exileAll"; filter: PermanentFilter }
@@ -239,7 +244,7 @@ type EffectBase =
   /** « Return ~ from your graveyard to your hand. » */
   | { type: "returnSelf" }
   /** « ~ gets +1/+1 until end of turn. » */
-  | { type: "pumpSelf"; power: number; toughness: number }
+  | { type: "pumpSelf"; power: number; toughness: number; keywords?: string[] }
   /** Havoc Eater : provoque une créature par adversaire, puis des marqueurs selon leur force totale. */
   | { type: "goad"; targets: number[]; countersFromPower?: boolean }
   /** Myriade : une copie engagée et attaquante pour chaque autre adversaire, exilée à la fin du combat. */
@@ -291,7 +296,7 @@ type EffectBase =
   /** Jinxed Choker : « deals damage to you equal to the number of charge counters on it ». */
   | { type: "selfCounterDamage"; kind: string }
   /** « it gets +2/+0 until end of turn » : la créature de l'événement (Crown of Doom). */
-  | { type: "pumpEvent"; power: number; toughness: number }
+  | { type: "pumpEvent"; power: number; toughness: number; keywords?: string[] }
   /** « put a +1/+1 counter on it » : la créature de l'événement (The Great Henge). */
   | { type: "counterEvent"; kind: string; count: number }
   /** Odric, Lunarch Marshal : chaque mot-clé qu'a une de vos créatures est donné à toutes jusqu'à la fin du tour. */
@@ -708,6 +713,14 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
   if ((m = /^~ gets ([+-]\d+)\/([+-]\d+) until end of turn$/i.exec(s))) {
     return [{ type: "pumpSelf", power: parseInt(m[1]!, 10), toughness: parseInt(m[2]!, 10) }];
   }
+  // « ~ gains double strike and trample until end of turn » (Okoye), « that creature gets +1/+1 and gains trample until end of turn » (M'Baku).
+  // « That creature gains haste » seul reste aux effets qui le complètent (Incandescent Soulstoke).
+  if ((m = /^(~|it|that creature) (?:gets ([+-]\d+)\/([+-]\d+) and gains (.+?)|gains (.+?)) until end of turn$/i.exec(s)) && (m[1] === "~" || (lastTarget() < 0 && m[2] !== undefined))) {
+    const keywords = keywordList(m[4] ?? m[5] ?? "");
+    if (keywords.length > 0 && keywords.every((k) => KEYWORD_HELP[k])) {
+      return [{ type: m[1] === "~" ? "pumpSelf" : "pumpEvent", power: m[2] ? parseInt(m[2], 10) : 0, toughness: m[3] ? parseInt(m[3], 10) : 0, keywords }];
+    }
+  }
   // « Creatures you control gain lifelink until end of turn », « Permanents you control gain hexproof and indestructible… »,
   // « Legendary creatures you control get +1/+0 and gain indestructible… ».
   if ((m = /^(other )?(.+?) you control (?:get ([+-]\d+)\/([+-]\d+)(?: and gain (.+?))?|gain (.+?)) until (end of turn|your next turn)$/i.exec(s)) && !/\btarget\b/i.test(m[2]!)) {
@@ -751,6 +764,9 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
     if (filter) return [{ type: "sacrifice", filter: { ...filter, controller: "you" }, another: true }];
   }
   if (/^tap ~$/i.test(s)) return [{ type: "tapSelf" }];
+  // Monarque (règle 724).
+  if (/^you become the monarch$/i.test(s)) return [{ type: "monarch", who: "you" }];
+  if ((m = /^(target opponent|target player) becomes the monarch$/i.exec(s))) return [{ type: "monarch", who: { target: target(playerTarget(m[1]!)) } }];
   if (/^untap ~$/i.test(s)) return [{ type: "untapSelf" }];
   if ((m = /^(target opponent|target player) creates a token that's a copy of (?:it|~)$/i.exec(s))) {
     return [{ type: "copyToken", player: target(playerTarget(m[1]!)) }];
@@ -1212,6 +1228,11 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       result.effects.push({ type: "pumpTarget", target: t, power: 0, toughness: 0, keywords: keywordList(m[1]!) }, { type: "grantTrigger", target: t, text: `${m[2]!}.` });
       continue;
     }
+    // Okoye : « Whenever that creature attacks the monarch this turn, it gains double strike and trample until end of turn. »
+    if ((m = /^whenever that creature attacks the monarch this turn, (?:it|that creature) (.+)$/i.exec(s)) && result.targets.length > 0) {
+      result.effects.push({ type: "grantTrigger", target: result.targets.length - 1, text: `Whenever ~ attacks the monarch, ~ ${m[1]!}.` });
+      continue;
+    }
     if ((m = /^until end of turn, (that creature|target creature) gains "(When(?:ever)? .+?)\.?"\.?$/i.exec(sentence.trim()))) {
       const t = /^target/i.test(m[1]!) ? target({ label: "créature", permanent: { types: ["creature"], notTypes: [] } }) : result.targets.length - 1;
       if (t >= 0) {
@@ -1389,13 +1410,17 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     } else if ((m = new RegExp(`^target player draws ${NUM} cards?$`, "i").exec(s))) {
       result.effects.push({ type: "draw", who: { target: target({ label: "joueur", player: true }) }, count: amount(m[1]!) });
     } else if ((m = /^(destroy|exile) (up to one )?target (.+)$/i.exec(s))) {
-      const filter = parsePermanentFilter(m[3]!);
+      // Palace Jailer : « exile target creature an opponent controls until an opponent becomes the monarch ».
+      const untilMonarch = /^exile/i.test(m[1]!) && / until an opponent becomes the monarch$/i.test(m[3]!);
+      // The Spear of Bashenga : « destroy target tapped nonland permanent that player controls » (le joueur attaqué).
+      const eventPlayer = / that player controls$/i.test(m[3]!);
+      const filter = parsePermanentFilter(m[3]!.replace(/ until an opponent becomes the monarch$/i, "").replace(/ that player controls$/i, ""));
       if (!filter) {
         result.unknown.push(sentence);
         continue;
       }
-      const t = target({ label: permanentLabel(filter), permanent: filter, ...(m[2] ? { upTo: true } : {}) });
-      result.effects.push({ type: m[1]!.toLowerCase() === "destroy" ? "destroy" : "exile", target: t });
+      const t = target({ label: permanentLabel(filter), permanent: filter, ...(m[2] ? { upTo: true } : {}), ...(eventPlayer ? { eventPlayer: true } : {}) });
+      result.effects.push(m[1]!.toLowerCase() === "destroy" ? { type: "destroy", target: t } : { type: "exile", target: t, ...(untilMonarch ? { untilMonarch: true } : {}) });
     } else if (
       (m = /^(up to one |another )?target (.+?) (?:gets ([+-]\d+)\/([+-]\d+)(?: and gains (.+?))?|gains (.+?)) until (end of turn|your next turn)$/i.exec(s)) &&
       keywordList(m[5] ?? m[6] ?? "").every((k) => KEYWORD_HELP[k]) &&
@@ -1767,6 +1792,7 @@ export function isLegalTarget(g: GameState, spec: TargetSpec, target: Target, ca
   }
   if (card.zone === "battlefield") {
     if (!spec.permanent || !matchesPermanent(g, card, spec.permanent, casterId)) return false;
+    if (spec.eventPlayer && card.controllerId !== (sourceId ? g.cards[sourceId]?.ability?.eventPlayerId : undefined)) return false;
     if (hasKeyword(g, card, "Shroud")) return false;
     if (hasKeyword(g, card, "Hexproof") && card.controllerId !== casterId && !areTeammates(g, card.controllerId, casterId)) {
       return false;
