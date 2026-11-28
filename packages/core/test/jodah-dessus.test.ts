@@ -83,11 +83,10 @@ const plain = (name: string, mv: number) => fakeCard(name, { typeLine: "Creature
 const land = (name: string) => fakeCard(name, { typeLine: "Basic Land — Forest", manaCost: "", manaValue: 0, oracleText: "({T}: Add {G}.)" });
 
 describe("Dessus de la bibliothèque et sorts gratuits depuis l'exil : lecture", () => {
-  it("Stock Up, Jodah et Etali sont gérés en entier, Dihada sauf le −11", () => {
-    for (const name of ["Stock Up", "Jodah, the Unifier", "Etali, Primal Storm"]) expect(cardSupport(real(name)), name).toMatchObject({ level: "full" });
-    expect(cardSupport(real("Dihada, Binder of Wills")).unknown).toEqual([
-      "−11: Gain control of all nonland permanents until end of turn. Untap them. They gain haste until end of turn.",
-    ]);
+  it("Stock Up, Jodah, Etali et Dihada sont gérés en entier (le −11 de Dihada vient de la famille 22)", () => {
+    for (const name of ["Stock Up", "Jodah, the Unifier", "Etali, Primal Storm", "Dihada, Binder of Wills"]) {
+      expect(cardSupport(real(name)), name).toMatchObject({ level: "full" });
+    }
   });
 });
 
