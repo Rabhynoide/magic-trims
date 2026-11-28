@@ -98,11 +98,15 @@ describe("Wakanda : restrictions de combat", () => {
     [g, small] = put(g, "p1", bear("Petit"));
     [g, big] = put(g, "p1", bear("Gros", "3"));
     [g] = put(g, "p2", real("Queen Mother Ramonda"));
+    // En arrivant, Ramonda fait de p2 le monarque : on résout ce déclencheur, puis on retire le titre.
+    for (let i = 0; i < 20 && g.priority && g.stack.length > 0; i++) g = act(g, g.priority.playerId, { type: "passPriority" });
+    expect(g.monarch).toBe("p2");
+    g = act(g, "p1", { type: "setMonarch", playerId: null });
     g = toAttackers(g);
     // p2 n'est pas le monarque : pas de restriction.
     expect(applyAction(g, { actorId: "p1", action: { type: "declareAttackers", attackers: [{ cardId: small, defender: "p2" }] } }).ok).toBe(true);
     g = structuredClone(g);
-    (g as GameState & { monarch?: string }).monarch = "p2";
+    g.monarch = "p2";
     expect(refuse(g, "p1", { type: "declareAttackers", attackers: [{ cardId: small, defender: "p2" }] })).toMatch(/force 2 ou moins/);
     g = act(g, "p1", {
       type: "declareAttackers",
