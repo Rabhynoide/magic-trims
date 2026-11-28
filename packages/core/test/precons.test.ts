@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseDeckList } from "../src/deck/parse.js";
+import { cardsSupport } from "../src/deck/support.js";
 import data from "../../app/src/renderer/src/data/precons.json";
 
 /**
@@ -25,5 +26,33 @@ describe("préconstruits officiels", () => {
         expect(e.set && e.collectorNumber, `${d.id} : ${e.name}`).toBeTruthy();
       }
     }
+  });
+});
+
+describe("texte Oracle des préconstruits (colonne « Auto »)", () => {
+  it("chaque carte de chaque préconstruit a son texte Oracle", async () => {
+    const { default: oracle } = (await import("../../app/src/renderer/src/data/precon-oracle.json")) as unknown as {
+      default: { cards: Record<string, { t: string }> };
+    };
+    const missing = new Set<string>();
+    for (const d of file.decks) {
+      const parsed = parseDeckList(`Commander\n${d.commanders.join("\n")}\n\nDeck\n${d.cards.join("\n")}\n`);
+      for (const e of [...parsed.commanders, ...parsed.mainboard]) if (!oracle.cards[e.name]) missing.add(e.name);
+    }
+    expect([...missing]).toEqual([]);
+  });
+
+  it("cardsSupport compte comme deckSupport et réutilise le niveau des cartes déjà vues", () => {
+    const vanilla = { name: "Grizzly Bears", typeLine: "Creature — Bear", oracleText: "" };
+    const levels = new Map<string, "full" | "partial" | "manual">([["Weird Card", "manual"]]);
+    const s = cardsSupport(
+      [
+        { card: vanilla, quantity: 2 },
+        { card: { name: "Weird Card", typeLine: "", oracleText: "" }, quantity: 1 },
+      ],
+      levels,
+    );
+    expect(s).toMatchObject({ total: 3, full: 2, manual: 1, manualNames: ["Weird Card"] });
+    expect(levels.get("Grizzly Bears")).toBe("full");
   });
 });

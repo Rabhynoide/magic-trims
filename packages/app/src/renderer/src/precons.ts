@@ -1,5 +1,14 @@
-import { formatForMode, type DeckIssue, type GameModeType } from "@magic-trims/core";
-import type { Precon, PreconFile } from "./data/precon-types";
+import {
+  cardsSupport,
+  formatForMode,
+  parseDeckList,
+  type CardSupport,
+  type DeckIssue,
+  type DeckSupport,
+  type GameModeType,
+  type SupportCardData,
+} from "@magic-trims/core";
+import type { Precon, PreconFile, PreconOracle, PreconOracleCard } from "./data/precon-types";
 import { storage, type SavedDeck } from "./storage";
 
 export type { Precon };
@@ -13,6 +22,50 @@ let loading: Promise<PreconFile> | null = null;
 export function loadPrecons(): Promise<PreconFile> {
   loading ??= import("./data/precons.json").then((m) => m.default as PreconFile);
   return loading;
+}
+
+let loadingOracle: Promise<PreconOracle> | null = null;
+
+/**
+ * Texte Oracle des cartes des préconstruits (environ 2 Mo), chargé après la
+ * liste pour remplir la colonne « Auto » sans interroger Scryfall.
+ */
+export function loadPreconOracle(): Promise<PreconOracle> {
+  loadingOracle ??= import("./data/precon-oracle.json").then((m) => m.default as unknown as PreconOracle);
+  return loadingOracle;
+}
+
+function supportCard(name: string, c: PreconOracleCard): SupportCardData {
+  return {
+    name: c.n ?? name,
+    typeLine: c.t,
+    oracleText: c.o ?? "",
+    ...(c.f ? { faces: c.f.map((f) => ({ name: f.n, typeLine: f.t, oracleText: f.o })) } : {}),
+  };
+}
+
+/** Niveau de chaque carte, partagé entre les decks (une carte se retrouve dans beaucoup d'entre eux). */
+const levels = new Map<string, CardSupport["level"]>();
+const supports = new Map<string, DeckSupport>();
+
+/**
+ * Part des cartes du préconstruit gérées par le moteur : même calcul
+ * (`cardSupport`) que pour « Mes decks », sur le texte Oracle embarqué. Une
+ * carte absente du fichier Oracle compte comme « à la main ».
+ */
+export function preconSupport(p: Precon, oracle: PreconOracle): DeckSupport {
+  let s = supports.get(p.id);
+  if (s) return s;
+  const parsed = parseDeckList(preconText(p));
+  const entries = [...parsed.commanders, ...parsed.mainboard].map((e) => {
+    const card = oracle.cards[e.name];
+    if (card) return { card: supportCard(e.name, card), quantity: e.quantity };
+    levels.set(e.name, "manual");
+    return { card: { name: e.name, typeLine: "", oracleText: "" }, quantity: e.quantity };
+  });
+  s = cardsSupport(entries, levels);
+  supports.set(p.id, s);
+  return s;
 }
 
 /** Liste texte du deck, lue par l'import habituel (Scryfall). */

@@ -15,7 +15,7 @@ import { joinModes, keywordList, NUMBER_WORDS, selfToTilde } from "./text.js";
 import { isChangeling, isCreatureSubtype, playerHasHexproof, playerHasShroud, printedEvoke, typeLineHasCreatureType } from "./statics.js";
 
 export { selfToTilde };
-import type { CardData, CardInstance, GameState, PlayerId } from "./types.js";
+import type { CardData, CardFace, CardInstance, GameState, PlayerId } from "./types.js";
 
 /** Une cible choisie au lancement : une carte (champ de bataille ou pile) ou un joueur. */
 export type Target = { kind: "card"; id: string } | { kind: "player"; id: PlayerId };
@@ -1996,7 +1996,12 @@ function faceSupport(typeLine: string, oracleText: string, name: string): { know
 }
 
 /** Le moteur gère-t-il cette carte (toutes ses faces) ? */
-export function cardSupport(data: CardData): CardSupport {
+/** Ce que lit `cardSupport` d'une carte : nom, type et texte Oracle (et ceux de ses faces). */
+export type SupportCardData = Pick<CardData, "name" | "typeLine" | "oracleText"> & {
+  faces?: Pick<CardFace, "name" | "typeLine" | "oracleText">[];
+};
+
+export function cardSupport(data: SupportCardData): CardSupport {
   const faces = data.faces && data.faces.length > 0 ? data.faces : [data];
   let known = 0;
   const unknown: string[] = [];

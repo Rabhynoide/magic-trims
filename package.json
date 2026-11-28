@@ -12,9 +12,10 @@
     "app": "npm run dev -w @magic-trims/app",
     "dist": "npm run dist -w @magic-trims/app",
     "postinstall": "node scripts/install-electron.mjs",
-    "precons": "tsx scripts/fetch-precons.ts",
+    "precons": "tsx scripts/fetch-precons.ts && tsx scripts/precon-oracle.ts",
     "central": "npm run central -w @magic-trims/central --",
-    "central:deploy": "npm run deploy -w @magic-trims/central"
+    "central:deploy": "npm run deploy -w @magic-trims/central",
+    "precons:oracle": "tsx scripts/precon-oracle.ts"
   },
   "engines": {
     "node": ">=20"
