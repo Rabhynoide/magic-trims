@@ -193,17 +193,12 @@ export function cantAttackPlayer(g: GameState, card: CardInstance, defenderId: P
     const source = g.cards[id]!;
     for (const s of staticsOf(g, source)) {
       if (s.kind !== "cantAttackYou" || power > s.maxPower) continue;
-      if (s.monarch && monarchOf(g) !== defenderId) continue;
+      if (s.monarch && g.monarch !== defenderId) continue;
       const data = g.cardData[source.cardId];
       return `${data?.name ?? "Un permanent"} : les créatures de force ${s.maxPower} ou moins ne peuvent pas attaquer ${defender.name}.`;
     }
   }
   return null;
-}
-
-/** Le monarque de la partie (champ posé par la gestion du monarque), ou undefined. */
-function monarchOf(g: GameState): PlayerId | undefined {
-  return (g as GameState & { monarch?: PlayerId | null }).monarch ?? undefined;
 }
 
 /** La créature peut-elle attaquer maintenant (dégagée, sans mal d'invocation, sans défenseur) ? */

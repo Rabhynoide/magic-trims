@@ -98,11 +98,14 @@ describe("Wakanda : restrictions de combat", () => {
     [g, small] = put(g, "p1", bear("Petit"));
     [g, big] = put(g, "p1", bear("Gros", "3"));
     [g] = put(g, "p2", real("Queen Mother Ramonda"));
+    // Ramonda arrive : p2 devient le monarque (déclencheur résolu).
+    for (let i = 0; i < 10 && g.priority && g.stack.length > 0; i++) g = act(g, g.priority.playerId, { type: "passPriority" });
+    expect(g.monarch).toBe("p2");
     g = toAttackers(g);
     // p2 n'est pas le monarque : pas de restriction.
-    expect(applyAction(g, { actorId: "p1", action: { type: "declareAttackers", attackers: [{ cardId: small, defender: "p2" }] } }).ok).toBe(true);
-    g = structuredClone(g);
-    (g as GameState & { monarch?: string }).monarch = "p2";
+    const free = structuredClone(g);
+    delete free.monarch;
+    expect(applyAction(free, { actorId: "p1", action: { type: "declareAttackers", attackers: [{ cardId: small, defender: "p2" }] } }).ok).toBe(true);
     expect(refuse(g, "p1", { type: "declareAttackers", attackers: [{ cardId: small, defender: "p2" }] })).toMatch(/force 2 ou moins/);
     g = act(g, "p1", {
       type: "declareAttackers",
@@ -122,9 +125,9 @@ describe("Wakanda : restrictions de combat", () => {
     expect(cardSupport(fakeCard("Furtif", { typeLine: "Creature — Rogue", oracleText: "This creature can't be blocked." })).level).toBe("full");
   });
 
-  it("les cartes de la famille sont lues en entier (Ramonda : sauf le monarque, fait ailleurs)", () => {
+  it("les cartes de la famille sont lues en entier (Bast : sauf son déclencheur d'attaque, famille 3)", () => {
     expect(cardSupport(real("Whispersilk Cloak")).level).toBe("full");
     expect(cardSupport(real("Bast, Panther Goddess")).unknown.filter((l) => /can't attack/.test(l))).toEqual([]);
-    expect(cardSupport(real("Queen Mother Ramonda")).unknown.filter((l) => /can't attack/.test(l))).toEqual([]);
+    expect(cardSupport(real("Queen Mother Ramonda")).level).toBe("full");
   });
 });

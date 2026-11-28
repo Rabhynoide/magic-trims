@@ -241,6 +241,8 @@ export interface CardInstance {
   };
   /** Lancé depuis l'exil après avoir été présagé (« If this spell was foretold »). */
   foretold?: boolean;
+  /** Palace Jailer : exilée jusqu'à ce qu'un adversaire de ce joueur devienne le monarque. */
+  exiledUntilMonarch?: PlayerId;
   /** Hors phase avec le permanent auquel elle est attachée (règle 702.26g) : revient avec lui, pas seule. */
   phasedOutIndirectly?: boolean;
   /** Provoquée par ces joueurs (jusqu'à leur prochain tour) : doit attaquer, et un autre joueur si possible. */
@@ -452,6 +454,11 @@ export interface GameState {
   delayedReturns?: { cardId: CardInstanceId; playerId: PlayerId }[];
   /** Myriade : les jetons exilés à la fin du combat. */
   endOfCombatExile?: CardInstanceId[];
+  /**
+   * Le monarque (règle 724) : il pioche une carte au début de son étape de fin, et le
+   * joueur dont une créature lui inflige des blessures de combat le devient. Absent : personne.
+   */
+  monarch?: PlayerId;
   /**
    * Équipes. En chacun pour soi, chaque joueur est seul dans son équipe.
    * L'ordre des joueurs à l'intérieur d'une équipe suit l'ordre du tour.
