@@ -2,7 +2,7 @@
  * Combat : caractéristiques des créatures et mots-clés reconnus par le moteur.
  * Fonctions pures, sans modification de la partie.
  */
-import { creaturesCantAttack, grantedTo, selfStats, staticsOf } from "./statics.js";
+import { CANT_BE_BLOCKED, countValue, creaturesCantAttack, grantedTo, selfStats, staticsOf } from "./statics.js";
 import type { CardInstance, CardInstanceId, GameState, PlayerId } from "./types.js";
 
 export interface CombatState {
@@ -148,23 +148,12 @@ export function hasLethalDamage(g: GameState, card: CardInstance): boolean {
   return (card.damage ?? 0) >= toughness || (card.deathtouched === true && (card.damage ?? 0) > 0);
 }
 
-/** Une ligne du texte de la face visible dit-elle « ~ can't block » / « ~ can't attack » ? */
+/**
+ * « ~ can't block », « ~ can't attack or block unless you control three or more creatures » (Bast) : la
+ * restriction s'applique-t-elle maintenant ?
+ */
 function hasRestriction(g: GameState, card: CardInstance, what: "attack" | "block"): boolean {
-  if (card.faceDown) return false;
-  const data = g.cardData[card.cardId];
-  const name = data?.faces?.[card.faceIndex]?.name ?? data?.name ?? "";
-  const subject = `(?:this creature|${escapeRe(name)}|${escapeRe(name.split(",")[0]!)})`;
-  const re = new RegExp(`^${subject} can't (attack|block)(?: or (attack|block))?\\.?$`, "i");
-  return faceOf(g, card)
-    .oracleText.split("\n")
-    .some((line) => {
-      const m = re.exec(line.replace(/\([^)]*\)/g, "").trim());
-      return !!m && (m[1]!.toLowerCase() === what || m[2]?.toLowerCase() === what);
-    });
-}
-
-function escapeRe(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return staticsOf(g, card).some((s) => s.kind === "restriction" && s[what] === true && !(s.unless && countValue(g, s.unless.count, card) >= s.unless.min));
 }
 
 /** « This creature can't block. » */
@@ -175,6 +164,46 @@ export function cantBlock(g: GameState, card: CardInstance): boolean {
 /** « This creature can't attack. » */
 export function cantAttack(g: GameState, card: CardInstance): boolean {
   return hasRestriction(g, card, "attack") || creaturesCantAttack(g, card.controllerId);
+}
+
+/**
+ * La créature ne peut pas être bloquée par ce bloqueur : « ~ can't be blocked » (éventuellement « by creatures with
+ * power 2 or less »), ou donné par un équipement ou un effet (Whispersilk Cloak, « can't be blocked this turn »).
+ */
+export function unblockableBy(g: GameState, attacker: CardInstance, blocker?: CardInstance): boolean {
+  if (grantedTo(g, attacker).keywords.includes(CANT_BE_BLOCKED)) return true;
+  return staticsOf(g, attacker).some((s) => {
+    if (s.kind !== "cantBeBlocked") return false;
+    if (!s.by) return true;
+    if (!blocker) return false;
+    const v = creatureStats(g, blocker)[s.by.stat];
+    return s.by.cmp === "le" ? v <= s.by.n : v >= s.by.n;
+  });
+}
+
+/**
+ * Pourquoi la créature ne peut pas attaquer ce joueur, ou null : Queen Mother Ramonda (« As long as you're the
+ * monarch, creatures with power 2 or less can't attack you »).
+ */
+export function cantAttackPlayer(g: GameState, card: CardInstance, defenderId: PlayerId): string | null {
+  const defender = g.players[defenderId];
+  if (!defender) return null;
+  const power = creatureStats(g, card).power;
+  for (const id of defender.zones.battlefield) {
+    const source = g.cards[id]!;
+    for (const s of staticsOf(g, source)) {
+      if (s.kind !== "cantAttackYou" || power > s.maxPower) continue;
+      if (s.monarch && monarchOf(g) !== defenderId) continue;
+      const data = g.cardData[source.cardId];
+      return `${data?.name ?? "Un permanent"} : les créatures de force ${s.maxPower} ou moins ne peuvent pas attaquer ${defender.name}.`;
+    }
+  }
+  return null;
+}
+
+/** Le monarque de la partie (champ posé par la gestion du monarque), ou undefined. */
+function monarchOf(g: GameState): PlayerId | undefined {
+  return (g as GameState & { monarch?: PlayerId | null }).monarch ?? undefined;
 }
 
 /** La créature peut-elle attaquer maintenant (dégagée, sans mal d'invocation, sans défenseur) ? */
@@ -193,6 +222,7 @@ export function canAttack(g: GameState, card: CardInstance): boolean {
 export function canBlock(g: GameState, card: CardInstance, attacker?: CardInstance): boolean {
   if (card.zone !== "battlefield" || !isCreature(g, card) || card.tapped || cantBlock(g, card)) return false;
   if (!attacker) return true;
+  if (unblockableBy(g, attacker, card)) return false;
   if (hasKeyword(g, attacker, "Flying") && !hasKeyword(g, card, "Flying") && !hasKeyword(g, card, "Reach")) return false;
   // Peur : seulement par des créatures-artefacts et/ou noires.
   if (hasKeyword(g, attacker, "Fear") && !colorsOf(g, card).includes("B") && !/\bArtifact\b/.test(faceOf(g, card).typeLine)) return false;

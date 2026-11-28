@@ -11,7 +11,7 @@ import { COMBAT_KEYWORDS, creatureStats, hasKeyword, protectedFrom } from "./com
 import { grantedManaAbility, manaOptions, manaTapEffect } from "./mana.js";
 import { parsePermanentAbilities, parseWard } from "./triggers.js";
 import { areTeammates } from "./modes.js";
-import { joinModes, keywordList, NUMBER_WORDS, selfToTilde } from "./text.js";
+import { CANT_BE_BLOCKED, joinModes, keywordList, NUMBER_WORDS, selfToTilde } from "./text.js";
 import { isChangeling, isCreatureSubtype, playerHasHexproof, playerHasShroud, printedEvoke, typeLineHasCreatureType } from "./statics.js";
 
 export { selfToTilde };
@@ -244,6 +244,7 @@ type EffectBase =
   /** « Return ~ from your graveyard to your hand. » */
   | { type: "returnSelf" }
   /** « ~ gets +1/+1 until end of turn. » */
+  /** `keywords` : « ~ can't be blocked this turn » (pseudo-mot-clé « can't be blocked »). */
   | { type: "pumpSelf"; power: number; toughness: number; keywords?: string[] }
   /** Havoc Eater : provoque une créature par adversaire, puis des marqueurs selon leur force totale. */
   | { type: "goad"; targets: number[]; countersFromPower?: boolean }
@@ -712,6 +713,10 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
   if (/^return ~ from your graveyard to your hand$/i.test(s)) return [{ type: "returnSelf" }];
   if ((m = /^~ gets ([+-]\d+)\/([+-]\d+) until end of turn$/i.exec(s))) {
     return [{ type: "pumpSelf", power: parseInt(m[1]!, 10), toughness: parseInt(m[2]!, 10) }];
+  }
+  // « ~ can't be blocked this turn », « ~ gets +1/+0 and can't be blocked this turn ».
+  if ((m = /^~ (?:gets ([+-]\d+)\/([+-]\d+) and )?can't be blocked this turn$/i.exec(s))) {
+    return [{ type: "pumpSelf", power: m[1] ? parseInt(m[1], 10) : 0, toughness: m[2] ? parseInt(m[2], 10) : 0, keywords: [CANT_BE_BLOCKED] }];
   }
   // « ~ gains double strike and trample until end of turn » (Okoye), « that creature gets +1/+1 and gains trample until end of turn » (M'Baku).
   // « That creature gains haste » seul reste aux effets qui le complètent (Incandescent Soulstoke).
@@ -1437,6 +1442,14 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
         keywords: m[5] ?? m[6] ? keywordList(m[5] ?? m[6]!) : [],
         ...(/next turn/i.test(m[7]!) ? { untilNextTurn: true } : {}),
       });
+    } else if (
+      (m = /^(up to one |another )?target (.+?) (?:gets ([+-]\d+)\/([+-]\d+) and )?can't be blocked this turn$/i.exec(s)) &&
+      parsePermanentFilter(m[2]!)?.types.includes("creature")
+    ) {
+      // « Target creature can't be blocked this turn », « Target creature with power 2 or less gets +1/+0 and can't be blocked this turn ».
+      const filter = parsePermanentFilter(m[2]!)!;
+      const t = target({ label: permanentLabel(filter), permanent: filter, ...(/up to/i.test(m[1] ?? "") ? { upTo: true } : {}), ...(/another/i.test(m[1] ?? "") ? { another: true } : {}) });
+      result.effects.push({ type: "pumpTarget", target: t, power: m[3] ? parseInt(m[3], 10) : 0, toughness: m[4] ? parseInt(m[4], 10) : 0, keywords: [CANT_BE_BLOCKED] });
     } else if ((m = new RegExp(`^you gain ${NUM} life and draw ${NUM} cards?$`, "i").exec(s))) {
       result.effects.push({ type: "life", who: "you", amount: amount(m[1]!) }, { type: "draw", who: "you", count: amount(m[2]!) });
     } else if ((m = new RegExp(`^put ${NUM} cards from your hand on top of your library in any order$`, "i").exec(s))) {
@@ -2085,6 +2098,7 @@ export const KEYWORD_HELP: Record<string, { name: string; help: string }> = {
   annihilator: { name: "Annihilateur", help: "Quand elle attaque, le joueur défenseur sacrifie autant de permanents." },
   evoke: { name: "Évocation", help: "Peut se lancer pour son coût d'évocation ; elle est alors sacrifiée en arrivant." },
   changeling: { name: "Changelin", help: "Cette carte a tous les types de créature." },
+  [CANT_BE_BLOCKED]: { name: "Imblocable", help: "Ne peut pas être bloquée." },
 };
 
 /**
