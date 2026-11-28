@@ -9,6 +9,7 @@ import {
   isManaType,
   manaOptions,
   manaOptionsDetailed,
+  type ManaRestriction,
   grantedManaAbility,
   manaTapEffect,
   manaTapSourceFits,
@@ -1627,6 +1628,8 @@ const NAMED_TOKENS: Record<string, string> = {
   Food: "{2}, {T}, Sacrifice this artifact: You gain 3 life.",
   Clue: "{2}, Sacrifice this artifact: Draw a card.",
   Blood: "{1}, {T}, Discard a card, Sacrifice this artifact: Draw a card.",
+  // Marvel (Wakanda Forever) : artefact indestructible dont le mana ne sert qu'aux sorts d'artefact (et aux capacités).
+  Vibranium: "Indestructible\n{T}: Add {C}. This mana can't be spent to cast a nonartifact spell.",
 };
 
 /** Index des capacités déclenchées données (Malakir Rebirth), pour les distinguer de celles de la carte. */
@@ -2004,7 +2007,7 @@ function opponentsOf(g: GameState, playerId: PlayerId): PlayerState[] {
     .filter((p) => !p.hasConceded && p.id !== playerId && !areTeammates(g, p.id, playerId));
 }
 
-/** Jetons prédéfinis (Treasure, Food, Clue, Blood) créés sous le contrôle du joueur. */
+/** Jetons prédéfinis (Treasure, Food, Clue, Blood, Vibranium) créés sous le contrôle du joueur. */
 function createNamedTokens(g: GameState, owner: PlayerState, name: string, n: number, tapped: boolean): void {
   if (n <= 0) return;
   const id = `token:${name}`;
@@ -4128,7 +4131,7 @@ function faceTypeLine(g: GameState, card: CardInstance, faceIndex: number): stri
 
 /** Mana que la carte (sur sa face visible) peut produire en s'engageant. */
 /** Les restrictions des choix de mana de la carte (le type choisi remplacé par celui de la carte). */
-function cardManaRestrictions(g: GameState, card: CardInstance): ({ subtype: string; abilities: boolean } | undefined)[] {
+function cardManaRestrictions(g: GameState, card: CardInstance): (ManaRestriction | undefined)[] {
   return cardManaDetailed(g, card).map((o) => o.only);
 }
 
@@ -4137,14 +4140,14 @@ function cardManaRestrictions(g: GameState, card: CardInstance): ({ subtype: str
  * color among permanents you control » (Faeburrow Elder, Bloom Tender), et le
  * mana en plus des auras (Utopia Sprawl, Fertile Ground : un choix par couleur).
  */
-function cardManaDetailed(g: GameState, card: CardInstance): { mana: ManaType[]; only?: { subtype: string; abilities: boolean } }[] {
+function cardManaDetailed(g: GameState, card: CardInstance): { mana: ManaType[]; only?: ManaRestriction }[] {
   const data = g.cardData[card.cardId];
   if (!data) return [];
   const face = data.faces?.[card.faceIndex];
   const oracleText = face?.oracleText ?? data.oracleText;
-  let options: { mana: ManaType[]; only?: { subtype: string; abilities: boolean } }[] = manaOptionsDetailed(face?.typeLine ?? data.typeLine, oracleText).map((o) => ({
+  let options: { mana: ManaType[]; only?: ManaRestriction }[] = manaOptionsDetailed(face?.typeLine ?? data.typeLine, oracleText).map((o) => ({
     mana: o.mana,
-    ...(o.only ? { only: { subtype: o.only.subtype === "chosen" ? (card.chosenType ?? "") : o.only.subtype, abilities: o.only.abilities } } : {}),
+    ...(o.only ? { only: { subtype: o.only.subtype === "chosen" ? (card.chosenType ?? "") : o.only.subtype, abilities: o.only.abilities, ...(o.only.anyAbility ? { anyAbility: true } : {}) } } : {}),
   }));
   if (/^(?:\w+ — )?\{T\}: For each color among permanents you control, add one mana of that color\.?$/m.test(oracleText)) {
     const colors = colorsAmongPermanents(g, card.controllerId);
@@ -4154,7 +4157,7 @@ function cardManaDetailed(g: GameState, card: CardInstance): { mana: ManaType[];
   const typeLine = face?.typeLine ?? data.typeLine;
   for (const ability of grantedManaAbilities(g, card, typeLine)) {
     for (const o of manaOptionsDetailed("", ability)) {
-      const only = o.only ? { only: { subtype: o.only.subtype === "chosen" ? (card.chosenType ?? "") : o.only.subtype, abilities: o.only.abilities } } : {};
+      const only = o.only ? { only: { subtype: o.only.subtype === "chosen" ? (card.chosenType ?? "") : o.only.subtype, abilities: o.only.abilities, ...(o.only.anyAbility ? { anyAbility: true } : {}) } } : {};
       if (!options.some((x) => x.mana.join() === o.mana.join() && !x.only && !o.only)) options.push({ mana: o.mana, ...only });
     }
   }
@@ -4224,8 +4227,9 @@ function manaTapEffectsFor(g: GameState, tapper: PlayerId, typeLine: string): Ma
 const RESTRICTION_TYPE_WORDS = /^(Artifact|Creature|Enchantment|Instant|Sorcery|Planeswalker|Battle|Legendary|Kindred)$/i;
 
 /** Ce mana réservé peut-il payer ce sort (ou cette capacité) ? */
-function restrictionFits(r: { subtype: string; abilities: boolean }, spell: { typeLine: string; oracleText: string; ability?: boolean } | undefined): boolean {
+function restrictionFits(r: ManaRestriction, spell: { typeLine: string; oracleText: string; ability?: boolean } | undefined): boolean {
   if (!spell || !r.subtype) return false;
+  if (spell.ability && r.anyAbility) return true;
   if (spell.ability && !r.abilities) return false;
   // « Spend this mana only to cast creature spells » : un type de carte, lu avant le tiret.
   if (RESTRICTION_TYPE_WORDS.test(r.subtype)) return new RegExp(`\\b${r.subtype}\\b`, "i").test(spell.typeLine.split("—")[0]!);

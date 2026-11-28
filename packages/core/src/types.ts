@@ -366,8 +366,8 @@ export interface PlayerState {
   extraLands?: { turn: number; count: number };
   /** Réserve de mana ; elle se vide à la fin de chaque étape (règle 500.4). */
   manaPool: ManaPool;
-  /** Mana qui ne sert qu'à certains sorts (Primal Beyond : les Élémentaux) ; vidé avec la réserve. */
-  restrictedMana?: { mana: ManaType; subtype: string; abilities: boolean }[];
+  /** Mana qui ne sert qu'à certains sorts (Primal Beyond : les Élémentaux ; Vibranium : les artefacts) ; vidé avec la réserve. */
+  restrictedMana?: { mana: ManaType; subtype: string; abilities: boolean; anyAbility?: boolean }[];
   /** Arrêts pour répondre pendant le tour des autres (toutes les étapes clés par défaut). */
   priorityStops?: PriorityStops;
   hasConceded: boolean;
