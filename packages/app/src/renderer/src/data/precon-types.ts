@@ -30,3 +30,24 @@ export interface PreconFile {
   source: string;
   decks: Precon[];
 }
+
+/**
+ * Texte Oracle d'une carte des préconstruits (precon-oracle.json, écrit par
+ * `npm run precons:oracle`) : juste ce que lit `cardSupport`.
+ */
+export interface PreconOracleCard {
+  /** Nom Oracle, s'il diffère du nom écrit dans la liste du deck. */
+  n?: string;
+  /** Ligne de type. */
+  t: string;
+  /** Texte Oracle (absent quand la carte a des faces). */
+  o?: string;
+  /** Faces : nom, type, texte. */
+  f?: { n: string; t: string; o: string }[];
+}
+
+export interface PreconOracle {
+  generatedAt: string;
+  /** Indexé par le nom de la carte tel qu'écrit dans la liste du deck. */
+  cards: Record<string, PreconOracleCard>;
+}

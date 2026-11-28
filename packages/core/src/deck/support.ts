@@ -1,5 +1,4 @@
-import { cardSupport } from "../effects.js";
-import type { CardData } from "../types.js";
+import { cardSupport, type CardSupport, type SupportCardData } from "../effects.js";
 import type { ResolvedDeck } from "./resolve.js";
 
 /**
@@ -23,17 +22,28 @@ export interface DeckSupport {
 }
 
 export function deckSupport(deck: ResolvedDeck): DeckSupport {
+  return cardsSupport([...deck.commanders.map((card) => ({ card, quantity: 1 })), ...deck.cards]);
+}
+
+/**
+ * Même calcul pour une simple liste de cartes (nom, type et texte Oracle
+ * suffisent). `levels` garde le niveau de chaque carte d'un appel à l'autre,
+ * pour ne pas relire le texte d'une carte présente dans plusieurs decks.
+ */
+export function cardsSupport(
+  entries: { card: SupportCardData; quantity: number }[],
+  levels: Map<string, CardSupport["level"]> = new Map(),
+): DeckSupport {
   const result: DeckSupport = { total: 0, full: 0, partial: 0, manual: 0, partialNames: [], manualNames: [] };
-  const entries: { card: CardData; quantity: number }[] = [
-    ...deck.commanders.map((card) => ({ card, quantity: 1 })),
-    ...deck.cards,
-  ];
-  const cache = new Map<string, ReturnType<typeof cardSupport>["level"]>();
+  const seen = new Set<string>();
   for (const { card, quantity } of entries) {
-    let level = cache.get(card.name);
+    let level = levels.get(card.name);
     if (!level) {
       level = cardSupport(card).level;
-      cache.set(card.name, level);
+      levels.set(card.name, level);
+    }
+    if (!seen.has(card.name)) {
+      seen.add(card.name);
       if (level === "partial") result.partialNames.push(card.name);
       if (level === "manual") result.manualNames.push(card.name);
     }

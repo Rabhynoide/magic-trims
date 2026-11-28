@@ -1,9 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
-import { GAME_MODES, type GameModeType } from "@magic-trims/core";
-import { addPrecon, loadPrecons, preconCommanders, preconIssues, savedPrecon, type Precon } from "../precons";
+import { GAME_MODES, type DeckSupport, type GameModeType } from "@magic-trims/core";
+import {
+  addPrecon,
+  loadPreconOracle,
+  loadPrecons,
+  preconCommanders,
+  preconIssues,
+  preconSupport,
+  savedPrecon,
+  type Precon,
+} from "../precons";
 import { session } from "../session";
 import type { SavedDeck } from "../storage";
-import { LegalityMark, MODES, MODE_SHORT } from "./DeckBrowser";
+import { LegalityMark, MODES, MODE_SHORT, SupportMark } from "./DeckBrowser";
 import { ManaText } from "./ManaText";
 
 /**
@@ -18,6 +27,8 @@ export function PreconTable(props: {
   onAdded: (deck: SavedDeck) => void;
 }) {
   const [precons, setPrecons] = useState<Precon[] | null>(null);
+  /** Colonne « Auto », remplie au fur et à mesure (analyse des 186 decks ≈ 1 s en tout). */
+  const [supports, setSupports] = useState<ReadonlyMap<string, DeckSupport>>(new Map());
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [, refresh] = useState(0);
@@ -27,6 +38,23 @@ export function PreconTable(props: {
     void loadPrecons().then((file) => {
       if (!alive) return;
       setPrecons(file.decks);
+      // Le texte Oracle (colonne « Auto ») arrive après : la liste s'affiche sans
+      // l'attendre, puis les decks sont analysés par petits lots pour ne pas figer l'écran.
+      void loadPreconOracle().then((oracle) => {
+        let next = 0;
+        const step = () => {
+          if (!alive) return;
+          const done = new Map<string, DeckSupport>();
+          const until = performance.now() + 12;
+          while (next < file.decks.length && performance.now() < until) {
+            const p = file.decks[next++]!;
+            done.set(p.id, preconSupport(p, oracle));
+          }
+          setSupports((prev) => new Map([...prev, ...done]));
+          if (next < file.decks.length) setTimeout(step, 0);
+        };
+        step();
+      });
     });
     return () => {
       alive = false;
@@ -78,6 +106,12 @@ export function PreconTable(props: {
               <tr>
                 <th>Nom</th>
                 <th>Couleurs</th>
+                <th
+                  className="deck-auto-col"
+                  title="Part des cartes que le moteur gère entièrement en mode automatique (détail au survol de chaque valeur)"
+                >
+                  Auto
+                </th>
                 {MODES.map((m) => (
                   <th
                     key={m}
@@ -109,6 +143,15 @@ export function PreconTable(props: {
                     </td>
                     <td className="deck-colors">
                       <ManaText text={p.colors.length > 0 ? p.colors.map((c) => `{${c}}`).join("") : "{C}"} />
+                    </td>
+                    <td className="deck-auto-col">
+                      {supports.has(p.id) ? (
+                        <SupportMark support={supports.get(p.id)!} />
+                      ) : (
+                        <span className="support-mark none" title="Analyse des cartes en cours…">
+                          …
+                        </span>
+                      )}
                     </td>
                     {MODES.map((m) => (
                       <td key={m} className={`deck-mode-col ${m === props.currentMode ? "current" : ""}`}>
