@@ -359,7 +359,7 @@ type EffectBase =
   | { type: "mill"; who: Who; count: Amount | "theirHand" }
   /** « Untap up to three lands. » (les terrains engagés du lanceur, choisis d'office) */
   | { type: "untapLands"; count: number }
-  /** Jeton prédéfini : Treasure, Food, Clue, Blood. */
+  /** Jeton prédéfini : Treasure, Food, Clue, Blood, Vibranium. */
   | { type: "namedToken"; name: string; count: Amount; tapped: boolean; who?: Who }
   /** « Create a token that's a copy of target Elemental you control. » */
   | { type: "copyTarget"; target: number }
@@ -804,7 +804,7 @@ const negate = (a: Amount): Amount | null => (typeof a === "object" ? { ...a, ne
  */
 function parseVariableSentence(s: string, target: (spec: TargetSpec) => number, lastTarget: () => number): Effect[] | null {
   let m: RegExpExecArray | null;
-  const NAMED = "(Treasure|Food|Clue|Blood)";
+  const NAMED = "(Treasure|Food|Clue|Blood|Vibranium)";
   const named = (w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
   // Points de vie : « Its controller gains life equal to its power. », « You gain life equal to the greatest power among… »
   if ((m = /^(its controller|you|target player|target opponent|each opponent|each player) (gains?|loses?) life equal to (.+)$/i.exec(s))) {
@@ -1589,7 +1589,7 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       const t = target(playerTarget(m[1]!));
       const loses = m[2]!.toLowerCase() === "loses";
       result.effects.push({ type: "life", who: { target: t }, amount: loses ? (n === "X" ? "-X" : -(n as number)) : n });
-    } else if ((m = new RegExp(`^target player creates ${NUM} (tapped )?(Treasure|Food|Clue|Blood) tokens?$`, "i").exec(s))) {
+    } else if ((m = new RegExp(`^target player creates ${NUM} (tapped )?(Treasure|Food|Clue|Blood|Vibranium) tokens?$`, "i").exec(s))) {
       const name = m[3]!.charAt(0).toUpperCase() + m[3]!.slice(1).toLowerCase();
       result.effects.push({ type: "namedToken", name, count: amount(m[1]!), tapped: !!m[2], who: { target: target({ label: "joueur", player: true }) } });
     } else if ((m = /^create a token that's a copy of target (.+)$/i.exec(s)) && parsePermanentFilter(m[1]!)) {
@@ -1597,7 +1597,7 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       result.effects.push({ type: "copyTarget", target: target({ label: permanentLabel(filter), permanent: filter }) });
     } else if (/^put a shield counter on a creature you control$/i.test(s)) {
       result.effects.push({ type: "shieldCounter" });
-    } else if ((m = new RegExp(`^(?:you )?create ${NUM} (tapped )?(Treasure|Food|Clue|Blood) tokens?$`, "i").exec(s))) {
+    } else if ((m = new RegExp(`^(?:you )?create ${NUM} (tapped )?(Treasure|Food|Clue|Blood|Vibranium) tokens?$`, "i").exec(s))) {
       const name = m[3]!.charAt(0).toUpperCase() + m[3]!.slice(1).toLowerCase();
       result.effects.push({ type: "namedToken", name, count: amount(m[1]!), tapped: !!m[2] });
     } else if ((m = /^create (?:a|an|one) (tapped )?(.+? tokens?) for each (.+)$/i.exec(s)) && parseToken(m[2]!) && parsePermanentFilter(m[3]!)) {
