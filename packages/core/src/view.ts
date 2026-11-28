@@ -97,7 +97,7 @@ export function viewFor(g: GameState, viewerId: PlayerId): GameView {
   for (const id of g.turnOrder) {
     const { zones, ...rest } = g.players[id]!;
     const viewZones = {} as Record<PlayerZone, CardView[]>;
-    for (const zone of PLAYER_ZONES) viewZones[zone] = zones[zone].map(viewCard);
+    for (const zone of PLAYER_ZONES) viewZones[zone] = (zones[zone] ?? []).map(viewCard);
     players[id] = { ...structuredClone(rest), zones: viewZones };
     const discards = handSizeDiscards(g, id);
     if (discards > 0) players[id].handSizeDiscards = discards;

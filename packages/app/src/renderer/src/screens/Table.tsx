@@ -943,6 +943,16 @@ function PlayerArea(props: {
         {priority && <span className="badge badge-priority">priorité</span>}
         <PlayerTags view={view} playerId={playerId} />
         {eliminated && <span className="badge badge-warn">éliminé ({eliminated})</span>}
+        {p.untilNextTurn?.protection && (
+          <span className="badge badge-ok" title="Jusqu'à son prochain tour : ni ciblé, ni blessé">
+            protection contre tout
+          </span>
+        )}
+        {p.untilNextTurn?.lifeCantChange && (
+          <span className="badge badge-ok" title="Jusqu'à son prochain tour, ses points de vie ne peuvent pas changer">
+            PV figés
+          </span>
+        )}
         <Stepper
           label="PV"
           value={p.life}
@@ -1023,6 +1033,14 @@ function PlayerArea(props: {
             drop={exileDrop}
             onOpen={() => props.onOpenZone({ zone: "exile", playerId })}
           />
+          {p.zones.phasedOut?.length > 0 && (
+            <Pile
+              view={view}
+              cards={p.zones.phasedOut}
+              label="Hors phase"
+              onOpen={() => props.onOpenZone({ zone: "phasedOut", playerId })}
+            />
+          )}
         </div>
 
         <div className={`command-zone ${commandDrop.className}`} {...commandDrop.handlers}>
@@ -1185,15 +1203,16 @@ function Pile(props: {
   view: GameView;
   cards: CardView[];
   label: string;
-  drop: ReturnType<typeof useDrop>;
+  /** Sans `drop` : on ne peut rien y déposer (zone hors phase). */
+  drop?: ReturnType<typeof useDrop>;
   onOpen: () => void;
 }) {
   const top = props.cards.at(-1);
   const img = top ? cardImage(props.view, top, "small") : null;
   return (
     <div
-      className={`pile ${props.drop.className}`}
-      {...props.drop.handlers}
+      className={`pile ${props.drop?.className ?? ""}`}
+      {...(props.drop?.handlers ?? {})}
       onClick={props.onOpen}
       title={`${props.label} : clic pour voir`}
     >
@@ -1592,6 +1611,7 @@ function Log(props: { view: GameView }) {
 const ZONE_TITLES: Partial<Record<Zone, string>> = {
   graveyard: "Cimetière",
   exile: "Exil",
+  phasedOut: "Hors phase (traités comme s'ils n'existaient pas ; ils reviennent avant le dégagement de leur contrôleur)",
   library: "Cartes connues de la bibliothèque (dessus en premier)",
 };
 

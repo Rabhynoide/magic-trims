@@ -204,6 +204,11 @@ type EffectBase =
   /** The Eternal Wanderer −4 : chaque joueur garde la créature choisie et sacrifie les autres. */
   | { type: "keepOnePerPlayer" }
   | { type: "exileAll"; filter: PermanentFilter }
+  /** Mise hors phase (règle 702.26) : « target creature phases out », « All permanents you control phase out ». */
+  | { type: "phaseOut"; target: number }
+  | { type: "phaseOutAll"; filter: PermanentFilter }
+  /** Teferi's Protection : « Until your next turn, your life total can't change and you gain protection from everything. » */
+  | { type: "playerUntilNextTurn"; lifeCantChange: boolean; protection: boolean }
   | { type: "bounce"; target: number }
   | { type: "damage"; target: number | "event" | "you"; amount: Amount }
   | { type: "damageEach"; who: "opponents" | "players" | "creatures" | "yourOtherCreatures"; amount: Amount }
@@ -382,6 +387,8 @@ export interface SpellEffects {
   /** `cost` : le coût supplémentaire d'un mode de Spree (« + {2} — … »), payé en lançant le sort. */
   modes?: { min: number; max: number; maxWithCommander?: number; list: { label: string; effects: Effect[]; targets?: TargetSpec[]; cost?: string }[] };
   effects: Effect[];
+  /** « Exile ~. » : le sort va en exil et non au cimetière en se résolvant. */
+  exileSelf?: boolean;
   /** Phrases que le moteur ne sait pas appliquer. */
   unknown: string[];
 }
@@ -1443,6 +1450,24 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     } else if (/^target opponent chooses a permanent they control at random and sacrifices it$/i.test(s)) {
       result.effects.push({ type: "randomSacrificeLoop", player: target({ label: "adversaire", player: true, opponent: true }) });
       followUps.push(/^if a nonland permanent is sacrificed this way, repeat this process$/i);
+    } else if (/^exile ~$/i.test(s)) {
+      result.exileSelf = true;
+    } else if ((m = /^until your next turn, (.+)$/i.exec(s)) && m[1]!.split(/,? and |, /).every((p) => /^(your life total can't change|you gain protection from everything)$/i.test(p.trim()))) {
+      result.effects.push({ type: "playerUntilNextTurn", lifeCantChange: /life total can't change/i.test(m[1]!), protection: /protection from everything/i.test(m[1]!) });
+    } else if ((m = /^(?:all|each) (.+?) phases? out$/i.exec(s))) {
+      const filter = parsePermanentFilter(m[1]!);
+      if (!filter) {
+        result.unknown.push(sentence);
+        continue;
+      }
+      result.effects.push({ type: "phaseOutAll", filter });
+    } else if ((m = /^(up to one )?target (.+?) phases out$/i.exec(s))) {
+      const filter = parsePermanentFilter(m[2]!);
+      if (!filter) {
+        result.unknown.push(sentence);
+        continue;
+      }
+      result.effects.push({ type: "phaseOut", target: target({ label: permanentLabel(filter), permanent: filter, ...(m[1] ? { upTo: true } : {}) }) });
     } else if ((m = /^gain control of (target|all) (.+?)( until end of turn)?$/i.exec(s)) && parsePermanentFilter(m[2]!)) {
       const filter = parsePermanentFilter(m[2]!)!;
       result.effects.push({
@@ -1646,6 +1671,8 @@ export function isLegalTarget(g: GameState, spec: TargetSpec, target: Target, ca
     const p = g.players[target.id];
     if (!spec.player || !p || p.hasConceded) return false;
     if (!spec.choice && playerHasShroud(g, p.id)) return false;
+    // Protection contre tout (Teferi's Protection) : ni ses propres sorts ni ceux des autres ne le ciblent.
+    if (!spec.choice && p.untilNextTurn?.protection) return false;
     if (!spec.choice && playerHasHexproof(g, p.id) && p.id !== casterId && !areTeammates(g, p.id, casterId)) return false;
     if (spec.notOwner && sourceId) {
       const src = g.cards[sourceId];

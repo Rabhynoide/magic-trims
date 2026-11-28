@@ -982,6 +982,8 @@ export function modifyDamage(g: GameState, source: DamageSource, target: { playe
   }
   if (target.player) {
     const owner = g.players[target.player]!;
+    // Protection contre tout (Teferi's Protection) : toutes les blessures sont prévenues.
+    if (owner.untilNextTurn?.protection) return 0;
     for (const c of owner.zones.battlefield.map((id) => g.cards[id]!)) {
       for (const s of staticsOf(g, c)) {
         if (s.kind !== "preventToYou") continue;
