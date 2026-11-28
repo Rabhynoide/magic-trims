@@ -153,10 +153,11 @@ export function cardMenu(view: GameView, card: CardView): MenuItem[] {
   }
 
   // Rebond, cascade : un sort exilé qu'on peut lancer sans payer son coût.
-  if ((zone === "exile" || zone === "graveyard") && card.ownerId === me && !card.hidden) {
+  // Etali : la permission peut appartenir à un autre joueur que le propriétaire.
+  if ((zone === "exile" || zone === "graveyard") && !card.hidden) {
     const state = stateFromView(view);
     const instance = id ? state.cards[id] : undefined;
-    if (instance && exilePermissionHolds(state, instance)) {
+    if (instance && (instance.castPermission?.caster ?? instance.ownerId) === me && exilePermissionHolds(state, instance)) {
       const permission = instance.castPermission!;
       const how = permission.free ? "gratuit" : permission.foretell ? `pour ${permission.foretell}` : "";
       const play = playItems(view, card).map((item) =>

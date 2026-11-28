@@ -225,6 +225,8 @@ export interface CardInstance {
     ignoreTiming?: boolean;
     whileOnStack?: CardInstanceId;
     reason: string;
+    /** Le joueur qui peut la lancer, s'il n'est pas son propriétaire (Etali). */
+    caster?: PlayerId;
     /** Présage : à lancer pour ce coût à un tour ultérieur à `turn` (sans limite de durée). */
     foretell?: string;
   };

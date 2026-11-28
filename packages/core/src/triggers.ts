@@ -508,6 +508,13 @@ function parseTriggerBody(text: string): { effects: SpellEffects; optional: bool
   if (/^you may look at the top X cards of your library, where X is that creature's power\. If you do, put one of those cards on top of your library and the rest on the bottom of your library in any order\.?$/i.test(text)) {
     return fixed({ type: "lookTopKeepOne" }, true);
   }
+  // Jodah : une cascade légendaire, par rapport au sort lancé (et non à la source).
+  const cascade = /^exile cards from the top of your library until you exile a (legendary )?nonland card with lesser mana value\. You may cast that card without paying its mana cost\. Put the rest on the bottom of your library in a random order\.?$/i.exec(text);
+  if (cascade) return fixed({ type: "cascade", ofEvent: true, ...(cascade[1] ? { legendary: true } : {}) });
+  // Etali : la carte du dessus de chaque bibliothèque, ses sorts se lancent gratuitement.
+  if (/^exile the top card of each player's library, then you may cast any number of spells from among those cards without paying their mana costs\.?$/i.test(text)) {
+    return fixed({ type: "exileTopEachCastFree" });
+  }
   // Sylvan Library : piocher en plus, puis pour chacune des cartes choisies parmi celles piochées ce tour, payer des PV ou la remettre dessus.
   const library = /^you may draw (\w+) additional cards?\. If you do, choose (\w+) cards? in your hand drawn this turn\. For each of those cards, pay (\d+) life or put the card on top of your library\.?$/i.exec(text);
   const drawn = library ? NUMBER_WORDS[library[1]!.toLowerCase()] : undefined;
