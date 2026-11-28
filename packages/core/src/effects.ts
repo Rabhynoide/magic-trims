@@ -11,8 +11,8 @@ import { COMBAT_KEYWORDS, creatureStats, hasKeyword, protectedFrom } from "./com
 import { grantedManaAbility, manaOptions, manaTapEffect } from "./mana.js";
 import { parsePermanentAbilities, parseWard } from "./triggers.js";
 import { areTeammates } from "./modes.js";
-import { joinModes, keywordList, NUMBER_WORDS, selfToTilde } from "./text.js";
-import { isChangeling, isCreatureSubtype, playerHasHexproof, playerHasShroud, printedEvoke, typeLineHasCreatureType } from "./statics.js";
+import { CANT_BE_BLOCKED, joinModes, keywordList, NUMBER_WORDS, selfToTilde } from "./text.js";
+import { isChangeling, isCreatureSubtype, parseStaticLine, playerHasHexproof, playerHasShroud, printedEvoke, typeLineHasCreatureType } from "./statics.js";
 
 export { selfToTilde };
 import type { CardData, CardFace, CardInstance, GameState, PlayerId } from "./types.js";
@@ -245,6 +245,7 @@ type EffectBase =
   /** « Return ~ from your graveyard to your hand. » */
   | { type: "returnSelf" }
   /** « ~ gets +1/+1 until end of turn. » */
+  /** `keywords` : « ~ can't be blocked this turn » (pseudo-mot-clé « can't be blocked »). */
   | { type: "pumpSelf"; power: number; toughness: number; keywords?: string[] }
   /** Havoc Eater : provoque une créature par adversaire, puis des marqueurs selon leur force totale. */
   | { type: "goad"; targets: number[]; countersFromPower?: boolean }
@@ -294,6 +295,8 @@ type EffectBase =
   | { type: "sacrifice"; filter: PermanentFilter; another?: boolean; orElse?: Effect[] }
   /** « tap ~ ». */
   | { type: "tapSelf" }
+  /** « Tap target creature » (Dispatch). */
+  | { type: "tap"; target: number }
   | { type: "untapSelf" }
   /** Jinxed Choker : « deals damage to you equal to the number of charge counters on it ». */
   | { type: "selfCounterDamage"; kind: string }
@@ -367,7 +370,7 @@ type EffectBase =
   | { type: "mill"; who: Who; count: Amount | "theirHand" }
   /** « Untap up to three lands. » (les terrains engagés du lanceur, choisis d'office) */
   | { type: "untapLands"; count: number }
-  /** Jeton prédéfini : Treasure, Food, Clue, Blood. */
+  /** Jeton prédéfini : Treasure, Food, Clue, Blood, Vibranium. */
   | { type: "namedToken"; name: string; count: Amount; tapped: boolean; who?: Who }
   /** « Create a token that's a copy of target Elemental you control. » */
   | { type: "copyTarget"; target: number }
@@ -607,6 +610,14 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
   }
   if ((m = /^(?:you )?draw that many cards$/i.exec(s))) return [{ type: "draw", who: "you", count: "event" }];
   if (/^attach ~ to (?:it|that creature)$/i.test(s) && lastTarget() < 0) return [{ type: "attachEvent" }];
+  // Dispatch : « Tap target creature. … exile that creature. » (la cible déjà choisie).
+  if ((m = /^tap target (.+)$/i.exec(s))) {
+    const filter = parsePermanentFilter(m[1]!);
+    if (filter) return [{ type: "tap", target: target({ label: permanentLabel(filter), permanent: filter }) }];
+  }
+  if ((m = /^(destroy|exile) (?:it|that creature|that permanent)$/i.exec(s)) && lastTarget() >= 0) {
+    return [{ type: m[1]!.toLowerCase() === "destroy" ? "destroy" : "exile", target: lastTarget() }];
+  }
   // The Great Henge : « put a +1/+1 counter on it and draw a card » (la créature arrivée).
   if ((m = new RegExp(`^put ${NUM} ([+-]1/[+-]1|\\w+) counters? on (?:it|that creature)(?: and draw ${NUM} cards?)?$`, "i").exec(s)) && lastTarget() < 0) {
     const n = amount(m[1]!);
@@ -723,6 +734,10 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
   if ((m = /^~ gets ([+-]\d+)\/([+-]\d+) until end of turn$/i.exec(s))) {
     return [{ type: "pumpSelf", power: parseInt(m[1]!, 10), toughness: parseInt(m[2]!, 10) }];
   }
+  // « ~ can't be blocked this turn », « ~ gets +1/+0 and can't be blocked this turn ».
+  if ((m = /^~ (?:gets ([+-]\d+)\/([+-]\d+) and )?can't be blocked this turn$/i.exec(s))) {
+    return [{ type: "pumpSelf", power: m[1] ? parseInt(m[1], 10) : 0, toughness: m[2] ? parseInt(m[2], 10) : 0, keywords: [CANT_BE_BLOCKED] }];
+  }
   // « ~ gains double strike and trample until end of turn » (Okoye), « that creature gets +1/+1 and gains trample until end of turn » (M'Baku).
   // « That creature gains haste » seul reste aux effets qui le complètent (Incandescent Soulstoke).
   if ((m = /^(~|it|that creature) (?:gets ([+-]\d+)\/([+-]\d+) and gains (.+?)|gains (.+?)) until end of turn$/i.exec(s)) && (m[1] === "~" || (lastTarget() < 0 && m[2] !== undefined))) {
@@ -830,7 +845,7 @@ const negate = (a: Amount): Amount | null => (typeof a === "object" ? { ...a, ne
  */
 function parseVariableSentence(s: string, target: (spec: TargetSpec) => number, lastTarget: () => number): Effect[] | null {
   let m: RegExpExecArray | null;
-  const NAMED = "(Treasure|Food|Clue|Blood)";
+  const NAMED = "(Treasure|Food|Clue|Blood|Vibranium)";
   const named = (w: string) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
   // Points de vie : « Its controller gains life equal to its power. », « You gain life equal to the greatest power among… »
   if ((m = /^(its controller|you|target player|target opponent|each opponent|each player) (gains?|loses?) life equal to (.+)$/i.exec(s))) {
@@ -1095,6 +1110,8 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     flushIf();
     let s = sentence.replace(/\.$/, "");
     if (HARMLESS.some((re) => re.test(sentence))) continue;
+    // « This spell costs {1} less to cast for each creature on the battlefield » : appliqué en le lançant (selfCostReduction).
+    if (parseStaticLine(sentence)?.kind === "selfCost") continue;
     const followUp = followUps.findIndex((re) => re.test(s));
     if (followUp >= 0) {
       followUps.splice(followUp, 1);
@@ -1102,6 +1119,8 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     }
     let m: RegExpExecArray | null;
     let dig: RegExpExecArray | null;
+    // Métal (« Metalcraft — If you control three or more artifacts, … ») : la condition est lue juste après.
+    s = s.replace(/^metalcraft — (?=if you control )/i, "");
     // Shuri : « Then if you control six or more artifacts, … » ; « draw a card if you control three or more artifacts ».
     s = s.replace(/^then (?=if )/i, "");
     if ((m = /^(draw (?:a|an|one|two|three) cards?) if you control (\w+ or more .+)$/i.exec(s))) s = `If you control ${m[2]!}, ${m[1]!}`;
@@ -1470,6 +1489,14 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
         ...(/next turn/i.test(m[7]!) ? { untilNextTurn: true } : {}),
         ...(pumpX ? { x: pumpX } : {}),
       });
+    } else if (
+      (m = /^(up to one |another )?target (.+?) (?:gets ([+-]\d+)\/([+-]\d+) and )?can't be blocked this turn$/i.exec(s)) &&
+      parsePermanentFilter(m[2]!)?.types.includes("creature")
+    ) {
+      // « Target creature can't be blocked this turn », « Target creature with power 2 or less gets +1/+0 and can't be blocked this turn ».
+      const filter = parsePermanentFilter(m[2]!)!;
+      const t = target({ label: permanentLabel(filter), permanent: filter, ...(/up to/i.test(m[1] ?? "") ? { upTo: true } : {}), ...(/another/i.test(m[1] ?? "") ? { another: true } : {}) });
+      result.effects.push({ type: "pumpTarget", target: t, power: m[3] ? parseInt(m[3], 10) : 0, toughness: m[4] ? parseInt(m[4], 10) : 0, keywords: [CANT_BE_BLOCKED] });
     } else if ((m = new RegExp(`^you gain ${NUM} life and draw ${NUM} cards?$`, "i").exec(s))) {
       result.effects.push({ type: "life", who: "you", amount: amount(m[1]!) }, { type: "draw", who: "you", count: amount(m[2]!) });
     } else if ((m = new RegExp(`^put ${NUM} cards from your hand on top of your library in any order$`, "i").exec(s))) {
@@ -1647,7 +1674,7 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       const t = target(playerTarget(m[1]!));
       const loses = m[2]!.toLowerCase() === "loses";
       result.effects.push({ type: "life", who: { target: t }, amount: loses ? (n === "X" ? "-X" : -(n as number)) : n });
-    } else if ((m = new RegExp(`^target player creates ${NUM} (tapped )?(Treasure|Food|Clue|Blood) tokens?$`, "i").exec(s))) {
+    } else if ((m = new RegExp(`^target player creates ${NUM} (tapped )?(Treasure|Food|Clue|Blood|Vibranium) tokens?$`, "i").exec(s))) {
       const name = m[3]!.charAt(0).toUpperCase() + m[3]!.slice(1).toLowerCase();
       result.effects.push({ type: "namedToken", name, count: amount(m[1]!), tapped: !!m[2], who: { target: target({ label: "joueur", player: true }) } });
     } else if ((m = /^create a token that's a copy of target (.+)$/i.exec(s)) && parsePermanentFilter(m[1]!)) {
@@ -1655,7 +1682,7 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       result.effects.push({ type: "copyTarget", target: target({ label: permanentLabel(filter), permanent: filter }) });
     } else if (/^put a shield counter on a creature you control$/i.test(s)) {
       result.effects.push({ type: "shieldCounter" });
-    } else if ((m = new RegExp(`^(?:you )?create ${NUM} (tapped )?(Treasure|Food|Clue|Blood) tokens?$`, "i").exec(s))) {
+    } else if ((m = new RegExp(`^(?:you )?create ${NUM} (tapped )?(Treasure|Food|Clue|Blood|Vibranium) tokens?$`, "i").exec(s))) {
       const name = m[3]!.charAt(0).toUpperCase() + m[3]!.slice(1).toLowerCase();
       result.effects.push({ type: "namedToken", name, count: amount(m[1]!), tapped: !!m[2] });
     } else if ((m = /^create (?:a|an|one) (tapped )?(.+? tokens?) for each (.+)$/i.exec(s)) && parseToken(m[2]!) && parsePermanentFilter(m[3]!)) {
@@ -2118,6 +2145,7 @@ export const KEYWORD_HELP: Record<string, { name: string; help: string }> = {
   annihilator: { name: "Annihilateur", help: "Quand elle attaque, le joueur défenseur sacrifie autant de permanents." },
   evoke: { name: "Évocation", help: "Peut se lancer pour son coût d'évocation ; elle est alors sacrifiée en arrivant." },
   changeling: { name: "Changelin", help: "Cette carte a tous les types de créature." },
+  [CANT_BE_BLOCKED]: { name: "Imblocable", help: "Ne peut pas être bloquée." },
 };
 
 /**

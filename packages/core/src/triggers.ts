@@ -82,6 +82,8 @@ export type TriggerCondition =
       creature: boolean;
       whose: Whose;
       ifCast?: boolean;
+      /** « one or more artifacts you control enter » : une fois par action, quel que soit le nombre d'arrivées. */
+      batched?: boolean;
       land?: boolean;
       minPower?: number;
       subtype?: string;
@@ -361,6 +363,22 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
       ...(types.length > 0 ? { types } : {}),
       whose: controls === "you control" || /under your control/i.test(t) ? "you" : controls ? "opponent" : "any",
     };
+  }
+  // « one or more artifacts you control enter » (Ingenious Smith) : la forme au singulier, une fois par action.
+  if ((m = /^one or more ((?:other |nontoken |token |legendary |artifact |enchantment )*)(creatures|artifacts|enchantments|lands|permanents|planeswalkers|[A-Z][a-z]+s)( you control| your opponents control)? enter(?: the battlefield)?$/.exec(t))) {
+    const adj = m[1]!.trim();
+    const words = adj.split(/\s+/).filter(Boolean);
+    const other = words[0] === "other";
+    const rest = (other ? words.slice(1) : words).join(" ");
+    const plural = m[2]!;
+    const irregular: Record<string, string> = { Elves: "Elf", Dwarves: "Dwarf", Wolves: "Wolf", Werewolves: "Werewolf" };
+    const noun = irregular[plural] ?? (/(x|ch|sh)es$/.test(plural) ? plural.slice(0, -2) : plural.slice(0, -1));
+    const phrase = `${rest ? `${rest} ` : ""}${noun}`;
+    const article = other ? "another" : /^[aeiou]/i.test(phrase) ? "an" : "a";
+    const controls = m[3] ? (m[3].trim() === "you control" ? " you control" : " an opponent controls") : "";
+    const single = parseTriggerCondition(`${article} ${phrase}${controls} enters`);
+    if (single?.on === "enters") return { ...single, batched: true };
+    return null;
   }
   if (/^~ dies$/i.test(t)) return { on: "dies", self: true, others: false, whose: "you" };
   if ((m = /^one or more other creatures( you control| an opponent controls)? die$/i.exec(t))) {

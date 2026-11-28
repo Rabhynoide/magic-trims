@@ -64,8 +64,8 @@ describe("Wakanda famille 3 : déclencheurs d'attaque", () => {
     for (const name of ["Everett K. Ross, Hapless Attaché", "Storm, Queen of Wakanda", "Shuri, the Black Panther", "Coveted Jewel", "Sword of the Animist"]) {
       expect(cardSupport(real(name)), name).toEqual({ level: "full", unknown: [] });
     }
-    // Bast : il ne reste que la restriction d'attaque (famille 11).
-    expect(cardSupport(real("Bast, Panther Goddess")).unknown).toEqual(["Bast can't attack or block unless you control three or more creatures."]);
+    // Bast : la restriction d'attaque est gérée depuis la PR #142, la carte est donc entièrement gérée.
+    expect(cardSupport(real("Bast, Panther Goddess")).unknown).toEqual([]);
   });
 
   it("Bast : une seule fois par attaque, +X/+X où X est le nombre de vos créatures", () => {

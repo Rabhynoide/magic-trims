@@ -8,7 +8,7 @@
  * encore) : il lance donc surtout des permanents.
  */
 import type { GameAction } from "./actions.js";
-import { canAttack, canBlock as canBlockAttacker, cantBlock, creatureStats, hasKeyword, isCreature } from "./combat.js";
+import { canAttack, canBlock as canBlockAttacker, cantAttackPlayer, cantBlock, creatureStats, hasKeyword, isCreature } from "./combat.js";
 import { isLegalTarget, spellEffectsOf, type Target } from "./effects.js";
 import { abilitiesOf, stackTrigger } from "./triggers.js";
 import { areTeammates, isActivePlayer, playersChoosingOpeningHand, teamOf } from "./modes.js";
@@ -168,7 +168,9 @@ function chooseAttacks(g: GameState, botId: PlayerId): { cardId: CardInstanceId;
   // Les créatures provoquées attaquent forcément, un autre joueur que celui qui les a provoquées si possible.
   for (const card of attackersOf(g, botId)) {
     if (!card.goadedBy?.length) continue;
-    const defender = foes.find((f) => !card.goadedBy!.includes(f)) ?? foes[0]!;
+    const allowed = foes.filter((f) => !cantAttackPlayer(g, card, f));
+    if (allowed.length === 0) continue;
+    const defender = allowed.find((f) => !card.goadedBy!.includes(f)) ?? allowed[0]!;
     const existing = chosen.find((a) => a.cardId === card.instanceId);
     if (existing) {
       if (card.goadedBy.includes(existing.defender) && !card.goadedBy.includes(defender)) existing.defender = defender;
@@ -184,7 +186,7 @@ function chooseFreeAttacks(g: GameState, botId: PlayerId, foes: PlayerId[]): { c
   return ready
     .filter((card) => {
       const { power, toughness } = creatureStats(g, card);
-      if (power <= 0) return false;
+      if (power <= 0 || cantAttackPlayer(g, card, defender)) return false;
       if (blockers.length === 0) return true;
       const able = blockers.filter((b) => canBlockAttacker(g, b, card));
       // Un bloqueur capable de tuer l'attaquant en survivant rend l'attaque risquée.
