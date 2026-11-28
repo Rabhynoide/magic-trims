@@ -4,7 +4,7 @@ import { viewFor } from "../src/view.js";
 import type { GameAction } from "../src/actions.js";
 import { createGame, upgradeGame } from "../src/setup.js";
 import type { GameModeType, GameState } from "../src/types.js";
-import { fakeDeck, newTestGame } from "./helpers.js";
+import { fakeDeck, newTestGame, keepAllHands } from "./helpers.js";
 
 function act(g: GameState, actorId: string, action: GameAction): GameState {
   const r = applyAction(g, { actorId, action });
@@ -20,13 +20,13 @@ function refuse(g: GameState, actorId: string, action: GameAction): string {
 
 function game(mode: GameModeType, count: number): GameState {
   const names = ["Alice", "Bruno", "Chloé", "David"];
-  return createGame({
+  return keepAllHands(createGame({
     id: "t",
     seed: 1,
     mode,
     randomTurnOrder: false,
     players: names.slice(0, count).map((name, i) => ({ id: `p${i + 1}`, name, deck: fakeDeck(name), priorityStops: [] })),
-  });
+  }));
 }
 
 describe("Tours et phases", () => {
@@ -131,13 +131,13 @@ describe("Tours et phases", () => {
   });
 
   it("sans automatismes, le tour avance sans piocher ni dégager", () => {
-    let g = createGame({
+    let g = keepAllHands(createGame({
       id: "t",
       seed: 1,
       randomTurnOrder: false,
       settings: { autoTurnActions: false },
       players: ["A", "B", "C"].map((name, i) => ({ id: `p${i + 1}`, name, deck: fakeDeck(name), priorityStops: [] })),
-    });
+    }));
     g = act(g, "p1", { type: "nextStep" });
     expect(g.players.p1!.zones.hand).toHaveLength(7);
   });

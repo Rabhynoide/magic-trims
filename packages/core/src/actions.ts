@@ -18,6 +18,13 @@ export type GameAction =
   | { type: "mulligan" }
   /** Après un mulligan : met les cartes choisies de la main au-dessous de la bibliothèque (dans cet ordre). */
   | { type: "bottomMulligan"; cardIds: CardInstanceId[] }
+  /** Début de partie : garde sa main de départ (sans carte à mettre au-dessous). */
+  | { type: "keepHand" }
+  /**
+   * Début de partie : fait garder sa main à un joueur qui tarde ou s'est
+   * déconnecté. Réservé à l'hôte (vérifié par le serveur).
+   */
+  | { type: "forceKeep"; playerId: PlayerId }
   /** Étape de nettoyage : défausse les cartes choisies pour revenir à la taille maximale de main (règle 514.1). */
   | { type: "discardToHandSize"; cardIds: CardInstanceId[] }
   /** Déplace les N cartes du dessus de la bibliothèque (meule, exil…). */

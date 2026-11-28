@@ -148,6 +148,7 @@ export function createGame(options: NewGameOptions): GameState {
       commanderCasts: {},
       mulligans: 0,
       mulliganBottom: 0,
+      handKept: false,
       manaPool: emptyPool(),
       landsPlayed: 0,
       hasConceded: false,
@@ -198,6 +199,7 @@ export function createGame(options: NewGameOptions): GameState {
   const first = settings.sharedTurns ? teams.find((t) => t.includes(turnOrder[0]!))! : [turnOrder[0]!];
   const firstNames = first.map((id) => g.players[id]!.name).join(" et ");
   log(g, null, `Partie en mode ${mode.label}. ${firstNames} ${first.length > 1 ? "jouent" : "joue"} en premier.`);
+  log(g, null, "Chacun garde sa main de départ ou prend un mulligan : le tour 1 commence quand tout le monde a gardé.");
   return g;
 }
 

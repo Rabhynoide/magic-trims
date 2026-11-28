@@ -60,8 +60,10 @@ describe("serveur de partie", () => {
     expect(view.turnOrder).toHaveLength(3);
     expect(view.players[bruno.playerId!]!.zones.hand).toHaveLength(7);
 
+    // Chacun garde sa main de départ.
+    for (const c of [alice, bruno, chloe]) expect(await c.act({ type: "keepHand" })).toEqual({ ok: true });
     const activeClient = [alice, bruno, chloe].find((c) => c.playerId === view.turn.activePlayerId)!;
-    const update = next<GameView>(chloe, "state", (v) => v.version === 1);
+    const update = next<GameView>(chloe, "state", (v) => v.version === 4);
     expect(await activeClient.act({ type: "draw", count: 1 })).toEqual({ ok: true });
     await update;
     // Le cache du client garde les données de cartes reçues plus tôt.
@@ -120,13 +122,14 @@ describe("serveur de partie", () => {
     const started = next<GameView>(alice, "state", () => true);
     alice.start();
     await started;
+    expect(await alice.act({ type: "keepHand" })).toEqual({ ok: true });
     expect(await alice.act({ type: "adjustLife", playerId: alice.playerId!, delta: -3 })).toEqual({ ok: true });
     alice.close();
     await server.close();
     servers.splice(servers.indexOf(server), 1);
 
     const snapshot = await loadSnapshot(savePath);
-    expect(JSON.parse(await readFile(savePath, "utf8")).game.version).toBe(1);
+    expect(JSON.parse(await readFile(savePath, "utf8")).game.version).toBe(2);
     const resumed = await start({ restore: snapshot });
     expect(resumed.hostKey).toBe(server.hostKey);
     const again = client(resumed, "Alice", { hostKey: resumed.hostKey });

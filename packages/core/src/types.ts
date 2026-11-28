@@ -334,6 +334,12 @@ export interface PlayerState {
    * après ses mulligans (règle 103.5) : la partie n'avance pas avant.
    */
   mulliganBottom: number;
+  /**
+   * Main de départ : `false` tant que le joueur n'a pas décidé de la garder.
+   * Le tour 1 ne commence que quand tous l'ont gardée. Absent (anciennes
+   * parties) : la main est gardée.
+   */
+  handKept?: boolean;
   /** Points de vie perdus ce tour (Wound Reflection). */
   lifeLost?: { turn: number; amount: number };
   /** Cartes piochées ce tour (Gixian Puppeteer). */

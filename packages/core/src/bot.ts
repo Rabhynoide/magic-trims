@@ -11,7 +11,7 @@ import type { GameAction } from "./actions.js";
 import { canAttack, canBlock as canBlockAttacker, cantBlock, creatureStats, hasKeyword, isCreature } from "./combat.js";
 import { isLegalTarget, spellEffectsOf, type Target } from "./effects.js";
 import { abilitiesOf, stackTrigger } from "./triggers.js";
-import { areTeammates, isActivePlayer, teamOf } from "./modes.js";
+import { areTeammates, isActivePlayer, playersChoosingOpeningHand, teamOf } from "./modes.js";
 import { applyAction, handSizeDiscards } from "./reducer.js";
 import { MAX_HAND_SIZE } from "./turn.js";
 import { hasNoMaxHandSize } from "./statics.js";
@@ -27,6 +27,9 @@ export function chooseBotAction(g: GameState, botId: PlayerId): GameAction | nul
     const sorted = [...me.zones.hand].sort((a, b) => manaValue(g, b) - manaValue(g, a));
     return { type: "bottomMulligan", cardIds: sorted.slice(0, me.mulliganBottom) };
   }
+  // Main de départ : le bot garde toujours ; puis il attend les autres.
+  if (me.handKept === false) return { type: "keepHand" };
+  if (playersChoosingOpeningHand(g).length > 0) return null;
 
   // Ses capacités déclenchées qui attendent des cibles : un adversaire de préférence.
   const waiting = g.stack.map((id) => g.cards[id]!).find((c) => c.ability?.needsTargets && c.controllerId === botId);

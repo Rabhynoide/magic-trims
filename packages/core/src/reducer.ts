@@ -1,7 +1,7 @@
 import type { ActionEnvelope, GameAction } from "./actions.js";
 import { nextRandom, shuffleInPlace } from "./rng.js";
 import { reduceGenericCost } from "./activated.js";
-import { eliminationReason, isActivePlayer, lifeSharers, areTeammates, teamOf } from "./modes.js";
+import { eliminationReason, isActivePlayer, lifeSharers, areTeammates, teamOf, playersChoosingOpeningHand } from "./modes.js";
 import {
   MANA_LABELS,
   emptyPool,
@@ -113,7 +113,14 @@ export function applyAction(state: GameState, envelope: ActionEnvelope): ActionR
     if (actor.hasConceded && envelope.action.type !== "concede") {
       throw new ActionError(actor.lostReason ? "Tu as perdu cette partie." : "Tu as abandonné cette partie.");
     }
+    const choosingHands = playersChoosingOpeningHand(draft).length > 0;
+    if (choosingHands && !OPENING_HAND_ACTIONS.has(envelope.action.type)) {
+      throw new ActionError("La partie commence quand tout le monde a gardé sa main de départ.");
+    }
     handlers[envelope.action.type](draft, actor, envelope.action as never);
+    if (choosingHands && playersChoosingOpeningHand(draft).length === 0) {
+      log(draft, null, "Tout le monde a gardé sa main : la partie commence.");
+    }
     checkStateBasedActions(draft);
     flushTriggers(draft);
     if (envelope.action.type !== "passPriority") updatePriority(state, draft, actor);
@@ -126,6 +133,17 @@ export function applyAction(state: GameState, envelope: ActionEnvelope): ActionR
     throw err;
   }
 }
+
+/** Les actions permises pendant le choix des mains de départ. */
+const OPENING_HAND_ACTIONS = new Set<GameAction["type"]>([
+  "mulligan",
+  "bottomMulligan",
+  "keepHand",
+  "forceKeep",
+  "concede",
+  "setPriorityStops",
+  "rollDie",
+]);
 
 type Handler<T extends GameAction["type"]> = (
   g: GameState,
@@ -145,6 +163,10 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
   },
 
   mulligan(g, actor) {
+    const choosing = playersChoosingOpeningHand(g).length > 0;
+    if (choosing && actor.handKept !== false) throw new ActionError("Tu as déjà gardé ta main.");
+    // Sans règles imposées, le mulligan reste libre (contournement).
+    if (!choosing && g.settings.enforceRules) throw new ActionError("Le mulligan se fait seulement en début de partie.");
     for (const id of [...actor.zones.hand]) moveCardTo(g, id, "library", "top");
     shuffleLibrary(g, actor);
     for (let i = 0; i < 7 && actor.zones.library.length > 0; i++) {
@@ -176,7 +198,37 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     }
     for (const id of cardIds) moveCardTo(g, id, "library", "bottom");
     actor.mulliganBottom = 0;
+    if (actor.handKept === false) actor.handKept = true;
     log(g, actor.id, `${actor.name} garde sa main et met ${plural(count, "carte")} au-dessous de sa bibliothèque.`);
+  },
+
+  keepHand(g, actor) {
+    if (actor.handKept !== false) throw new ActionError("Tu as déjà gardé ta main.");
+    if (actor.mulliganBottom > 0) {
+      throw new ActionError(`Choisis d'abord ${plural(actor.mulliganBottom, "carte")} à mettre au-dessous de ta bibliothèque.`);
+    }
+    actor.handKept = true;
+    log(g, actor.id, `${actor.name} garde sa main (${plural(actor.zones.hand.length, "carte")}).`);
+  },
+
+  forceKeep(g, actor, { playerId }) {
+    const target = getPlayer(g, playerId);
+    if (target.handKept !== false || target.hasConceded) throw new ActionError(`${target.name} a déjà gardé sa main.`);
+    // Cartes à mettre au-dessous après un mulligan : les plus chères.
+    const count = target.mulliganBottom;
+    if (count > 0) {
+      const bottom = [...target.zones.hand]
+        .sort((a, b) => manaValueOfCost(g.cardData[g.cards[b]!.cardId]?.manaCost ?? "") - manaValueOfCost(g.cardData[g.cards[a]!.cardId]?.manaCost ?? ""))
+        .slice(0, count);
+      for (const id of bottom) moveCardTo(g, id, "library", "bottom");
+      target.mulliganBottom = 0;
+    }
+    target.handKept = true;
+    log(
+      g,
+      actor.id,
+      `${actor.name} fait garder sa main à ${target.name} (${plural(target.zones.hand.length, "carte")}${count > 0 ? `, ${plural(count, "carte")} au-dessous de sa bibliothèque` : ""}).`,
+    );
   },
 
   discardToHandSize(g, actor, { cardIds }) {

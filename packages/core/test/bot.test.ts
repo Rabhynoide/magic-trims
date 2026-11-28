@@ -4,7 +4,7 @@ import { chooseBotAction } from "../src/bot.js";
 import { createGame } from "../src/setup.js";
 import type { CardData, GameState } from "../src/types.js";
 import type { ResolvedDeck } from "../src/deck/resolve.js";
-import { fakeCard, newTestGame } from "./helpers.js";
+import { fakeCard, newTestGame, keepAllHands } from "./helpers.js";
 
 /** Un deck jouable : 40 forêts et des créatures de 1 à 4 manas. */
 function greenDeck(prefix: string): ResolvedDeck {
@@ -40,7 +40,7 @@ function greenDeck(prefix: string): ResolvedDeck {
 }
 
 function botGame(): GameState {
-  return createGame({
+  return keepAllHands(createGame({
     id: "bots",
     seed: 7,
     mode: "duel",
@@ -49,7 +49,7 @@ function botGame(): GameState {
       { id: "b1", name: "Bot 1", deck: greenDeck("A"), priorityStops: [] },
       { id: "b2", name: "Bot 2", deck: greenDeck("B"), priorityStops: [] },
     ],
-  });
+  }));
 }
 
 /** Fait jouer les bots jusqu'à ce que plus aucun n'ait d'action, ou `max` actions. */

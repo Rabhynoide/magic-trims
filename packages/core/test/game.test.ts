@@ -3,7 +3,7 @@ import { applyAction, type ActionResult } from "../src/reducer.js";
 import type { GameAction } from "../src/actions.js";
 import { createGame } from "../src/setup.js";
 import type { GameState } from "../src/types.js";
-import { fakeCard, fakeDeck, newTestGame, endTurn } from "./helpers.js";
+import { fakeCard, fakeDeck, newTestGame, endTurn, openingTestGame } from "./helpers.js";
 
 function act(state: GameState, actorId: string, action: GameAction): GameState {
   const result: ActionResult = applyAction(state, { actorId, action });
@@ -175,7 +175,7 @@ describe("actions", () => {
   });
 
   it("prend un mulligan (le premier est gratuit)", () => {
-    let g = newTestGame();
+    let g = openingTestGame();
     g = act(g, "p1", { type: "mulligan" });
     expect(g.players.p1!.zones.hand).toHaveLength(7);
     expect(g.players.p1!.zones.library).toHaveLength(92);
@@ -186,14 +186,12 @@ describe("actions", () => {
   });
 
   it("oblige à mettre les cartes en trop au-dessous de la bibliothèque après des mulligans", () => {
-    let g = newTestGame();
+    let g = openingTestGame();
     g = act(g, "p2", { type: "mulligan" });
     g = act(g, "p2", { type: "mulligan" });
     g = act(g, "p2", { type: "mulligan" });
     expect(g.players.p2!.mulliganBottom).toBe(2);
-    // La partie n'avance pas tant que ce n'est pas fait.
-    expect(refuse(g, "p1", { type: "nextStep" })).toMatch(/Bruno doit d'abord mettre des cartes au-dessous/);
-    expect(refuse(g, "p1", { type: "passTurn" })).toMatch(/mulligan/);
+    expect(refuse(g, "p2", { type: "keepHand" })).toMatch(/Choisis d'abord 2 cartes/);
     const hand = g.players.p2!.zones.hand;
     expect(refuse(g, "p2", { type: "bottomMulligan", cardIds: [hand[0]!] })).toMatch(/exactement 2 cartes/);
     expect(refuse(g, "p2", { type: "bottomMulligan", cardIds: [hand[0]!, hand[0]!] })).toMatch(/exactement/);
@@ -202,9 +200,51 @@ describe("actions", () => {
     expect(g.players.p2!.zones.hand).toHaveLength(5);
     expect(g.players.p2!.zones.library).toHaveLength(94);
     expect(g.players.p2!.mulliganBottom).toBe(0);
+    // Mettre les cartes au-dessous, c'est garder sa main.
+    expect(g.players.p2!.handKept).toBe(true);
     expect(refuse(g, "p2", { type: "bottomMulligan", cardIds: [] })).toMatch(/pas de cartes/);
+    expect(refuse(g, "p2", { type: "mulligan" })).toMatch(/déjà gardé/);
+  });
+
+  it("attend que tout le monde ait gardé sa main pour commencer", () => {
+    let g = openingTestGame(3);
+    expect(refuse(g, "p1", { type: "nextStep" })).toMatch(/tout le monde a gardé sa main/);
+    expect(refuse(g, "p1", { type: "draw", count: 1 })).toMatch(/tout le monde a gardé sa main/);
+    g = act(g, "p1", { type: "keepHand" });
+    expect(g.log.at(-1)!.message).toBe("Alice garde sa main (7 cartes).");
+    expect(refuse(g, "p1", { type: "keepHand" })).toMatch(/déjà gardé/);
+    expect(refuse(g, "p1", { type: "nextStep" })).toMatch(/tout le monde a gardé sa main/);
+    g = act(g, "p2", { type: "mulligan" });
+    g = act(g, "p2", { type: "keepHand" });
+    // Un joueur qui abandonne ne bloque pas les autres.
+    g = act(g, "p3", { type: "concede" });
+    expect(g.log.some((l) => l.message === "Tout le monde a gardé sa main : la partie commence.")).toBe(true);
     g = act(g, "p1", { type: "nextStep" });
     expect(g.turn.step).toBe("draw");
+    // Le mulligan est fini une fois la partie commencée.
+    expect(refuse(g, "p1", { type: "mulligan" })).toMatch(/seulement en début de partie/);
+  });
+
+  it("laisse l'hôte faire garder sa main à un joueur qui tarde", () => {
+    let g = openingTestGame(2);
+    g = act(g, "p2", { type: "mulligan" });
+    g = act(g, "p2", { type: "mulligan" });
+    g = act(g, "p1", { type: "forceKeep", playerId: "p2" });
+    expect(g.players.p2!.handKept).toBe(true);
+    expect(g.players.p2!.zones.hand).toHaveLength(6);
+    expect(g.players.p2!.mulliganBottom).toBe(0);
+    expect(refuse(g, "p1", { type: "forceKeep", playerId: "p2" })).toMatch(/déjà gardé/);
+    g = act(g, "p1", { type: "keepHand" });
+    g = act(g, "p1", { type: "nextStep" });
+    expect(g.turn.step).toBe("draw");
+  });
+
+  it("garde le mulligan libre quand les règles ne sont pas imposées", () => {
+    let g = newTestGame();
+    g.settings.enforceRules = false;
+    g = act(g, "p2", { type: "mulligan" });
+    g = act(g, "p2", { type: "mulligan" });
+    expect(refuse(g, "p1", { type: "nextStep" })).toMatch(/Bruno doit d'abord mettre des cartes au-dessous/);
   });
 
   it("meule et regarde le dessus de la bibliothèque", () => {

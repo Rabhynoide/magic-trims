@@ -148,3 +148,15 @@ export function eliminationReason(g: GameState, p: PlayerState): string | null {
   if (p.drewFromEmpty) return "bibliothèque vide";
   return null;
 }
+
+/**
+ * Joueurs encore en lice qui n'ont pas gardé leur main de départ. Tant qu'il
+ * y en a, la partie n'a pas commencé : seuls les mulligans sont permis.
+ * Marche sur l'état complet comme sur la vue d'un joueur.
+ */
+export function playersChoosingOpeningHand<P extends { id: PlayerId; hasConceded: boolean; handKept?: boolean }>(g: {
+  turnOrder: PlayerId[];
+  players: Record<PlayerId, P>;
+}): P[] {
+  return g.turnOrder.map((id) => g.players[id]!).filter((p) => !p.hasConceded && p.handKept === false);
+}

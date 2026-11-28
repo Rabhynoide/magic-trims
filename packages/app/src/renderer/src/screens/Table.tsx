@@ -17,6 +17,7 @@ import {
   permanentLabel,
   permanentMatches,
   priorityStopsOf,
+  playersChoosingOpeningHand,
   spellMatches,
   type TargetSpec,
   TURN_PHASES,
@@ -839,6 +840,7 @@ export function Table() {
         <GraveyardTargetPicker view={view} />
         <ModesPanel view={view} />
         <ModesPrompt />
+        <OpeningHandPanel view={view} />
         {trigger.waitingName && !targeting && (
           <div className="targeting-banner" role="status">
             <span>
@@ -1232,6 +1234,79 @@ function Pile(props: {
   );
 }
 
+/**
+ * Début de partie : chacun garde sa main ou prend un mulligan, en même temps.
+ * Le tour 1 commence quand tout le monde a gardé ; l'hôte peut faire garder
+ * sa main à un joueur qui tarde ou s'est déconnecté.
+ */
+function OpeningHandPanel(props: { view: GameView }) {
+  const { view } = props;
+  if (playersChoosingOpeningHand(view).length === 0) return null;
+  const me = view.players[view.viewerId]!;
+  const isHost = session.state.isHost;
+  const choosing = me.handKept === false;
+  const toBottom = me.mulliganBottom ?? 0;
+  const handSize = me.zones.hand.length - toBottom;
+  const nextFree = view.settings.freeFirstMulligan && me.mulligans === 0;
+  return (
+    <div className="opening-hands" role="status">
+      <div className="opening-hands-head">
+        <strong>Main de départ</strong>
+        {choosing ? (
+          toBottom > 0 ? (
+            <span>Choisis dans ta main les cartes à mettre au-dessous de ta bibliothèque.</span>
+          ) : (
+            <>
+              <span>
+                Garde ta main ou prends un mulligan{nextFree ? " (le premier est gratuit)" : ""}. Le tour 1 commence quand
+                tout le monde a gardé.
+              </span>
+              <button className="primary" onClick={() => void act({ type: "keepHand" })}>
+                Garder ({handSize} {handSize > 1 ? "cartes" : "carte"})
+              </button>
+              <button onClick={() => void act({ type: "mulligan" })}>Mulligan</button>
+            </>
+          )
+        ) : (
+          <span>Tu as gardé ta main. On attend les autres joueurs…</span>
+        )}
+      </div>
+      <ul className="opening-hands-players">
+        {view.turnOrder.map((id) => {
+          const p = view.players[id]!;
+          if (p.hasConceded) return null;
+          const kept = p.handKept !== false;
+          const cards = p.zones.hand.length - (p.mulliganBottom ?? 0);
+          const status = kept
+            ? `a gardé (${cards} ${cards > 1 ? "cartes" : "carte"})`
+            : p.mulligans > 0
+              ? `réfléchit (mulligan n°${p.mulligans})`
+              : "réfléchit";
+          return (
+            <li key={id} className={kept ? "kept" : ""}>
+              <span>
+                {p.name}
+                {id === view.turnOrder[0] ? " (commence)" : ""} : {status}
+              </span>
+              {isHost && !kept && id !== view.viewerId && (
+                <button
+                  className="link"
+                  title="Garde sa main actuelle à sa place (cartes les plus chères au-dessous après un mulligan)"
+                  onClick={() => {
+                    if (confirm(`Faire garder sa main à ${p.name} ?`)) void act({ type: "forceKeep", playerId: id });
+                  }}
+                >
+                  Forcer à garder
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function Hand(props: { view: GameView }) {
   const { view } = props;
   const me = view.players[view.viewerId]!;
@@ -1263,6 +1338,7 @@ function Hand(props: { view: GameView }) {
           >
             Garder cette main
           </button>
+          {me.handKept === false && <button onClick={() => void act({ type: "mulligan" })}>Mulligan à nouveau</button>}
         </div>
       ) : toDiscard > 0 ? (
         <div className="mulligan-bar">
@@ -1399,6 +1475,8 @@ function StopsMenu(props: { view: GameView }) {
 function Toolbar(props: { view: GameView; isActive: boolean; onTokens: () => void }) {
   const { view } = props;
   const me = view.players[view.viewerId]!;
+  // Mains de départ en cours : le tour 1 n'a pas commencé.
+  const choosing = playersChoosingOpeningHand(view).length > 0;
   return (
     <div className="toolbar">
       <span className="turn-info">
@@ -1426,7 +1504,7 @@ function Toolbar(props: { view: GameView; isActive: boolean; onTokens: () => voi
       ) : (
         <button
           className="primary"
-          disabled={!props.isActive}
+          disabled={!props.isActive || choosing}
           title="Passe à l'étape suivante (Entrée)"
           onClick={() => void act({ type: "nextStep" })}
         >
@@ -1434,7 +1512,7 @@ function Toolbar(props: { view: GameView; isActive: boolean; onTokens: () => voi
         </button>
       )}
       <button
-        disabled={!props.isActive || view.stack.length > 0 || view.priority !== null}
+        disabled={!props.isActive || choosing || view.stack.length > 0 || view.priority !== null}
         onClick={() => void act({ type: "passTurn" })}
       >
         Finir le tour
@@ -1442,13 +1520,16 @@ function Toolbar(props: { view: GameView; isActive: boolean; onTokens: () => voi
       {view.settings.enforceRules && <StopsMenu view={view} />}
       <button onClick={() => void act({ type: "untapAll" })}>Tout dégager</button>
       <button onClick={() => void act({ type: "draw", count: 1 })}>Piocher</button>
-      <button
-        onClick={() => {
-          if (confirm("Prendre un mulligan ? Ta main repart dans la bibliothèque.")) void act({ type: "mulligan" });
-        }}
-      >
-        Mulligan{me.mulligans > 0 ? ` (${me.mulligans})` : ""}
-      </button>
+      {/* Après les mains de départ, le mulligan ne reste que sans règles imposées (contournement). */}
+      {!choosing && !view.settings.enforceRules && (
+        <button
+          onClick={() => {
+            if (confirm("Prendre un mulligan ? Ta main repart dans la bibliothèque.")) void act({ type: "mulligan" });
+          }}
+        >
+          Mulligan{me.mulligans > 0 ? ` (${me.mulligans})` : ""}
+        </button>
+      )}
       <button onClick={props.onTokens}>Jeton…</button>
       <button onClick={() => void act({ type: "rollDie", sides: 6 })}>Dé 6</button>
       <button onClick={() => void act({ type: "rollDie", sides: 20 })}>Dé 20</button>
