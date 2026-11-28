@@ -1469,6 +1469,7 @@ textarea:focus {
 }
 .sound-settings input[type="checkbox"] {
   width: auto;
+}
 .deck-support {
   margin: 6px 0;
   font-size: 13px;
