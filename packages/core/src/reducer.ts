@@ -78,7 +78,7 @@ import {
   legendRuleApplies,
   enterAsCopyOf,
 } from "./statics.js";
-import { canAttack, canBlock, cantAttack, cantBlock, colorsOf, creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatKeyword, type CombatState } from "./combat.js";
+import { canAttack, canBlock, cantAttack, cantAttackPlayer, cantBlock, unblockableBy, colorsOf, creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatKeyword, type CombatState } from "./combat.js";
 import { MAX_HAND_SIZE, STEP_LABELS, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
 import {
   HIDDEN_ORDERED_ZONES,
@@ -356,6 +356,8 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       const target = getPlayer(g, defender);
       if (target.hasConceded) throw new ActionError(`${target.name} a abandonné.`);
       if (isActivePlayer(g, defender)) throw new ActionError("On n'attaque pas son propre camp.");
+      const forbidden = cantAttackPlayer(g, card, defender);
+      if (forbidden) throw new ActionError(`${name} ne peut pas attaquer ${target.name}. ${forbidden}`);
     }
     if (g.settings.enforceRules && attackers.length > 1 && maxOneCreature(g, true)) throw new ActionError("Une seule créature peut attaquer à chaque combat.");
     // Provocation : la créature doit attaquer, et un autre joueur que celui qui l'a provoquée si elle le peut.
@@ -364,10 +366,13 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       for (const id of actor.zones.battlefield) {
         const c = g.cards[id]!;
         if (!c.goadedBy?.length || !canAttack(g, c)) continue;
+        // Queen Mother Ramonda : seulement les joueurs que la créature a le droit d'attaquer.
+        const allowed = foes.filter((f) => !cantAttackPlayer(g, c, f));
+        if (allowed.length === 0) continue;
         const declared = attackers.find((a) => a.cardId === id);
         const name = cardName(g, c);
         if (!declared) throw new ActionError(`${name} est provoqué(e) : elle doit attaquer.`);
-        const others = foes.filter((f) => !c.goadedBy!.includes(f));
+        const others = allowed.filter((f) => !c.goadedBy!.includes(f));
         if (others.length > 0 && c.goadedBy.includes(declared.defender)) {
           throw new ActionError(`${name} est provoqué(e) : elle doit attaquer un autre joueur que ${names(c.goadedBy.map((p) => g.players[p]!))}.`);
         }
@@ -436,6 +441,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       if (hasKeyword(g, attacker, "Flying") && !hasKeyword(g, card, "Flying") && !hasKeyword(g, card, "Reach")) {
         throw new ActionError(`${name} ne peut pas bloquer ${cardName(g, attacker)}, qui vole.`);
       }
+      if (unblockableBy(g, attacker, card)) throw new ActionError(`${cardName(g, attacker)} ne peut pas être bloqué(e) par ${name}.`);
     }
     for (const { cardId, attackerId } of blocks) {
       combat.blockers[cardId] = attackerId;
@@ -2985,10 +2991,15 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
       case "pumpSelf": {
         const pumped = effect.type === "pumpSelf" ? (ability ? g.cards[ability.sourceId] : undefined) : ability?.eventCardId ? g.cards[ability.eventCardId] : undefined;
         if (!pumped || pumped.zone !== "battlefield") break;
-        const boost = pumped.ptBoost ?? { power: 0, toughness: 0 };
-        pumped.ptBoost = { power: boost.power + effect.power, toughness: boost.toughness + effect.toughness };
         const sign = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
-        log(g, null, `${cardName(g, pumped)} reçoit ${sign(effect.power)}/${sign(effect.toughness)} jusqu'à la fin du tour.`);
+        const keywords = effect.type === "pumpSelf" ? (effect.keywords ?? []) : [];
+        const parts = [...(effect.power || effect.toughness ? [`${sign(effect.power)}/${sign(effect.toughness)}`] : []), ...keywords.map((k) => KEYWORD_HELP[k]?.name.toLowerCase() ?? k)];
+        if (effect.power || effect.toughness) {
+          const boost = pumped.ptBoost ?? { power: 0, toughness: 0 };
+          pumped.ptBoost = { power: boost.power + effect.power, toughness: boost.toughness + effect.toughness };
+        }
+        grantKeywords(pumped, keywords);
+        log(g, null, `${cardName(g, pumped)} reçoit ${parts.join(" et ")} jusqu'à la fin du tour.`);
         break;
       }
       case "pumpTarget": {
