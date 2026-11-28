@@ -195,7 +195,9 @@ export type CountSpec =
   /** « (creature) cards in your graveyard » */
   | { kind: "graveyard"; types: string[]; whose: "you" | "all" }
   /** « the greatest power among creatures you control », « the total power of creatures you control » */
-  | { kind: "power"; filter: PermFilter; total: boolean };
+  | { kind: "power"; filter: PermFilter; total: boolean }
+  /** « the total mana value of noncreature artifacts you control » (Metalwork Colossus) */
+  | { kind: "manaValue"; filter: PermFilter };
 
 const COLOR_WORDS: Record<string, string> = { white: "W", blue: "U", black: "B", red: "R", green: "G" };
 const PERMANENT_TYPES = ["creature", "artifact", "enchantment", "land", "planeswalker", "battle"];
@@ -282,6 +284,10 @@ export function parseXValue(text: string): CountSpec | null {
     const f = parsePermanentSubject(m[2]!);
     if (!f || f.types.join() !== "creature") return null;
     return { kind: "power", filter: f, total: m[1]!.toLowerCase() === "total" };
+  }
+  if ((m = /^the total mana value of (.+)$/i.exec(t))) {
+    const f = parsePermanentSubject(m[1]!);
+    return f ? { kind: "manaValue", filter: f } : null;
   }
   return null;
 }
@@ -566,6 +572,11 @@ export function parseStaticLine(line: string): StaticAbility | null {
   if (/^at the beginning of your upkeep, look at the top card of your library\. if it's a creature card of the chosen type, you may reveal it and put it into your hand$/i.test(l)) {
     return { kind: "heraldsHorn" };
   }
+  // « Affinity for artifacts » : {1} de moins par artefact que l'on contrôle.
+  if ((m = /^affinity for (\w+)$/i.exec(l))) {
+    const filter = parsePermanentSubject(`${m[1]!} you control`);
+    return filter ? { kind: "selfCost", amount: 1, per: { kind: "permanents", filter } } : null;
+  }
   if ((m = /^(?:~|this spell) costs \{(\d+)\} (less|more) to cast for each (.+)$/i.exec(l))) {
     const per = parseCount(m[3]!);
     if (!per) return null;
@@ -690,6 +701,9 @@ export function countValue(g: GameState, spec: CountSpec, source: CardInstance):
       const powers = permanentsMatching(g, spec.filter, source).map((c) => creatureStats(g, c).power);
       return spec.total ? powers.reduce((a, b) => a + Math.max(0, b), 0) : Math.max(0, ...powers);
     }
+    case "manaValue":
+      // Un jeton (sans coût de mana) vaut 0, comme une carte double se compte par sa face visible.
+      return permanentsMatching(g, spec.filter, source).reduce((sum, c) => sum + (c.isToken ? 0 : (g.cardData[c.cardId]?.manaValue ?? 0)), 0);
   }
 }
 
