@@ -62,12 +62,12 @@ const forest = fakeCard("Forest", { typeLine: "Basic Land — Forest", oracleTex
 const vibraniums = (g: GameState, p = "p1") => g.players[p]!.zones.battlefield.map((id) => g.cards[id]!).filter((c) => g.cardData[c.cardId]!.name === "Vibranium");
 
 describe("Deck Wakanda Forever : jeton Vibranium", () => {
-  it("les cartes de la famille sont reconnues (Crew du Mech géré depuis la PR #146)", () => {
+  it("les cartes de la famille sont reconnues", () => {
     for (const name of ["T'Challa, the Black Panther", "Dora Milaje Elite", "The Great Mound"]) {
       expect(cardSupport(real(name)), name).toMatchObject({ level: "full" });
     }
     expect(cardSupport(real("Shuri's Fabricator")).unknown).not.toContain("When this artifact enters, create two tapped Vibranium tokens.");
-    expect(cardSupport(real("Vibranium Mining Mech")).unknown).toEqual([]);
+    expect(cardSupport(real("Vibranium Mining Mech"))).toMatchObject({ level: "full" });
   });
 
   it("le mana du Vibranium est réservé aux sorts d'artefact", () => {
