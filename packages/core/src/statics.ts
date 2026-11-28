@@ -6,7 +6,8 @@
  * Ce module ne dépend que des types : le combat et les effets le consultent.
  */
 import { areTeammates } from "./modes.js";
-import { keywordList, NUMBER_WORDS, oracleLines, selfToTilde } from "./text.js";
+import { CANT_BE_BLOCKED, keywordList, NUMBER_WORDS, oracleLines, selfToTilde } from "./text.js";
+export { CANT_BE_BLOCKED } from "./text.js";
 import { creatureStats, protectedFrom } from "./combat.js";
 import type { CardData, CardInstance, GameState, PlayerId } from "./types.js";
 
@@ -15,8 +16,22 @@ export type StaticAbility =
   | { kind: "noMaxHandSize" }
   /** « Your opponents can't gain life. » */
   | { kind: "opponentsCantGainLife" }
-  /** « This creature can't block. » (appliqué par le combat) */
-  | { kind: "restriction" }
+  /**
+   * « This creature can't block. », « ~ can't attack or block » (appliqué par le combat). `unless` : Bast, « ~ can't
+   * attack or block unless you control three or more creatures ». Sans `attack` ni `block` : une phrase sans effet
+   * (« This effect reduces only the amount of colored mana you pay »).
+   */
+  | { kind: "restriction"; attack?: boolean; block?: boolean; unless?: { count: CountSpec; min: number } }
+  /**
+   * « ~ can't be blocked. » ; `by` : seulement par certaines créatures (« can't be blocked by creatures with power 2
+   * or less »).
+   */
+  | { kind: "cantBeBlocked"; by?: { stat: "power" | "toughness"; cmp: "le" | "ge"; n: number } }
+  /**
+   * Queen Mother Ramonda : « As long as you're the monarch, creatures with power 2 or less can't attack you. »
+   * (`monarch`) ; Champion of Lambholt : `cmp` « less than ~'s power ».
+   */
+  | { kind: "cantAttackYou"; maxPower: number; monarch?: boolean }
   /** « Black creature spells you cast cost {1} less to cast. » */
   /**
    * `chosenType` : seulement le type choisi en arrivant (Herald's Horn, Cloud Key) ; `everyone` : les sorts de tous
@@ -182,7 +197,9 @@ export type CountSpec =
   /** « (creature) cards in your graveyard » */
   | { kind: "graveyard"; types: string[]; whose: "you" | "all" }
   /** « the greatest power among creatures you control », « the total power of creatures you control » */
-  | { kind: "power"; filter: PermFilter; total: boolean };
+  | { kind: "power"; filter: PermFilter; total: boolean }
+  /** « the total mana value of noncreature artifacts you control » (Metalwork Colossus) */
+  | { kind: "manaValue"; filter: PermFilter };
 
 const COLOR_WORDS: Record<string, string> = { white: "W", blue: "U", black: "B", red: "R", green: "G" };
 const PERMANENT_TYPES = ["creature", "artifact", "enchantment", "land", "planeswalker", "battle"];
@@ -270,6 +287,10 @@ export function parseXValue(text: string): CountSpec | null {
     if (!f || f.types.join() !== "creature") return null;
     return { kind: "power", filter: f, total: m[1]!.toLowerCase() === "total" };
   }
+  if ((m = /^the total mana value of (.+)$/i.exec(t))) {
+    const f = parsePermanentSubject(m[1]!);
+    return f ? { kind: "manaValue", filter: f } : null;
+  }
   return null;
 }
 
@@ -327,11 +348,17 @@ function grant(text: string): { keywords: string[]; power: number; toughness: nu
     }
     rest = pt[4] ?? "";
   } else if (where) return null;
+  // Whispersilk Cloak : « Equipped creature can't be blocked and has shroud. »
+  const unblockable = /^can't be blocked(?: and (.+))?$/i.exec(rest);
+  if (unblockable) {
+    keywords.push(CANT_BE_BLOCKED);
+    rest = unblockable[1] ?? "";
+  }
   if (rest) {
     const has = /^(?:has|have) (.+)$/i.exec(rest);
     if (!has) return null;
-    keywords = keywordList(has[1]!);
-    if (keywords.some((k) => !/^[a-z]+( [a-z]+)?$/.test(k))) return null;
+    keywords = [...keywords, ...keywordList(has[1]!)];
+    if (keywords.some((k) => k !== CANT_BE_BLOCKED && !/^[a-z]+( [a-z]+)?$/.test(k))) return null;
   }
   return { keywords, power, toughness, ...(perCount ? { perCount } : {}) };
 }
@@ -487,7 +514,20 @@ export function parseStaticLine(line: string): StaticAbility | null {
   if (/^skip your draw step$/i.test(l)) return { kind: "skipDraw" };
   if (/^creatures you control can't attack$/i.test(l)) return { kind: "creaturesCantAttack" };
   if ((m = /^no more than one creature can (attack|block) each combat$/i.exec(l))) return { kind: "maxOne", attack: m[1]!.toLowerCase() === "attack" };
-  if (/^~ can't (attack|block)( or (attack|block))?$/i.test(l)) return { kind: "restriction" };
+  if ((m = /^~ can't (attack|block)(?: or (attack|block))?(?: unless you control (\w+) or more (.+))?$/i.exec(l))) {
+    const what = [m[1]!, m[2] ?? ""].map((w) => w.toLowerCase());
+    const out: StaticAbility = { kind: "restriction", ...(what.includes("attack") ? { attack: true } : {}), ...(what.includes("block") ? { block: true } : {}) };
+    if (!m[3]) return out;
+    const min = NUMBER_WORDS[m[3].toLowerCase()] ?? parseInt(m[3], 10);
+    const count = parseCount(`${m[4]!} you control`);
+    return count && Number.isInteger(min) ? { ...out, unless: { count, min } } : null;
+  }
+  if ((m = /^~ can't be blocked(?: by creatures with (power|toughness) (\d+) or (less|greater))?$/i.exec(l))) {
+    return m[1] ? { kind: "cantBeBlocked", by: { stat: m[1].toLowerCase() as "power" | "toughness", cmp: m[3]!.toLowerCase() === "less" ? "le" : "ge", n: parseInt(m[2]!, 10) } } : { kind: "cantBeBlocked" };
+  }
+  if ((m = /^(as long as you're the monarch, )?creatures with power (\d+) or less can't attack you$/i.exec(l))) {
+    return { kind: "cantAttackYou", maxPower: parseInt(m[2]!, 10), ...(m[1] ? { monarch: true } : {}) };
+  }
   if ((m = /^~'s power and toughness are each equal to the number of (.+)$/i.exec(l))) {
     const count = parseCount(m[1]!);
     return count ? { kind: "ptEquals", count } : null;
@@ -538,6 +578,11 @@ export function parseStaticLine(line: string): StaticAbility | null {
   }
   if (/^at the beginning of your upkeep, look at the top card of your library\. if it's a creature card of the chosen type, you may reveal it and put it into your hand$/i.test(l)) {
     return { kind: "heraldsHorn" };
+  }
+  // « Affinity for artifacts » : {1} de moins par artefact que l'on contrôle.
+  if ((m = /^affinity for (\w+)$/i.exec(l))) {
+    const filter = parsePermanentSubject(`${m[1]!} you control`);
+    return filter ? { kind: "selfCost", amount: 1, per: { kind: "permanents", filter } } : null;
   }
   if ((m = /^(?:~|this spell) costs \{(\d+)\} (less|more) to cast for each (.+)$/i.exec(l))) {
     const per = parseCount(m[3]!);
@@ -663,6 +708,9 @@ export function countValue(g: GameState, spec: CountSpec, source: CardInstance):
       const powers = permanentsMatching(g, spec.filter, source).map((c) => creatureStats(g, c).power);
       return spec.total ? powers.reduce((a, b) => a + Math.max(0, b), 0) : Math.max(0, ...powers);
     }
+    case "manaValue":
+      // Un jeton (sans coût de mana) vaut 0, comme une carte double se compte par sa face visible.
+      return permanentsMatching(g, spec.filter, source).reduce((sum, c) => sum + (c.isToken ? 0 : (g.cardData[c.cardId]?.manaValue ?? 0)), 0);
   }
 }
 

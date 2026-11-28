@@ -70,6 +70,8 @@ function setup(): { g: GameState; mech: string; bear: string; cub: string } {
   [g, mech] = place(g, MECH, "battlefield");
   [g, bear] = place(g, BEAR, "battlefield", 0, true);
   [g, cub] = place(g, CUB, "battlefield");
+  // Le Mech crée un Vibranium en arrivant (PR #141) : on résout ce déclencheur.
+  g = resolveAll(g);
   return { g, mech, bear, cub };
 }
 
@@ -94,6 +96,7 @@ describe("Véhicules et équipage", () => {
     g = act(g, "p1", { type: "nextStep", to: "declareAttackers" });
     g = act(g, "p1", { type: "declareAttackers", attackers: [{ cardId: mech, defender: "p2" }] });
     expect(g.combat?.attackers[mech]).toBe("p2");
+    g = resolveAll(g); // déclencheur d'attaque du Mech (Vibranium)
     g = endTurn(g, "p1");
     expect(g.cards[mech]!.crewed).toBeUndefined();
     expect(isCreature(g, g.cards[mech]!)).toBe(false);
@@ -153,7 +156,8 @@ describe("Véhicules et équipage", () => {
     expect(cardSupport(TALON).level).toBe("full");
     expect(cardSupport(MOTHER_SHIP).unknown).not.toContain("Crew 3");
     expect(cardSupport(MECH).unknown).not.toContain("Crew 2");
-    expect(cardSupport(NAKIA).unknown).toEqual(["Whenever your commander enters, you become the monarch."]);
+    // Le déclencheur du monarque est géré depuis la PR #143.
+    expect(cardSupport(NAKIA).unknown).toEqual([]);
   });
 
   it("le bot pilote son Véhicule avec une créature qui ne peut pas attaquer", () => {

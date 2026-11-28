@@ -54,6 +54,8 @@ export interface ManaRestriction {
   subtype: string;
   /** Aussi pour activer les capacités de ces sources. */
   abilities: boolean;
+  /** Aussi pour activer n'importe quelle capacité (Vibranium : « can't be spent to cast a nonartifact spell »). */
+  anyAbility?: boolean;
 }
 
 /** Les choix de mana d'une carte, avec leur restriction (Primal Beyond, Smokebraider, Secluded Courtyard). */
@@ -171,6 +173,9 @@ export function manaTapSourceFits(effect: ManaTapEffect, typeLine: string): bool
 
 /** « Spend this mana only to cast an Elemental spell or activate an ability of an Elemental. » */
 function manaRestriction(line: string): ManaRestriction | undefined {
+  // « This mana can't be spent to cast a nonartifact spell » (jeton Vibranium) : les sorts d'artefact, et toute capacité.
+  const not = /This mana can't be spent to cast (?:a |an )?non(\w+) spells?/i.exec(line);
+  if (not) return { subtype: not[1]!.charAt(0).toUpperCase() + not[1]!.slice(1).toLowerCase(), abilities: true, anyAbility: true };
   const m = /Spend this mana only to cast (?:an? )?(?:creature spells? of the chosen type|(\w+) spells?)( or activate (?:an )?abilit(?:y|ies) of)?/i.exec(line);
   if (!m) return undefined;
   return { subtype: m[1] ? m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase() : "chosen", abilities: !!m[2] };

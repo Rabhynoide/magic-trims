@@ -954,6 +954,21 @@ function PlayerArea(props: {
         {priority && <span className="badge badge-priority">priorité</span>}
         <PlayerTags view={view} playerId={playerId} />
         {eliminated && <span className="badge badge-warn">éliminé ({eliminated})</span>}
+        {view.monarch === playerId ? (
+          <button
+            className="badge badge-ok"
+            title="Monarque : pioche une carte au début de son étape de fin. Une créature qui lui inflige des blessures de combat donne le titre à son contrôleur. (Cliquer : plus de monarque)"
+            onClick={() => void act({ type: "setMonarch", playerId: null })}
+          >
+            ♛ monarque
+          </button>
+        ) : (
+          isMe && (
+            <button className="link small" title="Devenir le monarque (effet que le moteur ne gère pas)" onClick={() => void act({ type: "setMonarch", playerId })}>
+              ♛
+            </button>
+          )
+        )}
         {p.untilNextTurn?.protection && (
           <span className="badge badge-ok" title="Jusqu'à son prochain tour : ni ciblé, ni blessé">
             protection contre tout

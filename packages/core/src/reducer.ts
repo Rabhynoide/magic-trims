@@ -9,6 +9,7 @@ import {
   isManaType,
   manaOptions,
   manaOptionsDetailed,
+  type ManaRestriction,
   grantedManaAbility,
   manaTapEffect,
   manaTapSourceFits,
@@ -79,7 +80,7 @@ import {
   legendRuleApplies,
   enterAsCopyOf,
 } from "./statics.js";
-import { canAttack, canBlock, cantAttack, cantBlock, colorsOf, creatureStats, crewedTypeLine, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatKeyword, type CombatState } from "./combat.js";
+import { canAttack, canBlock, cantAttack, cantAttackPlayer, cantBlock, unblockableBy, colorsOf, creatureStats, crewedTypeLine, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatKeyword, type CombatState } from "./combat.js";
 import { MAX_HAND_SIZE, STEP_LABELS, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
 import {
   HIDDEN_ORDERED_ZONES,
@@ -357,6 +358,8 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       const target = getPlayer(g, defender);
       if (target.hasConceded) throw new ActionError(`${target.name} a abandonné.`);
       if (isActivePlayer(g, defender)) throw new ActionError("On n'attaque pas son propre camp.");
+      const forbidden = cantAttackPlayer(g, card, defender);
+      if (forbidden) throw new ActionError(`${name} ne peut pas attaquer ${target.name}. ${forbidden}`);
     }
     if (g.settings.enforceRules && attackers.length > 1 && maxOneCreature(g, true)) throw new ActionError("Une seule créature peut attaquer à chaque combat.");
     // Provocation : la créature doit attaquer, et un autre joueur que celui qui l'a provoquée si elle le peut.
@@ -365,10 +368,13 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       for (const id of actor.zones.battlefield) {
         const c = g.cards[id]!;
         if (!c.goadedBy?.length || !canAttack(g, c)) continue;
+        // Queen Mother Ramonda : seulement les joueurs que la créature a le droit d'attaquer.
+        const allowed = foes.filter((f) => !cantAttackPlayer(g, c, f));
+        if (allowed.length === 0) continue;
         const declared = attackers.find((a) => a.cardId === id);
         const name = cardName(g, c);
         if (!declared) throw new ActionError(`${name} est provoqué(e) : elle doit attaquer.`);
-        const others = foes.filter((f) => !c.goadedBy!.includes(f));
+        const others = allowed.filter((f) => !c.goadedBy!.includes(f));
         if (others.length > 0 && c.goadedBy.includes(declared.defender)) {
           throw new ActionError(`${name} est provoqué(e) : elle doit attaquer un autre joueur que ${names(c.goadedBy.map((p) => g.players[p]!))}.`);
         }
@@ -395,6 +401,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       log(g, actor.id, `${actor.name} n'attaque pas.`);
       return;
     }
+    emit(g, { type: "attackDeclared", playerId: actor.id, attackers: Object.fromEntries(attackers.map((a) => [a.cardId, a.defender])) });
     const byDefender = new Map<PlayerId, string[]>();
     for (const { cardId, defender } of attackers) {
       byDefender.set(defender, [...(byDefender.get(defender) ?? []), cardName(g, g.cards[cardId]!)]);
@@ -437,6 +444,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       if (hasKeyword(g, attacker, "Flying") && !hasKeyword(g, card, "Flying") && !hasKeyword(g, card, "Reach")) {
         throw new ActionError(`${name} ne peut pas bloquer ${cardName(g, attacker)}, qui vole.`);
       }
+      if (unblockableBy(g, attacker, card)) throw new ActionError(`${cardName(g, attacker)} ne peut pas être bloqué(e) par ${name}.`);
     }
     for (const { cardId, attackerId } of blocks) {
       combat.blockers[cardId] = attackerId;
@@ -450,7 +458,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       }
     }
     for (const { attackerId } of blocks) if (!combat.blocked.includes(attackerId)) combat.blocked.push(attackerId);
-    combat.blocksDeclared.push(actor.id);
+    markBlocksDeclared(g, actor.id);
     if (blocks.length === 0) {
       log(g, actor.id, `${actor.name} ne bloque pas.`);
     } else {
@@ -812,6 +820,16 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const who = names(sharers);
     const verb = sharers.length > 1 ? (delta >= 0 ? "gagnent" : "perdent") : delta >= 0 ? "gagne" : "perd";
     log(g, actor.id, `${who} ${verb} ${Math.abs(delta)} PV (${sharers[0]!.life}).`);
+  },
+
+  setMonarch(g, actor, { playerId }) {
+    if (playerId === null) {
+      delete g.monarch;
+      log(g, actor.id, "Il n'y a plus de monarque.");
+      return;
+    }
+    getPlayer(g, playerId);
+    setMonarch(g, playerId);
   },
 
   adjustPoison(g, actor, { playerId, delta }) {
@@ -1228,6 +1246,7 @@ export function moveCardTo(
   }
   const wasPublic = isVisibleToAll(card);
   removeFromZone(g, card);
+  if (from === "exile") delete card.exiledUntilMonarch;
   // Une capacité qui quitte la pile (résolue, contrée, retirée) disparaît.
   if (card.ability) {
     delete g.cards[card.instanceId];
@@ -1618,6 +1637,8 @@ const NAMED_TOKENS: Record<string, string> = {
   Food: "{2}, {T}, Sacrifice this artifact: You gain 3 life.",
   Clue: "{2}, Sacrifice this artifact: Draw a card.",
   Blood: "{1}, {T}, Discard a card, Sacrifice this artifact: Draw a card.",
+  // Marvel (Wakanda Forever) : artefact indestructible dont le mana ne sert qu'aux sorts d'artefact (et aux capacités).
+  Vibranium: "Indestructible\n{T}: Add {C}. This mana can't be spent to cast a nonartifact spell.",
 };
 
 /** Index des capacités déclenchées données (Malakir Rebirth), pour les distinguer de celles de la carte. */
@@ -1724,7 +1745,7 @@ function flushTriggers(g: GameState): boolean {
           for (let i = 0; i < copies; i++) pending.push({ source: card, dataId, faceIndex, index, controllerId: card.controllerId, event, trigger, batch: [event.cardId] });
           return;
         }
-        const once = trigger.oncePerTurn || (trigger.condition.on === "dies" && trigger.condition.batched);
+        const once = trigger.oncePerTurn || ((trigger.condition.on === "dies" || trigger.condition.on === "enters") && trigger.condition.batched);
         if (once && pending.some((p) => p.source.instanceId === card.instanceId && p.index === index)) return;
         if (trigger.oncePerTurn) {
           const live = g.cards[card.instanceId];
@@ -1766,6 +1787,9 @@ function flushTriggers(g: GameState): boolean {
       }
     } else if (ev.type === "attacks" || ev.type === "enters" || ev.type === "combatDamage" || ev.type === "playerDamage" || ev.type === "cast") {
       instance.ability.eventCardId = ev.cardId;
+      // « that player » d'une attaque : le joueur attaqué (The Spear of Bashenga).
+      const attacked = ev.type === "attacks" ? g.combat?.attackers[ev.cardId] : undefined;
+      if (attacked) instance.ability.eventPlayerId = attacked;
     } else if (ev.type === "targeted") {
       instance.ability.eventCardId = ev.spellId;
     } else if (ev.type === "sacrificed") {
@@ -1992,7 +2016,7 @@ function opponentsOf(g: GameState, playerId: PlayerId): PlayerState[] {
     .filter((p) => !p.hasConceded && p.id !== playerId && !areTeammates(g, p.id, playerId));
 }
 
-/** Jetons prédéfinis (Treasure, Food, Clue, Blood) créés sous le contrôle du joueur. */
+/** Jetons prédéfinis (Treasure, Food, Clue, Blood, Vibranium) créés sous le contrôle du joueur. */
 function createNamedTokens(g: GameState, owner: PlayerState, name: string, n: number, tapped: boolean): void {
   if (n <= 0) return;
   const id = `token:${name}`;
@@ -2364,6 +2388,10 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         const name = cardName(g, c);
         const moved = moveCardTo(g, c.instanceId, effect.type === "exile" ? "exile" : "hand", "top");
         if (effect.type === "exile") lastExiled = { id: moved.instanceId, zone: "exile" };
+        if (effect.type === "exile" && effect.untilMonarch && !moved.isToken && moved.zone === "exile") {
+          moved.exiledUntilMonarch = caster.id;
+          log(g, null, `${name} reviendra quand un adversaire de ${caster.name} deviendra le monarque.`);
+        }
         if (effect.type === "exile" && effect.returnAtEnd && !moved.isToken) {
           (g.delayedReturns ??= []).push({ cardId: moved.instanceId, playerId: moved.ownerId });
           log(g, null, `${name} reviendra au début de la prochaine étape de fin de ${g.players[moved.ownerId]!.name}.`);
@@ -2406,6 +2434,10 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
           if (eventPlayer && !eventPlayer.hasConceded) dealt += dealDamage(g, sourceName, { kind: "player", id: eventPlayer.id }, amountOf(effect.amount), damageFrom);
         } else if (effect.target === "you") {
           dealt += dealDamage(g, sourceName, { kind: "player", id: caster.id }, amountOf(effect.amount), damageFrom);
+        } else if (effect.target === "eventCard") {
+          // Storm : la créature de l'événement, si elle est toujours là.
+          const victim = ability?.eventCardId ? g.cards[ability.eventCardId] : undefined;
+          if (victim?.zone === "battlefield") dealt += dealDamage(g, sourceName, { kind: "card", id: victim.instanceId }, amountOf(effect.amount), damageFrom);
         } else if (legal[effect.target]) dealt += dealDamage(g, sourceName, targets[effect.target]!, amountOf(effect.amount), damageFrom);
         break;
       case "damageEach": {
@@ -2582,6 +2614,11 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         (g.manaBonuses ??= []).push({ turn: g.turn.number, subtype: effect.subtype, mana: effect.mana as ManaType });
         log(g, null, `Jusqu'à la fin du tour, chaque ${effect.subtype} engagé pour du mana donne {${effect.mana}} en plus.`);
         break;
+      case "monarch": {
+        const [p] = effect.who === "you" ? [caster] : whoOf(effect.who);
+        if (p) setMonarch(g, p.id);
+        break;
+      }
       case "grantTrigger": {
         const c = card(effect.target);
         if (!c || c.zone !== "battlefield") break;
@@ -2917,6 +2954,14 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
           log(g, null, `${cardName(g, self)} se dégage.`);
         }
         break;
+      case "tap": {
+        const c = card(effect.target);
+        if (c && !c.tapped) {
+          c.tapped = true;
+          log(g, null, `${cardName(g, c)} s'engage.`);
+        }
+        break;
+      }
       case "tapSelf":
         if (self?.zone === "battlefield" && !self.tapped) {
           self.tapped = true;
@@ -3002,20 +3047,26 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         if (!pumped || pumped.zone !== "battlefield") break;
         const boost = pumped.ptBoost ?? { power: 0, toughness: 0 };
         pumped.ptBoost = { power: boost.power + effect.power, toughness: boost.toughness + effect.toughness };
+        if (effect.keywords?.length) grantKeywords(pumped, effect.keywords);
         const sign = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
-        log(g, null, `${cardName(g, pumped)} reçoit ${sign(effect.power)}/${sign(effect.toughness)} jusqu'à la fin du tour.`);
+        const parts = [...(effect.power || effect.toughness ? [`${sign(effect.power)}/${sign(effect.toughness)}`] : []), ...(effect.keywords ?? []).map((k) => KEYWORD_HELP[k]?.name.toLowerCase() ?? k)];
+        log(g, null, `${cardName(g, pumped)} gagne ${parts.join(" et ")} jusqu'à la fin du tour.`);
         break;
       }
       case "pumpTarget": {
         const c = card(effect.target);
         if (!c || c.zone !== "battlefield") break;
-        if (effect.power || effect.toughness) {
+        // Bast, Storm : « +X/+X, where X is … », lu maintenant.
+        const x = effect.x ? amountOf(effect.x.amount) : 0;
+        const power = effect.power + (effect.x?.power ? x : 0);
+        const toughness = effect.toughness + (effect.x?.toughness ? x : 0);
+        if (power || toughness) {
           const boost = c.ptBoost ?? { power: 0, toughness: 0 };
-          c.ptBoost = { power: boost.power + effect.power, toughness: boost.toughness + effect.toughness };
+          c.ptBoost = { power: boost.power + power, toughness: boost.toughness + toughness };
         }
         grantKeywords(c, effect.keywords, effect.untilNextTurn ? caster.id : undefined);
         const sign = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
-        const parts = [...(effect.power || effect.toughness ? [`${sign(effect.power)}/${sign(effect.toughness)}`] : []), ...effect.keywords.map((k) => KEYWORD_HELP[k]?.name.toLowerCase() ?? k)];
+        const parts = [...(power || toughness || effect.x ? [`${sign(power)}/${sign(toughness)}`] : []), ...effect.keywords.map((k) => KEYWORD_HELP[k]?.name.toLowerCase() ?? k)];
         log(g, null, `${cardName(g, c)} gagne ${parts.join(" et ")} ${effect.untilNextTurn ? `jusqu'au prochain tour de ${caster.name}` : "jusqu'à la fin du tour"}.`);
         break;
       }
@@ -3050,7 +3101,7 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
       }
       case "gainControl": {
         const c = effect.permanent === "self" ? (self?.zone === "battlefield" ? self : undefined) : card(effect.permanent);
-        const p = player(effect.player);
+        const p = effect.player === "event" ? (eventPlayer && !eventPlayer.hasConceded ? eventPlayer : undefined) : player(effect.player);
         if (!c || !p || c.zone !== "battlefield") break;
         // « … you control » : le permanent doit toujours être à toi.
         if (effect.permanent === "self" ? c.controllerId !== caster.id : false) break;
@@ -4130,7 +4181,7 @@ function faceTypeLine(g: GameState, card: CardInstance, faceIndex: number): stri
 
 /** Mana que la carte (sur sa face visible) peut produire en s'engageant. */
 /** Les restrictions des choix de mana de la carte (le type choisi remplacé par celui de la carte). */
-function cardManaRestrictions(g: GameState, card: CardInstance): ({ subtype: string; abilities: boolean } | undefined)[] {
+function cardManaRestrictions(g: GameState, card: CardInstance): (ManaRestriction | undefined)[] {
   return cardManaDetailed(g, card).map((o) => o.only);
 }
 
@@ -4139,14 +4190,14 @@ function cardManaRestrictions(g: GameState, card: CardInstance): ({ subtype: str
  * color among permanents you control » (Faeburrow Elder, Bloom Tender), et le
  * mana en plus des auras (Utopia Sprawl, Fertile Ground : un choix par couleur).
  */
-function cardManaDetailed(g: GameState, card: CardInstance): { mana: ManaType[]; only?: { subtype: string; abilities: boolean } }[] {
+function cardManaDetailed(g: GameState, card: CardInstance): { mana: ManaType[]; only?: ManaRestriction }[] {
   const data = g.cardData[card.cardId];
   if (!data) return [];
   const face = data.faces?.[card.faceIndex];
   const oracleText = face?.oracleText ?? data.oracleText;
-  let options: { mana: ManaType[]; only?: { subtype: string; abilities: boolean } }[] = manaOptionsDetailed(face?.typeLine ?? data.typeLine, oracleText).map((o) => ({
+  let options: { mana: ManaType[]; only?: ManaRestriction }[] = manaOptionsDetailed(face?.typeLine ?? data.typeLine, oracleText).map((o) => ({
     mana: o.mana,
-    ...(o.only ? { only: { subtype: o.only.subtype === "chosen" ? (card.chosenType ?? "") : o.only.subtype, abilities: o.only.abilities } } : {}),
+    ...(o.only ? { only: { subtype: o.only.subtype === "chosen" ? (card.chosenType ?? "") : o.only.subtype, abilities: o.only.abilities, ...(o.only.anyAbility ? { anyAbility: true } : {}) } } : {}),
   }));
   if (/^(?:\w+ — )?\{T\}: For each color among permanents you control, add one mana of that color\.?$/m.test(oracleText)) {
     const colors = colorsAmongPermanents(g, card.controllerId);
@@ -4156,7 +4207,7 @@ function cardManaDetailed(g: GameState, card: CardInstance): { mana: ManaType[];
   const typeLine = face?.typeLine ?? data.typeLine;
   for (const ability of grantedManaAbilities(g, card, typeLine)) {
     for (const o of manaOptionsDetailed("", ability)) {
-      const only = o.only ? { only: { subtype: o.only.subtype === "chosen" ? (card.chosenType ?? "") : o.only.subtype, abilities: o.only.abilities } } : {};
+      const only = o.only ? { only: { subtype: o.only.subtype === "chosen" ? (card.chosenType ?? "") : o.only.subtype, abilities: o.only.abilities, ...(o.only.anyAbility ? { anyAbility: true } : {}) } } : {};
       if (!options.some((x) => x.mana.join() === o.mana.join() && !x.only && !o.only)) options.push({ mana: o.mana, ...only });
     }
   }
@@ -4226,8 +4277,9 @@ function manaTapEffectsFor(g: GameState, tapper: PlayerId, typeLine: string): Ma
 const RESTRICTION_TYPE_WORDS = /^(Artifact|Creature|Enchantment|Instant|Sorcery|Planeswalker|Battle|Legendary|Kindred)$/i;
 
 /** Ce mana réservé peut-il payer ce sort (ou cette capacité) ? */
-function restrictionFits(r: { subtype: string; abilities: boolean }, spell: { typeLine: string; oracleText: string; ability?: boolean } | undefined): boolean {
+function restrictionFits(r: ManaRestriction, spell: { typeLine: string; oracleText: string; ability?: boolean } | undefined): boolean {
   if (!spell || !r.subtype) return false;
+  if (spell.ability && r.anyAbility) return true;
   if (spell.ability && !r.abilities) return false;
   // « Spend this mana only to cast creature spells » : un type de carte, lu avant le tiret.
   if (RESTRICTION_TYPE_WORDS.test(r.subtype)) return new RegExp(`\\b${r.subtype}\\b`, "i").test(spell.typeLine.split("—")[0]!);
@@ -4409,6 +4461,23 @@ function pendingBlockers(g: GameState): PlayerState[] {
     .filter((p) => !p.hasConceded);
 }
 
+/**
+ * Le joueur a déclaré ses bloqueurs (ou n'en a aucun). Quand tout le camp d'un joueur attaqué
+ * l'a fait, ses attaquants non bloqués le font savoir (Coveted Jewel).
+ */
+function markBlocksDeclared(g: GameState, playerId: PlayerId): void {
+  const combat = g.combat!;
+  combat.blocksDeclared.push(playerId);
+  for (const defender of new Set(Object.values(combat.attackers))) {
+    const side = defendingSide(g, defender);
+    if (!side.includes(playerId) || !side.every((id) => combat.blocksDeclared.includes(id) || g.players[id]?.hasConceded)) continue;
+    const unblocked = Object.entries(combat.attackers)
+      .filter(([id, d]) => d === defender && onBattlefield(g, id) && !combat.blocked.includes(id))
+      .map(([id]) => id);
+    if (unblocked.length > 0) emit(g, { type: "unblocked", playerId: g.cards[unblocked[0]!]!.controllerId, defender, cardIds: unblocked });
+  }
+}
+
 function newCombat(): CombatState {
   return { attackersDeclared: false, attackers: {}, blockers: {}, blocked: [], blocksDeclared: [] };
 }
@@ -4518,6 +4587,8 @@ function applyCombatHit(
     if (sharers.length > 0) emit(g, { type: "combatDamage", cardId: source.instanceId, controllerId: source.controllerId, playerId: hit.player, amount: hit.amount });
     const what = infect ? plural(hit.amount, "marqueur poison", "marqueurs poison") : plural(hit.amount, "blessure");
     log(g, null, `${sourceName} inflige ${what} à ${names(sharers)}${infect ? "" : ` (${sharers[0]?.life ?? 0} PV)`}.`);
+    // Monarque : le contrôleur d'une créature qui inflige des blessures de combat au monarque le devient (règle 724.2).
+    if (g.monarch && sharers.some((p) => p.id === g.monarch)) setMonarch(g, source.controllerId);
   }
   if (hasKeyword(g, source, "Lifelink") && (cantGainLife(g, source.controllerId) || lifeLocked(g, source.controllerId))) {
     log(g, null, `${g.players[source.controllerId]!.name} ne peut pas gagner de points de vie.`);
@@ -4537,6 +4608,13 @@ function applyCombatHit(
  */
 function leaveGame(g: GameState, leaving: PlayerState[]): void {
   for (const p of leaving) p.hasConceded = true;
+  // Le monarque quitte la partie : le joueur actif le devient, ou le suivant dans l'ordre du tour si c'est lui qui part (règle 724.4).
+  if (g.monarch && leaving.some((p) => p.id === g.monarch)) {
+    const from = Math.max(0, g.turnOrder.indexOf(g.turn.activePlayerId));
+    const next = [...g.turnOrder.slice(from), ...g.turnOrder.slice(0, from)].map((id) => g.players[id]!).find((p) => !p.hasConceded);
+    delete g.monarch;
+    if (next) setMonarch(g, next.id);
+  }
   if (g.settings.enforceRules) {
     const ids = new Set(leaving.map((p) => p.id));
     for (const card of Object.values(g.cards)) {
@@ -4885,6 +4963,14 @@ function enterStep(g: GameState, step: TurnStep): void {
   if (step === "upkeep" || step === "draw" || step === "main1" || step === "beginCombat" || step === "end") {
     for (const p of activePlayers(g)) emit(g, { type: "step", step, playerId: p.id });
   }
+  // Monarque : il pioche une carte au début de son étape de fin (règle 724.2).
+  if (step === "end" && g.monarch && g.settings.enforceRules) {
+    const monarch = activePlayers(g).find((p) => p.id === g.monarch);
+    if (monarch) {
+      log(g, null, `${monarch.name} est le monarque.`);
+      drawCards(g, monarch, 1);
+    }
+  }
   // Rebond : les sorts exilés se relancent gratuitement pendant cet entretien.
   if (step === "upkeep" && (g.turn.upkeeps ?? 1) <= 1) {
     for (const p of activePlayers(g)) {
@@ -4980,7 +5066,7 @@ function enterStep(g: GameState, step: TurnStep): void {
           .filter((c) => c?.zone === "battlefield");
         const able = p.zones.battlefield.some((id) => attackers.some((a) => canBlock(g, g.cards[id]!, a)));
         if (!able) {
-          combat.blocksDeclared.push(p.id);
+          markBlocksDeclared(g, p.id);
           if (g.settings.enforceRules) log(g, null, `${p.name} n'a aucune créature pouvant bloquer.`);
         }
       }
@@ -5074,6 +5160,25 @@ export function handSizeDiscards(g: GameState, playerId: PlayerId): number {
 function skipsFirstDraw(g: GameState): boolean {
   if (g.turn.number !== 1) return false;
   return g.turnOrder.length === 2 || g.settings.mode === "twoHeadedGiant";
+}
+
+/**
+ * Un joueur devient le monarque (règle 724). Les cartes exilées par Palace Jailer
+ * reviennent quand un adversaire de celui qui les a exilées le devient.
+ */
+function setMonarch(g: GameState, playerId: PlayerId): void {
+  const p = g.players[playerId];
+  if (!p || p.hasConceded) return;
+  if (g.monarch !== playerId) {
+    g.monarch = playerId;
+    log(g, null, `${p.name} devient le monarque.`);
+  }
+  for (const card of Object.values(g.cards)) {
+    const jailer = card.exiledUntilMonarch;
+    if (!jailer || card.zone !== "exile" || jailer === playerId || areTeammates(g, jailer, playerId)) continue;
+    const back = moveCardTo(g, card.instanceId, "battlefield", "top", { controllerId: card.ownerId });
+    log(g, null, `${cardName(g, back)} revient sur le champ de bataille.`);
+  }
 }
 
 function drawCards(g: GameState, player: PlayerState, count: number): void {
