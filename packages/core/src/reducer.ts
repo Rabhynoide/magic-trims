@@ -400,6 +400,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       log(g, actor.id, `${actor.name} n'attaque pas.`);
       return;
     }
+    emit(g, { type: "attackDeclared", playerId: actor.id, attackers: Object.fromEntries(attackers.map((a) => [a.cardId, a.defender])) });
     const byDefender = new Map<PlayerId, string[]>();
     for (const { cardId, defender } of attackers) {
       byDefender.set(defender, [...(byDefender.get(defender) ?? []), cardName(g, g.cards[cardId]!)]);
@@ -456,7 +457,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       }
     }
     for (const { attackerId } of blocks) if (!combat.blocked.includes(attackerId)) combat.blocked.push(attackerId);
-    combat.blocksDeclared.push(actor.id);
+    markBlocksDeclared(g, actor.id);
     if (blocks.length === 0) {
       log(g, actor.id, `${actor.name} ne bloque pas.`);
     } else {
@@ -2424,6 +2425,10 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
           if (eventPlayer && !eventPlayer.hasConceded) dealt += dealDamage(g, sourceName, { kind: "player", id: eventPlayer.id }, amountOf(effect.amount), damageFrom);
         } else if (effect.target === "you") {
           dealt += dealDamage(g, sourceName, { kind: "player", id: caster.id }, amountOf(effect.amount), damageFrom);
+        } else if (effect.target === "eventCard") {
+          // Storm : la créature de l'événement, si elle est toujours là.
+          const victim = ability?.eventCardId ? g.cards[ability.eventCardId] : undefined;
+          if (victim?.zone === "battlefield") dealt += dealDamage(g, sourceName, { kind: "card", id: victim.instanceId }, amountOf(effect.amount), damageFrom);
         } else if (legal[effect.target]) dealt += dealDamage(g, sourceName, targets[effect.target]!, amountOf(effect.amount), damageFrom);
         break;
       case "damageEach": {
@@ -3036,13 +3041,17 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
       case "pumpTarget": {
         const c = card(effect.target);
         if (!c || c.zone !== "battlefield") break;
-        if (effect.power || effect.toughness) {
+        // Bast, Storm : « +X/+X, where X is … », lu maintenant.
+        const x = effect.x ? amountOf(effect.x.amount) : 0;
+        const power = effect.power + (effect.x?.power ? x : 0);
+        const toughness = effect.toughness + (effect.x?.toughness ? x : 0);
+        if (power || toughness) {
           const boost = c.ptBoost ?? { power: 0, toughness: 0 };
-          c.ptBoost = { power: boost.power + effect.power, toughness: boost.toughness + effect.toughness };
+          c.ptBoost = { power: boost.power + power, toughness: boost.toughness + toughness };
         }
         grantKeywords(c, effect.keywords, effect.untilNextTurn ? caster.id : undefined);
         const sign = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
-        const parts = [...(effect.power || effect.toughness ? [`${sign(effect.power)}/${sign(effect.toughness)}`] : []), ...effect.keywords.map((k) => KEYWORD_HELP[k]?.name.toLowerCase() ?? k)];
+        const parts = [...(power || toughness || effect.x ? [`${sign(power)}/${sign(toughness)}`] : []), ...effect.keywords.map((k) => KEYWORD_HELP[k]?.name.toLowerCase() ?? k)];
         log(g, null, `${cardName(g, c)} gagne ${parts.join(" et ")} ${effect.untilNextTurn ? `jusqu'au prochain tour de ${caster.name}` : "jusqu'à la fin du tour"}.`);
         break;
       }
@@ -3077,7 +3086,7 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
       }
       case "gainControl": {
         const c = effect.permanent === "self" ? (self?.zone === "battlefield" ? self : undefined) : card(effect.permanent);
-        const p = player(effect.player);
+        const p = effect.player === "event" ? (eventPlayer && !eventPlayer.hasConceded ? eventPlayer : undefined) : player(effect.player);
         if (!c || !p || c.zone !== "battlefield") break;
         // « … you control » : le permanent doit toujours être à toi.
         if (effect.permanent === "self" ? c.controllerId !== caster.id : false) break;
@@ -4419,6 +4428,23 @@ function pendingBlockers(g: GameState): PlayerState[] {
     .filter((p) => !p.hasConceded);
 }
 
+/**
+ * Le joueur a déclaré ses bloqueurs (ou n'en a aucun). Quand tout le camp d'un joueur attaqué
+ * l'a fait, ses attaquants non bloqués le font savoir (Coveted Jewel).
+ */
+function markBlocksDeclared(g: GameState, playerId: PlayerId): void {
+  const combat = g.combat!;
+  combat.blocksDeclared.push(playerId);
+  for (const defender of new Set(Object.values(combat.attackers))) {
+    const side = defendingSide(g, defender);
+    if (!side.includes(playerId) || !side.every((id) => combat.blocksDeclared.includes(id) || g.players[id]?.hasConceded)) continue;
+    const unblocked = Object.entries(combat.attackers)
+      .filter(([id, d]) => d === defender && onBattlefield(g, id) && !combat.blocked.includes(id))
+      .map(([id]) => id);
+    if (unblocked.length > 0) emit(g, { type: "unblocked", playerId: g.cards[unblocked[0]!]!.controllerId, defender, cardIds: unblocked });
+  }
+}
+
 function newCombat(): CombatState {
   return { attackersDeclared: false, attackers: {}, blockers: {}, blocked: [], blocksDeclared: [] };
 }
@@ -5007,7 +5033,7 @@ function enterStep(g: GameState, step: TurnStep): void {
           .filter((c) => c?.zone === "battlefield");
         const able = p.zones.battlefield.some((id) => attackers.some((a) => canBlock(g, g.cards[id]!, a)));
         if (!able) {
-          combat.blocksDeclared.push(p.id);
+          markBlocksDeclared(g, p.id);
           if (g.settings.enforceRules) log(g, null, `${p.name} n'a aucune créature pouvant bloquer.`);
         }
       }

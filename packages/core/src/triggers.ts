@@ -13,7 +13,7 @@ import { parseActivatedLine, type ActivatedAbility } from "./activated.js";
 import { KEYWORD_HELP, parseSpellEffects, selfToTilde, type Effect, type SpellEffects } from "./effects.js";
 import { joinModes, keywordList, NUMBER_WORDS } from "./text.js";
 import { hasCreatureType, isCreatureSubtype, parseStaticLine, typeLineHasCreatureType, type StaticAbility } from "./statics.js";
-import { creatureStats } from "./combat.js";
+import { creatureStats, hasKeyword } from "./combat.js";
 import { areTeammates, isActivePlayer } from "./modes.js";
 import type { TurnStep } from "./turn.js";
 import type { CardData, CardInstance, CardInstanceId, CastRecord, GameState, PlayerId, StackAbility, Zone } from "./types.js";
@@ -32,6 +32,10 @@ export type TriggerEvent =
   /** `spell` : ce qu'on sait du sort (couleurs, valeur de mana, d'où il est lancé). */
   | { type: "cast"; playerId: PlayerId; cardId: CardInstanceId; typeLine: string; spell?: CastRecord }
   | { type: "attacks"; cardId: CardInstanceId }
+  /** Les attaquants sont déclarés (« whenever you attack », « an opponent attacks you with two or more creatures ») : `attackers` → joueur attaqué. */
+  | { type: "attackDeclared"; playerId: PlayerId; attackers: Record<CardInstanceId, PlayerId> }
+  /** Les bloqueurs de `defender` sont déclarés et des créatures de `playerId` qui l'attaquent ne sont pas bloquées. */
+  | { type: "unblocked"; playerId: PlayerId; defender: PlayerId; cardIds: CardInstanceId[] }
   | { type: "blocks"; cardId: CardInstanceId }
   | { type: "exploits"; cardId: CardInstanceId }
   /** Un permanent est sacrifié (Ashling). */
@@ -102,9 +106,17 @@ export type TriggerCondition =
   | ({ on: "cast"; whose: Whose; self?: boolean } & CastFilter)
   /**
    * « Whenever ~ attacks », « … blocks », « … attacks or blocks ». `defender` : le joueur attaqué
-   * (« attacks you », « attacks one of your opponents », « attacks the monarch ») ; `attached` : « equipped creature attacks ».
+   * (« attacks you », « attacks one of your opponents », « attacks the monarch ») ; `attached` : « equipped creature attacks » ;
+   * `keyword` : « a creature with flying attacks you ».
    */
-  | { on: "combat"; attacks: boolean; blocks: boolean; anyCreature?: boolean; defender?: "you" | "opponent" | "monarch"; attached?: boolean }
+  | { on: "combat"; attacks: boolean; blocks: boolean; anyCreature?: boolean; defender?: "you" | "opponent" | "monarch"; attached?: boolean; keyword?: string }
+  /**
+   * Une fois par déclaration des attaquants : « Whenever you attack » ; « Whenever an opponent attacks you
+   * with two or more creatures » (`defender`, `min`).
+   */
+  | { on: "attack"; whose: Whose; defender?: "you"; min?: number }
+  /** Coveted Jewel : « Whenever one or more creatures an opponent controls attack you and aren't blocked ». */
+  | { on: "unblocked"; whose: Whose }
   /** « Whenever you sacrifice a nontoken Elemental » : `subtype` (ou type), `nontoken`. */
   | { on: "sacrificed"; whose: Whose; subtype?: string; nontoken: boolean }
   /** Bronze Bombshell : « When a player other than ~'s owner controls it ». */
@@ -413,6 +425,17 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   if (/^your commander enters(?: the battlefield)?$/i.test(t)) return { on: "enters", self: false, another: false, creature: false, whose: "you", commander: true };
   if (/^~ becomes untapped$/i.test(t)) return { on: "untapped" };
   if (/^a creature attacks you(?: or a planeswalker you control)?$/i.test(t)) return { on: "combat", attacks: true, blocks: false, anyCreature: true, defender: "you" };
+  if ((m = /^a creature with (flying|trample|menace|haste|first strike|deathtouch) attacks you(?: or a planeswalker you control)?$/i.exec(t))) {
+    return { on: "combat", attacks: true, blocks: false, anyCreature: true, defender: "you", keyword: m[1]!.toLowerCase() };
+  }
+  if (/^equipped creature attacks$/i.test(t)) return { on: "combat", attacks: true, blocks: false, attached: true };
+  if (/^you attack$/i.test(t)) return { on: "attack", whose: "you" };
+  if ((m = /^(an opponent|a player) attacks you with (two|three|four|five) or more creatures$/i.exec(t))) {
+    return { on: "attack", whose: whose(m[1]!)!, defender: "you", min: NUMBER_WORDS[m[2]!.toLowerCase()]! };
+  }
+  if ((m = /^one or more creatures (an opponent controls|you control) attack you and aren't blocked$/i.exec(t)) && /opponent/i.test(m[1]!)) {
+    return { on: "unblocked", whose: "opponent" };
+  }
   if (/^a player other than ~'s owner controls it$/i.test(t)) return { on: "controlledByNonOwner" };
   if ((m = /^you sacrifice an? (nontoken )?(\w+)$/i.exec(t))) {
     const what = m[2]!.toLowerCase();
@@ -918,8 +941,19 @@ export function conditionMatches(
         if (c.defender === "opponent" && !whoseMatches(g, "opponent", source.controllerId, attacked)) return false;
         if (c.defender === "monarch" && attacked !== g.monarch) return false;
       }
+      if (c.keyword) {
+        const attacker = g.cards[event.cardId];
+        if (!attacker || !hasKeyword(g, attacker, c.keyword.replace(/\b\w/g, (l) => l.toUpperCase()) as Parameters<typeof hasKeyword>[2])) return false;
+      }
       if (c.attached) return g.cards[source.instanceId]?.attachedTo === event.cardId;
       return c.anyCreature ? true : event.cardId === source.instanceId;
+    case "attackDeclared": {
+      if (c.on !== "attack" || !whoseMatches(g, c.whose, source.controllerId, event.playerId)) return false;
+      const attackers = Object.values(event.attackers).filter((d) => c.defender !== "you" || d === source.controllerId);
+      return attackers.length >= (c.min ?? 1);
+    }
+    case "unblocked":
+      return c.on === "unblocked" && event.defender === source.controllerId && whoseMatches(g, c.whose, source.controllerId, event.playerId);
     case "sacrificed":
       if (c.on !== "sacrificed" || (c.nontoken && event.isToken)) return false;
       if (c.subtype && !sacrificedHasType(g, event, c.subtype)) return false;
