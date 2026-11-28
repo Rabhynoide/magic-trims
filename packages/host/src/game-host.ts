@@ -12,6 +12,7 @@ import {
   upgradeGame,
   validateCommanderDeck,
   viewFor,
+  type AppVersion,
   type CardData,
   type ClientMessage,
   type GameState,
@@ -39,6 +40,8 @@ interface HostedPlayer {
   connId: string | null;
   /** Joueur tenu par l'ordinateur (pas de connexion). */
   isBot?: boolean;
+  /** Version de l'appli, reçue à chaque connexion. */
+  app?: AppVersion;
 }
 
 /** Tout ce qu'il faut pour reprendre une partie (sauvegarde sur disque). */
@@ -218,6 +221,9 @@ export class GameHost {
     }
     player.connId = connId;
     conn.playerId = player.id;
+    const app = cleanAppVersion(msg.app);
+    if (app) player.app = app;
+    else delete player.app;
     this.sentCards.delete(player.id);
 
     conn.send({ type: "welcome", playerId: player.id, token: player.token, isHost: player.isHost });
@@ -421,6 +427,7 @@ export class GameHost {
               }
             : null,
           schemeCount: p.schemes.length,
+          ...(p.app ? { app: { ...p.app } } : {}),
         };
       }),
       config: structuredClone(this.config),
@@ -496,6 +503,15 @@ function cleanName(name: unknown): string {
     .trim()
     .slice(0, MAX_NAME_LENGTH);
   return clean || "Joueur";
+}
+
+/** Garde une version reçue d'un client seulement si elle est bien formée. */
+function cleanAppVersion(app: unknown): AppVersion | undefined {
+  if (!app || typeof app !== "object") return undefined;
+  const { version, commit } = app as Record<string, unknown>;
+  const ok = (v: unknown): v is string => typeof v === "string" && /^[\w.+-]{1,40}$/.test(v);
+  if (!ok(version)) return undefined;
+  return ok(commit) ? { version, commit } : { version };
 }
 
 function parseMessage(raw: unknown): ClientMessage {

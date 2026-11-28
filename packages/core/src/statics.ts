@@ -7,7 +7,7 @@
  */
 import { areTeammates } from "./modes.js";
 import { keywordList, NUMBER_WORDS, oracleLines, selfToTilde } from "./text.js";
-import { protectedFrom } from "./combat.js";
+import { creatureStats, protectedFrom } from "./combat.js";
 import type { CardData, CardInstance, GameState, PlayerId } from "./types.js";
 
 export type StaticAbility =
@@ -22,7 +22,33 @@ export type StaticAbility =
    * `chosenType` : seulement le type choisi en arrivant (Herald's Horn, Cloud Key) ; `everyone` : les sorts de tous
    * les joueurs (Urza's Incubator) ; `colored` : réduit le mana coloré (Morophon : {W}{U}{B}{R}{G}).
    */
-  | { kind: "costReduction"; amount: number; colors: string[]; types: string[]; notTypes: string[]; chosenType?: boolean; everyone?: boolean; colored?: string; anyColor?: boolean; perCounter?: string }
+  /**
+   * `legendary` : sorts légendaires (Kethis) ; `subtypes` : l'un de ces sous-types (« Dragon spells », « Aura and Equipment
+   * spells ») ; `colorless` : sorts incolores ; `opponents` : les sorts des adversaires. Un `amount` négatif augmente le
+   * coût (« Noncreature spells cost {1} more to cast »).
+   */
+  | {
+      kind: "costReduction";
+      amount: number;
+      colors: string[];
+      types: string[];
+      notTypes: string[];
+      chosenType?: boolean;
+      everyone?: boolean;
+      opponents?: boolean;
+      colored?: string;
+      anyColor?: boolean;
+      perCounter?: string;
+      legendary?: boolean;
+      subtypes?: string[];
+      colorless?: boolean;
+    }
+  /**
+   * Le coût du sort lui-même, appliqué en le lançant : « This spell costs {1} less to cast for each creature on the
+   * battlefield » (`per`), « costs {X} less to cast, where X is the greatest power among creatures you control » (`x`).
+   * `amount` négatif : le sort coûte plus.
+   */
+  | { kind: "selfCost"; amount: number; per?: CountSpec; x?: CountSpec }
   /** « As ~ enters, choose a creature type » (ou un type de carte : Cloud Key). */
   | { kind: "chooseType"; what: "creature" | "card" | "color" }
   /** Utopia Sprawl, Fertile Ground : le terrain enchanté produit un mana de plus (de la couleur choisie, ou au choix). */
@@ -59,6 +85,11 @@ export type StaticAbility =
       /** Overgrown Tomb : dégagé si l'on paie ce nombre de points de vie. */
       unlessLife?: number;
     }
+  /**
+   * « ~ doesn't untap during your untap step » (Traxos : `entersTapped`, « enters tapped and doesn't untap… ») ;
+   * `attached` : « Enchanted creature doesn't untap during its controller's untap step » (Claustrophobia).
+   */
+  | { kind: "doesntUntap"; entersTapped?: boolean; attached?: boolean }
   /** « Creatures can't attack you unless their controller pays {2} for each creature… » (X : nombre d'enchantements). */
   | { kind: "attackTax"; amount: number | "enchantments" }
   /** « You can't cast creature spells. » */
@@ -93,6 +124,13 @@ export type StaticAbility =
    * Darksteel Mutation, Witness Protection : la créature enchantée perd ses capacités et devient
    * autre chose (types, force et endurance de base, mots-clés, couleurs, nom).
    */
+  /** « The "legend rule" doesn't apply to permanents (tokens) you control » (Sakashima, Cadric). */
+  | { kind: "noLegendRule"; tokensOnly: boolean }
+  /**
+   * Clone, Sakashima : « You may have ~ enter as a copy of any creature on the battlefield » ;
+   * `yours` : « another creature you control » ; `keepOthers` : « except it has ~'s other abilities ».
+   */
+  | { kind: "enterAsCopy"; yours: boolean; keepOthers: boolean }
   | { kind: "becomes"; typeLine: string; power: string; toughness: string; keywords: string[]; colors?: string[]; name?: string };
 
 /** Quels permanents un effet statique touche ou compte (« other legendary creatures you control »). */
@@ -126,7 +164,9 @@ export type CountSpec =
   /** « cards in your hand » */
   | { kind: "hand" }
   /** « (creature) cards in your graveyard » */
-  | { kind: "graveyard"; types: string[]; whose: "you" | "all" };
+  | { kind: "graveyard"; types: string[]; whose: "you" | "all" }
+  /** « the greatest power among creatures you control », « the total power of creatures you control » */
+  | { kind: "power"; filter: PermFilter; total: boolean };
 
 const COLOR_WORDS: Record<string, string> = { white: "W", blue: "U", black: "B", red: "R", green: "G" };
 const PERMANENT_TYPES = ["creature", "artifact", "enchantment", "land", "planeswalker", "battle"];
@@ -198,6 +238,22 @@ function parsePermanentSubject(text: string): PermFilter | null {
   if ((m = /^(.+?) (?:your opponents control|an opponent controls)$/i.exec(t))) return parsePermanentGroup(m[1]!, "opponents");
   if ((m = /^(.+?) on the battlefield$/i.exec(t))) return parsePermanentGroup(m[1]!, "all");
   if ((m = /^all (.+)$/i.exec(t))) return parsePermanentGroup(m[1]!, "all");
+  return null;
+}
+
+/**
+ * La valeur de X : « the number of … », « the greatest power among creatures you control »,
+ * « the total power of creatures you control ».
+ */
+export function parseXValue(text: string): CountSpec | null {
+  let m: RegExpExecArray | null;
+  const t = text.trim().replace(/\.$/, "");
+  if ((m = /^the number of (.+)$/i.exec(t))) return parseCount(m[1]!);
+  if ((m = /^the (greatest|total) power (?:among|of) (.+)$/i.exec(t))) {
+    const f = parsePermanentSubject(m[2]!);
+    if (!f || f.types.join() !== "creature") return null;
+    return { kind: "power", filter: f, total: m[1]!.toLowerCase() === "total" };
+  }
   return null;
 }
 
@@ -293,6 +349,41 @@ function parseAnthem(l: string): StaticAbility | null {
   return { kind: "anthem", filters, ...g };
 }
 
+type SpellClass = { colors: string[]; types: string[]; notTypes: string[]; legendary?: boolean; subtypes?: string[]; colorless?: boolean };
+
+/**
+ * Les sorts concernés par une réduction : « Black creature », « Legendary », « Instant and sorcery »,
+ * « Aura and Equipment », « Angel spells and Human », « Dragon », « Colorless », « Noncreature », ou rien.
+ */
+function parseSpellClass(text: string): SpellClass | null {
+  const out: SpellClass = { colors: [], types: [], notTypes: [] };
+  const t = text.replace(/ spells (and|or) /gi, " $1 ").trim();
+  if (!t) return out;
+  const parts = t.split(/,\s*(?:and |or )?|\s+(?:and|or)\s+/).filter(Boolean);
+  if (parts.length > 1) {
+    // Une alternative : des types de carte, ou des sous-types.
+    for (const p of parts) {
+      const low = p.toLowerCase();
+      if (SPELL_TYPES.includes(low)) out.types.push(low);
+      else if (/^[A-Z][a-z]+$/.test(p) && !NOT_SUBTYPES.test(p)) (out.subtypes ??= []).push(p);
+      else return null;
+    }
+    return out.types.length > 0 && out.subtypes ? null : out;
+  }
+  const words = t.split(/\s+/);
+  for (const [i, w] of words.entries()) {
+    const low = w.toLowerCase();
+    if (COLOR_WORDS[low] && out.colors.length === 0) out.colors.push(COLOR_WORDS[low]!);
+    else if (low === "colorless") out.colorless = true;
+    else if (low === "legendary") out.legendary = true;
+    else if (SPELL_TYPES.includes(low) && out.types.length === 0) out.types.push(low);
+    else if (low.startsWith("non") && SPELL_TYPES.includes(low.slice(3))) out.notTypes.push(low.slice(3));
+    else if (i === words.length - 1 && /^[A-Z][a-z]+$/.test(w) && !NOT_SUBTYPES.test(w)) out.subtypes = [w];
+    else return null;
+  }
+  return out;
+}
+
 /** Lit une ligne d'effet statique (le nom de la carte déjà remplacé par « ~ »). */
 export function parseStaticLine(line: string): StaticAbility | null {
   const l = line.replace(/\.$/, "").replace(/\. this effect reduces only the amount of colored mana you pay$/i, "").trim();
@@ -304,6 +395,10 @@ export function parseStaticLine(line: string): StaticAbility | null {
   }
   if (/^players have no maximum hand size$/i.test(l)) return { kind: "noMaxHandSizeAll" };
   if (/^~ enters tapped$/i.test(l)) return { kind: "entersTapped" };
+  if ((m = /^~ (enters tapped and )?doesn't untap during your untap step$/i.exec(l))) return { kind: "doesntUntap", ...(m[1] ? { entersTapped: true } : {}) };
+  if (/^(?:enchanted|equipped) (?:creature|permanent|artifact|land|planeswalker) doesn't untap during its controller's untap step$/i.test(l)) {
+    return { kind: "doesntUntap", attached: true };
+  }
   if ((m = /^~ enters tapped unless you control (\w+) or more basic lands$/i.exec(l))) {
     const n = NUMBER_WORDS[m[1]!.toLowerCase()] ?? parseInt(m[1]!, 10);
     if (Number.isInteger(n)) return { kind: "entersTapped", unlessBasics: n };
@@ -340,6 +435,10 @@ export function parseStaticLine(line: string): StaticAbility | null {
     if (Number.isFinite(n)) return { kind: "exileAtCounters", counter: m[2]!.toLowerCase(), count: n };
   }
   if (/^you have shroud$/i.test(l)) return { kind: "playerShroud" };
+  if ((m = /^the "legend rule" doesn't apply to (permanents|tokens) you control$/i.exec(l))) return { kind: "noLegendRule", tokensOnly: m[1]!.toLowerCase() === "tokens" };
+  if ((m = /^you may have (?:~|[A-Z][\w-]*) enter as a copy of (any creature on the battlefield|another creature you control|a creature you control)(, except it has (?:~|[A-Z][\w-]*)'s other abilities)?$/i.exec(l))) {
+    return { kind: "enterAsCopy", yours: !/battlefield/i.test(m[1]!), keepOthers: !!m[2] };
+  }
   if (/^skip your draw step$/i.test(l)) return { kind: "skipDraw" };
   if (/^creatures you control can't attack$/i.test(l)) return { kind: "creaturesCantAttack" };
   if ((m = /^no more than one creature can (attack|block) each combat$/i.exec(l))) return { kind: "maxOne", attack: m[1]!.toLowerCase() === "attack" };
@@ -395,17 +494,21 @@ export function parseStaticLine(line: string): StaticAbility | null {
   if (/^at the beginning of your upkeep, look at the top card of your library\. if it's a creature card of the chosen type, you may reveal it and put it into your hand$/i.test(l)) {
     return { kind: "heraldsHorn" };
   }
-  if ((m = /^((?:white|blue|black|red|green) )?((?:non)?[a-z]+ )?spells you cast cost \{(\d+)\} less to cast$/i.exec(l))) {
-    const color = m[1]?.trim().toLowerCase();
-    const type = m[2]?.trim().toLowerCase();
-    const types: string[] = [];
-    const notTypes: string[] = [];
-    if (type) {
-      const base = type.replace(/^non/, "");
-      if (!SPELL_TYPES.includes(base)) return null;
-      (type.startsWith("non") ? notTypes : types).push(base);
-    }
-    return { kind: "costReduction", amount: parseInt(m[3]!, 10), colors: color ? [COLOR_WORDS[color]!] : [], types, notTypes };
+  if ((m = /^(?:~|this spell) costs \{(\d+)\} (less|more) to cast for each (.+)$/i.exec(l))) {
+    const per = parseCount(m[3]!);
+    if (!per) return null;
+    return { kind: "selfCost", amount: parseInt(m[1]!, 10) * (m[2]!.toLowerCase() === "more" ? -1 : 1), per };
+  }
+  if ((m = /^(?:~|this spell) costs \{X\} less to cast, where X is (.+)$/i.exec(l))) {
+    const x = parseXValue(m[1]!);
+    return x ? { kind: "selfCost", amount: 1, x } : null;
+  }
+  if ((m = /^(.*?)spells (you cast |your opponents cast )?cost \{(\d+)\} (less|more) to cast$/i.exec(l))) {
+    const filter = parseSpellClass(m[1]!.trim());
+    if (!filter) return null;
+    const who = m[2]?.trim().toLowerCase();
+    const amount = parseInt(m[3]!, 10) * (m[4]!.toLowerCase() === "more" ? -1 : 1);
+    return { kind: "costReduction", amount, ...filter, ...(who === undefined ? { everyone: true } : who === "your opponents cast" ? { everyone: true, opponents: true } : {}) };
   }
   if ((m = /^enchanted creature (?:loses all abilities and )?is an? (?:(white|blue|black|red|green) and (white|blue|black|red|green) )?(\w+) (artifact )?creature with base power and toughness (\d+)\/(\d+)(?: named (.+?))?(?: and has (\w+))?(, and it loses all other abilities, card types, and creature types)?$/i.exec(l))) {
     if (!/loses all abilities/i.test(l) && !m[9]) return null;
@@ -511,6 +614,10 @@ export function countValue(g: GameState, spec: CountSpec, source: CardInstance):
       return permanentsMatching(g, spec.filter, source).length;
     case "colors":
       return colorsAmongPermanents(g, source.controllerId, spec.filter, source).length;
+    case "power": {
+      const powers = permanentsMatching(g, spec.filter, source).map((c) => creatureStats(g, c).power);
+      return spec.total ? powers.reduce((a, b) => a + Math.max(0, b), 0) : Math.max(0, ...powers);
+    }
   }
 }
 
@@ -561,6 +668,25 @@ function controls(g: GameState, playerId: PlayerId, kind: StaticAbility["kind"])
   return g.players[playerId]!.zones.battlefield.some((id) => staticsOf(g, g.cards[id]!).some((s) => s.kind === kind));
 }
 
+/**
+ * La règle des légendes s'applique-t-elle à ce permanent ? Non si son
+ * contrôleur a Sakashima (tous ses permanents) ou Cadric (ses jetons).
+ */
+export function legendRuleApplies(g: GameState, card: CardInstance): boolean {
+  for (const id of g.players[card.controllerId]!.zones.battlefield) {
+    for (const s of staticsOf(g, g.cards[id]!)) {
+      if (s.kind === "noLegendRule" && (!s.tokensOnly || card.isToken)) return false;
+    }
+  }
+  return true;
+}
+
+/** « You may have ~ enter as a copy of… » de la carte (Clone, Sakashima), ou rien. */
+export function enterAsCopyOf(data: CardData | undefined, faceIndex = 0): Extract<StaticAbility, { kind: "enterAsCopy" }> | undefined {
+  const s = staticsOfData(data, faceIndex).find((x) => x.kind === "enterAsCopy");
+  return s && s.kind === "enterAsCopy" ? s : undefined;
+}
+
 /** Le joueur n'a pas de taille maximale de main. */
 export function hasNoMaxHandSize(g: GameState, playerId: PlayerId): boolean {
   return controls(g, playerId, "noMaxHandSize") || g.turnOrder.some((id) => !g.players[id]!.hasConceded && controls(g, id, "noMaxHandSizeAll"));
@@ -568,7 +694,13 @@ export function hasNoMaxHandSize(g: GameState, playerId: PlayerId): boolean {
 
 /** Le permanent arrive-t-il engagé (« This land enters tapped ») ? Sans `g`, toute condition compte comme non remplie. */
 export function entersTapped(data: CardData | undefined, faceIndex: number): boolean {
-  return staticsOfData(data, faceIndex).some((s) => s.kind === "entersTapped");
+  return staticsOfData(data, faceIndex).some((s) => s.kind === "entersTapped" || (s.kind === "doesntUntap" && s.entersTapped));
+}
+
+/** « doesn't untap during your untap step » : le permanent lui-même, ou une aura / un équipement attaché à lui. */
+export function doesntUntap(g: GameState, card: CardInstance): boolean {
+  if (staticsOf(g, card).some((s) => s.kind === "doesntUntap" && !s.attached)) return true;
+  return battlefield(g).some((other) => other.attachedTo === card.instanceId && staticsOf(g, other).some((s) => s.kind === "doesntUntap" && s.attached));
 }
 
 export type EntersTappedStatic = Extract<StaticAbility, { kind: "entersTapped" }>;
@@ -657,9 +789,13 @@ export function costReductions(g: GameState, playerId: PlayerId, spell: { typeLi
       for (const s of staticsOf(g, source)) {
         if (s.kind !== "costReduction") continue;
         if (pid !== playerId && !s.everyone) continue;
+        if (s.opponents && (pid === playerId || areTeammates(g, pid, playerId))) continue;
         if (s.colors.length > 0 && !s.colors.some((c) => spell.colors.includes(c))) continue;
+        if (s.colorless && spell.colors.length > 0) continue;
         if (s.types.length > 0 && !s.types.some(has)) continue;
         if (s.notTypes.some(has)) continue;
+        if (s.legendary && !has("legendary")) continue;
+        if (s.subtypes && !s.subtypes.some((t) => typeLineHasCreatureType(spell.typeLine, spell.oracleText ?? "", t))) continue;
         if (s.chosenType) {
           const chosen = source.chosenType;
           if (!chosen) continue;
@@ -687,6 +823,20 @@ export function isChangeling(g: GameState, card: CardInstance): boolean {
   const data = g.cardData[card.cardId];
   const face = data?.faces?.[card.faceIndex];
   return /^Changeling\b/m.test(face?.oracleText ?? data?.oracleText ?? "");
+}
+
+/**
+ * Ce que le sort lui-même change à son coût (The Great Henge, Blasphemous Act) : positif, il coûte moins.
+ * `card` : la carte lancée, vue comme si elle était contrôlée par `playerId`.
+ */
+export function selfCostReduction(g: GameState, playerId: PlayerId, card: CardInstance, faceIndex: number): number {
+  const source = { ...card, controllerId: playerId };
+  let total = 0;
+  for (const s of staticsOfData(g.cardData[card.cardId], faceIndex)) {
+    if (s.kind !== "selfCost") continue;
+    total += s.amount * (s.per ? countValue(g, s.per, source) : s.x ? countValue(g, s.x, source) : 1);
+  }
+  return total;
 }
 
 /** La ligne de type a-t-elle ce type de créature ? Changelin : tous les types de créature. */

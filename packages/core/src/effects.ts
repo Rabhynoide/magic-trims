@@ -9,7 +9,7 @@
  */
 import { COMBAT_KEYWORDS, creatureStats, hasKeyword, protectedFrom } from "./combat.js";
 import { grantedManaAbility, manaOptions, manaTapEffect } from "./mana.js";
-import { parsePermanentAbilities } from "./triggers.js";
+import { parsePermanentAbilities, parseWard } from "./triggers.js";
 import { areTeammates } from "./modes.js";
 import { joinModes, keywordList, selfToTilde } from "./text.js";
 import { isChangeling, isCreatureSubtype, playerHasHexproof, playerHasShroud, printedEvoke, typeLineHasCreatureType } from "./statics.js";
@@ -162,6 +162,10 @@ type EffectBase =
   | { type: "shuffleEventCard" }
   /** Cavalier of Gales : mettre N cartes de sa main sur le dessus de sa bibliothèque. */
   | { type: "handToTop"; count: number; drawFirst?: number }
+  /** Sylvan Library : choisir des cartes de la main piochées ce tour (après avoir pioché `drawFirst` cartes). */
+  | { type: "chooseDrawn"; count: number; drawFirst?: number }
+  /** Pour chaque carte choisie par l'effet précédent : payer `life` PV pour la garder, sinon la remettre sur le dessus. */
+  | { type: "payLifeOrTop"; life: number }
   /** Incandescent Soulstoke : une carte de sa main sur le champ de bataille (au choix), célérité, sacrifiée à la fin du tour. */
   | { type: "putFromHand"; subtype: string; haste: boolean; sacrificeAtEnd: boolean }
   /**
@@ -196,6 +200,8 @@ type EffectBase =
   | { type: "life"; who: Who; amount: Amount }
   | { type: "token"; count: Amount; token: TokenSpec; tapped: boolean; forOpponents?: boolean }
   | { type: "counter"; target: number }
+  /** Garde : contrer le sort ou la capacité qui a déclenché la capacité (« counter that spell or ability »). */
+  | { type: "counterTriggering" }
   | { type: "mana"; mana: string[] }
   /** Marqueurs sur la source de la capacité (« put a +1/+1 counter on ~ »). */
   | { type: "counterSelf"; kind: string; count: number }
@@ -253,10 +259,16 @@ type EffectBase =
   | { type: "gainControl"; permanent: number | "self"; player: number }
   /** « Exchange control of target land you control and target land an opponent controls. » */
   | { type: "exchangeControl"; a: number; b: number; relation?: ExchangeRelation }
+  /**
+   * « Gain control of target creature until end of turn. Untap that creature. It gains haste until end of turn. »
+   * (une cible) ou « Gain control of all nonland permanents until end of turn. Untap them. They gain haste… » (un filtre).
+   */
+  | { type: "takeControl"; target?: number; filter?: PermanentFilter; untilEndOfTurn?: boolean; untap?: boolean; haste?: boolean }
   /** Chaos Warp : le propriétaire mélange le permanent dans sa bibliothèque ; `revealPermanent` : puis révèle et met en jeu un permanent. */
   | { type: "shuffleIntoLibrary"; target: number; revealPermanent?: boolean }
   /** Ashling : « create a token that's a copy of it » (la carte sacrifiée), avec la célérité et un sacrifice à la fin du tour. */
-  | { type: "copyEventCard"; haste?: boolean; endStepUnless?: string; sacrificeAtEnd?: boolean }
+  /** Ratadrabik : `except` (« except it's not legendary and it's a 2/2 black Zombie… »). */
+  | { type: "copyEventCard"; haste?: boolean; endStepUnless?: string; sacrificeAtEnd?: boolean; except?: CopyExcept }
   /** Paradox Haze : « that player gets an additional upkeep step after this step ». */
   | { type: "extraUpkeep" }
   /** Wedding Ring : « target opponent creates a token that's a copy of it ». */
@@ -286,8 +298,9 @@ type EffectBase =
   /**
    * `types` : au moins un de ces types ou sous-types (« Forest or Island ») ; `basic` : terrain de base ;
    * `count` : « up to two » ; `split` : Cultivate (la première carte sur le champ de bataille engagée, les autres en main).
+   * `legendary` : carte légendaire ; `mv` : valeur de mana bornée (« with mana value less than ~'s power », « 3 or less »).
    */
-  | { type: "search"; types: string[]; to: "hand" | "battlefield"; reveal: boolean; who?: Who; tapped?: boolean; basic?: boolean; count?: number; split?: boolean }
+  | { type: "search"; types: string[]; to: "hand" | "battlefield"; reveal: boolean; who?: Who; tapped?: boolean; basic?: boolean; count?: number; split?: boolean; legendary?: boolean; mv?: { cmp: "lt" | "le"; amount: Amount } }
   | { type: "shuffle"; who?: Who }
   /** « Target opponent reveals their hand. » */
   | { type: "revealHand"; who: Who }
@@ -333,6 +346,8 @@ export interface SpellEffects {
   sacrifice?: PermanentFilter;
   /** Coût alternatif (« You may pay {1}{B} rather than pay this spell's mana cost »). */
   alternativeCost?: string;
+  /** Le coût alternatif n'est permis que si l'on contrôle un commandant (Flawless Maneuver : « {0} »). */
+  alternativeIf?: "commander";
   /** Coût supplémentaire : payer X PV (Toxic Deluge), X choisi en lançant le sort. */
   payLifeX?: boolean;
   /** « Cast this spell only during combat on an opponent's turn » (Wake the Dead). */
@@ -342,7 +357,8 @@ export interface SpellEffects {
    * si un mode a des cibles (`targets`, numérotées dans le mode), ils sont choisis en lançant le sort.
    */
   /** `maxWithCommander` : le maximum si le lanceur contrôle un commandant (Akroma's Will). */
-  modes?: { min: number; max: number; maxWithCommander?: number; list: { label: string; effects: Effect[]; targets?: TargetSpec[] }[] };
+  /** `cost` : le coût supplémentaire d'un mode de Spree (« + {2} — … »), payé en lançant le sort. */
+  modes?: { min: number; max: number; maxWithCommander?: number; list: { label: string; effects: Effect[]; targets?: TargetSpec[]; cost?: string }[] };
   effects: Effect[];
   /** Phrases que le moteur ne sait pas appliquer. */
   unknown: string[];
@@ -394,6 +410,16 @@ function parsePermanentFilter(text: string): PermanentFilter | null {
   if (total) {
     filter.maxTotalPT = parseInt(total[1]!, 10);
     t = t.slice(0, total.index);
+  }
+  // « nonland permanents that aren't legendary » (Urza's Ruinous Blast), « creatures that are legendary ».
+  const quality = / that (are|aren't|are not) (legendary|tapped|untapped)$/.exec(t);
+  if (quality) {
+    t = t.slice(0, quality.index);
+    const negated = quality[1] !== "are";
+    if (quality[2] === "legendary") {
+      if (negated) filter.notTypes.push("legendary");
+      else filter.legendary = true;
+    } else filter.state = (negated ? (quality[2] === "tapped" ? "untapped" : "tapped") : quality[2]) as PermanentFilter["state"];
   }
   const suffixes: [RegExp, PermanentFilter["controller"]][] = [
     [/ (an opponent controls|you don't control)$/, "notYou"],
@@ -846,8 +872,77 @@ function parseToken(text: string): TokenSpec | null {
   return { power: m[1]!.toUpperCase(), toughness: m[2]!.toUpperCase(), colors, subtypes, keywords, artifact: !!m[4] };
 }
 
+/** Ce qu'une copie a de différent (« except it's not legendary and it's a 2/2 black Zombie… »). */
+export interface CopyExcept {
+  nonLegendary?: boolean;
+  power?: string;
+  toughness?: string;
+  /** Couleurs en plus (« black » → B). */
+  colors?: string[];
+  /** Types de carte en plus (« an artifact »). */
+  types?: string[];
+  /** Sous-types en plus (« Zombie »). */
+  subtypes?: string[];
+  haste?: boolean;
+}
+
+/** Lit « except … » d'une copie ; `null` si une partie n'est pas comprise. */
+const COPY_COLORS: Record<string, string> = { white: "W", blue: "U", black: "B", red: "R", green: "G" };
+
+export function parseCopyExcept(text: string): CopyExcept | null {
+  const out: CopyExcept = {};
+  for (const raw of text.split(/,? and (?=it(?:'s| has| gains) )/i)) {
+    const part = raw.trim();
+    let m: RegExpExecArray | null;
+    if (/^it's not legendary$/i.test(part)) {
+      out.nonLegendary = true;
+    } else if (/^it (?:has|gains) haste$/i.test(part)) {
+      out.haste = true;
+    } else if ((m = /^it's an? (?:(\d+)\/(\d+) )?((?:(?:white|blue|black|red|green)(?:,? and |, | ))*)((?:[A-Za-z]+ )*?[A-Za-z]+) in addition to its other (?:colors and types|types)$/i.exec(part))) {
+      if (m[1]) {
+        out.power = m[1];
+        out.toughness = m[2]!;
+      }
+      const colors = (m[3] ?? "").split(/,? and |, | /).filter(Boolean).map((c) => COPY_COLORS[c.toLowerCase()]!);
+      if (colors.length > 0) out.colors = colors;
+      for (const w of m[4]!.split(" ")) {
+        if (/^(artifact|creature|enchantment|land)$/i.test(w)) (out.types ??= []).push(w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+        else if (/^[A-Z][a-z]+$/.test(w)) (out.subtypes ??= []).push(w);
+        else return null;
+      }
+    } else {
+      return null;
+    }
+  }
+  return out;
+}
+
 /** Lit les effets d'un éphémère ou d'un rituel. */
 export function parseSpellEffects(oracleText: string, cardName: string, options: { alternative?: boolean } = {}): SpellEffects {
+  // Spree (Trash the Town) : « Spree » puis une ligne par mode, « + {2} — effet ». Au moins un mode, chacun ajoute son coût.
+  const lines = oracleText.replace(/\([^)]*\)/g, "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const spreeAt = lines.findIndex((l) => /^spree$/i.test(l));
+  if (spreeAt >= 0) {
+    const rest = lines.slice(0, spreeAt);
+    const list: NonNullable<SpellEffects["modes"]>["list"] = [];
+    const unknownModes: string[] = [];
+    for (const line of lines.slice(spreeAt + 1)) {
+      const m = /^\+\s*((?:\{[^}]+\})+)\s*—\s*(.+)$/.exec(line);
+      if (!m) {
+        rest.push(line);
+        continue;
+      }
+      const parsed = parseSpellEffects(m[2]!, cardName, options);
+      if (parsed.unknown.length > 0 || parsed.effects.length === 0) unknownModes.push(line);
+      list.push({ label: line, cost: m[1]!, effects: parsed.effects, ...(parsed.targets.length > 0 ? { targets: parsed.targets } : {}) });
+    }
+    if (list.length > 0) {
+      const result: SpellEffects = rest.length > 0 ? parseSpellEffects(rest.join("\n"), cardName, options) : { targets: [], effects: [], unknown: [] };
+      result.unknown.push(...unknownModes);
+      result.modes = { min: 1, max: list.length, list };
+      return result;
+    }
+  }
   // « Choose one or more — • Sell Contraband — Create a Treasure token. … • … »
   // Akroma's Will : « Choose one. If you control a commander as you cast this spell, you may choose both instead. • … »
   const modal = /^(.*?)\bchoose (one|two|three|one or more|any number)(?: ?(?:—|-)|(\. if you control a commander as you cast (?:this spell|~), you may choose both instead\.))\s*(•.+)$/is.exec(
@@ -917,6 +1012,11 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       }
     }
 
+    if (/^if you control a commander, you may cast ~ without paying its mana cost$/i.test(s)) {
+      result.alternativeCost = "{0}";
+      result.alternativeIf = "commander";
+      continue;
+    }
     // Addendum : « If you cast this spell during your main phase, … » (Unbreakable Formation).
     if ((m = /^(?:addendum — )?if you cast ~ during your main phase, (.+)$/i.exec(s))) {
       pendingMainPhase = result.effects.length;
@@ -951,6 +1051,25 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       const types = (m[1] ?? "").trim().toLowerCase().replace(/^basic /, "").split(" ").filter(Boolean);
       result.effects.push({ type: "search", types, to: /hand/i.test(m[3]!) ? "hand" : "battlefield", reveal: !!m[2], ...(/^basic /i.test(m[1] ?? "") ? { basic: true } : {}) });
       continue;
+    }
+    // Tuteurs filtrés : « Search your library for a legendary permanent card with mana value less than ~'s power, put that card onto the battlefield » (Sisay).
+    if (
+      (m = /^search your library for an? (legendary )?((?:(?:nonland|land|creature|artifact|enchantment|instant|sorcery|planeswalker|permanent)(?: or | )?)+) card with mana value (less than (?:or equal to )?(.+?)|(\w+) or less)(?:,| and) (reveal it, )?(?:then )?put (?:it|that card) (into your hand|onto the battlefield)$/i.exec(s))
+    ) {
+      const le = !!m[5] || /or equal to/i.test(m[3]!);
+      const q = m[5] ? amount(m[5]) : (/^\w+$/.test(m[4]!) ? amount(m[4]!) : quantityOf(m[4]!, -1));
+      const types = m[2]!.toLowerCase().split(/ or | /).filter(Boolean);
+      if (q !== null && !(typeof q === "number" && Number.isNaN(q))) {
+        result.effects.push({
+          type: "search",
+          types,
+          to: /hand/i.test(m[7]!) ? "hand" : "battlefield",
+          reveal: !!m[6],
+          ...(m[1] ? { legendary: true } : {}),
+          mv: { cmp: le ? "le" : "lt", amount: q },
+        });
+        continue;
+      }
     }
     // Fetchlands, Farseek, Rampant Growth, Cultivate, Land Tax : terrains par type ou sous-type.
     const LAND_WORDS = "(?:basic land|land|plains|island|swamp|mountain|forest)";
@@ -1020,7 +1139,7 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       result.effects.push({ type: "pumpTarget", target: t, power: 0, toughness: 0, keywords: keywordList(m[1]!) }, { type: "grantTrigger", target: t, text: `${m[2]!}.` });
       continue;
     }
-    if ((m = /^until end of turn, (that creature|target creature) gains "(When .+?)\.?"\.?$/i.exec(sentence.trim()))) {
+    if ((m = /^until end of turn, (that creature|target creature) gains "(When(?:ever)? .+?)\.?"\.?$/i.exec(sentence.trim()))) {
       const t = /^target/i.test(m[1]!) ? target({ label: "créature", permanent: { types: ["creature"], notTypes: [] } }) : result.targets.length - 1;
       if (t >= 0) {
         result.effects.push({ type: "grantTrigger", target: t, text: `${m[2]!}.` });
@@ -1074,6 +1193,14 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     if (/^create a token that's a copy of it$/i.test(s)) {
       result.effects.push({ type: "copyEventCard" });
       continue;
+    }
+    // Ratadrabik : « create a token that's a copy of that creature, except it's not legendary and it's a 2/2 black Zombie… ».
+    if ((m = /^create a token that's a copy of (?:it|that creature)(?:, except (.+))?$/i.exec(s))) {
+      const except = m[1] ? parseCopyExcept(m[1]) : {};
+      if (except) {
+        result.effects.push({ type: "copyEventCard", ...(m[1] ? { except } : {}) });
+        continue;
+      }
     }
     if (/^(?:the|that) token gains haste(?: until end of turn)?$/i.test(s) && prev?.type === "copyEventCard") {
       prev.haste = true;
@@ -1265,6 +1392,21 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     } else if (/^target opponent chooses a permanent they control at random and sacrifices it$/i.test(s)) {
       result.effects.push({ type: "randomSacrificeLoop", player: target({ label: "adversaire", player: true, opponent: true }) });
       followUps.push(/^if a nonland permanent is sacrificed this way, repeat this process$/i);
+    } else if ((m = /^gain control of (target|all) (.+?)( until end of turn)?$/i.exec(s)) && parsePermanentFilter(m[2]!)) {
+      const filter = parsePermanentFilter(m[2]!)!;
+      result.effects.push({
+        type: "takeControl",
+        ...(m[1]!.toLowerCase() === "target" ? { target: target({ label: permanentLabel(filter), permanent: filter }) } : { filter }),
+        ...(m[3] ? { untilEndOfTurn: true } : {}),
+      });
+    } else if ((m = /^untap target (.+?) and gain control of it until end of turn$/i.exec(s)) && parsePermanentFilter(m[1]!)) {
+      // Word of Seizing, Threaten.
+      const filter = parsePermanentFilter(m[1]!)!;
+      result.effects.push({ type: "takeControl", target: target({ label: permanentLabel(filter), permanent: filter }), untilEndOfTurn: true, untap: true });
+    } else if (/^untap (?:them|it|that creature|that permanent|those permanents|those creatures)$/i.test(s) && result.effects.at(-1)?.type === "takeControl") {
+      (result.effects.at(-1) as Extract<Effect, { type: "takeControl" }>).untap = true;
+    } else if (/^(?:they|it|that creature) gains? haste until end of turn$/i.test(s) && result.effects.at(-1)?.type === "takeControl") {
+      (result.effects.at(-1) as Extract<Effect, { type: "takeControl" }>).haste = true;
     } else if ((m = /^(destroy|exile) all (.+)$/i.exec(s))) {
       const filter = parsePermanentFilter(m[2]!.replace(/^(\w+) and (\w+)$/, "$1 or $2"));
       if (!filter) {
@@ -1508,6 +1650,20 @@ export function modesTargeted(effects: SpellEffects | null | undefined): boolean
   return !!effects?.modes?.list.some((m) => (m.targets?.length ?? 0) > 0);
 }
 
+/**
+ * Les modes d'un sort se choisissent-ils en le lançant ? Oui s'ils ont des cibles,
+ * un coût (Spree), ou dépendent d'un commandant contrôlé « as you cast » (Akroma's Will).
+ */
+export function modesAtCast(effects: SpellEffects | null | undefined): boolean {
+  const modes = effects?.modes;
+  return !!modes && (modesTargeted(effects) || modes.maxWithCommander !== undefined || modes.list.some((m) => m.cost));
+}
+
+/** Le coût supplémentaire des modes choisis (Spree), « {2}{1} ». */
+export function modesCost(effects: SpellEffects | null | undefined, chosen: number[] | undefined): string {
+  return (chosen ?? []).map((i) => effects?.modes?.list[i]?.cost ?? "").join("");
+}
+
 const TARGET_KEYS = ["target", "player", "permanent", "a", "b", "controllerOf"];
 
 /** Décale les numéros de cible d'un effet (les cibles d'un mode passent après celles du sort). */
@@ -1666,7 +1822,7 @@ function faceSupport(typeLine: string, oracleText: string, name: string): { know
     if (!line) continue;
     const parts = line.split(/,\s*/).map((p) => p.trim().toLowerCase());
     const isProtection = (p: string) => /^protection from (white|blue|black|red|green)(?:,? and from (white|blue|black|red|green))*$/.test(p);
-    if (parts.every((p) => HANDLED_KEYWORDS.has(p) || isProtection(p))) {
+    if (parts.every((p) => HANDLED_KEYWORDS.has(p) || isProtection(p) || parseWard(p))) {
       known++;
       continue;
     }
@@ -1725,6 +1881,7 @@ export const KEYWORD_HELP: Record<string, { name: string; help: string }> = {
   hexproof: { name: "Défense talismanique", help: "Les adversaires ne peuvent pas la cibler." },
   shroud: { name: "Linceul", help: "Personne ne peut la cibler." },
   "protection from each color": { name: "Protection contre chaque couleur", help: "Ni ciblée, ni bloquée, ni blessée par une source de couleur." },
+  spree: { name: "Spree", help: "En lançant le sort, tu choisis un ou plusieurs modes et paies le coût en plus de chacun." },
   "read ahead": { name: "Lecture anticipée", help: "En lançant la saga, tu choisis le chapitre de départ ; les chapitres sautés ne se déclenchent pas." },
   exploit: { name: "Exploitation", help: "En arrivant, tu peux sacrifier une créature (le moteur te le demande)." },
   flash: { name: "Flash", help: "Peut se lancer à tout moment où l'on a la priorité." },
@@ -1756,9 +1913,15 @@ export function abilityReport(data: CardData, faceIndex = 0): AbilityReportItem[
     if (!line) continue;
     const parts = line.split(/,\s*/).map((p) => p.trim());
     // « Lifelink, ward {2} » : une liste de mots-clés (avec un coût éventuel).
-    const isKeywordLine = !spell && !line.includes(".") && !line.includes(":") && parts.every((p) => /^[A-Za-z]+( [a-z]+)?( \{[^}]+\})*$/.test(p));
+    const isKeywordLine = !spell && !line.includes(":") && parts.every((p) => parseWard(p) || (!p.includes(".") && /^[A-Za-z]+( [a-z]+)?( \{[^}]+\})*$/.test(p)));
     if (isKeywordLine) {
       for (const part of parts) {
+        const ward = parseWard(part);
+        if (ward) {
+          const cost = ward.mana ?? (ward.life ? `${ward.life} PV` : "défausser une carte");
+          items.push({ title: `Garde (${cost})`, text: `Si un adversaire la cible avec un sort ou une capacité, ce sort ou cette capacité est contré(e), sauf s'il paie ${cost}.`, status: "auto" });
+          continue;
+        }
         const help = KEYWORD_HELP[part.toLowerCase()];
         const other = help ? null : permanentLineStatus(part, typeLine, name);
         items.push(
@@ -1769,6 +1932,17 @@ export function abilityReport(data: CardData, faceIndex = 0): AbilityReportItem[
               : { title: part.charAt(0).toUpperCase() + part.slice(1), text: "Mot-clé que le moteur n'applique pas encore.", status: "manual" },
         );
       }
+      continue;
+    }
+    if (spell && /^spree$/i.test(line)) {
+      items.push({ title: KEYWORD_HELP.spree!.name, text: KEYWORD_HELP.spree!.help, status: "auto" });
+      continue;
+    }
+    const spreeMode = spell ? /^\+\s*((?:\{[^}]+\})+)\s*—\s*(.+)$/.exec(line) : null;
+    if (spreeMode) {
+      const parsed = parseSpellEffects(spreeMode[2]!, name, { alternative: true });
+      const status = parsed.effects.length === 0 ? "manual" : parsed.unknown.length === 0 ? "auto" : "partial";
+      items.push({ title: `Mode (+ ${spreeMode[1]!})`, text: spreeMode[2]!, status, ...(status === "partial" ? { manual: parsed.unknown } : {}) });
       continue;
     }
     if (spell) {

@@ -27,6 +27,8 @@ import {
   resolveAmount,
   spellEffectsOf,
   flattenModes,
+  modesAtCast,
+  modesCost,
   modesMax,
   modesTargeted,
   auraTarget,
@@ -39,6 +41,7 @@ import {
   type Who,
   type PermanentFilter,
   type TokenSpec,
+  type CopyExcept,
 } from "./effects.js";
 import { abilitiesOf, colorsOfCost, manaValueOfCost, triggerConditionHolds, conditionMatches, parsePermanentAbilities, sagaChapters, stackTrigger, type TriggeredAbility, type TriggerEvent } from "./triggers.js";
 import {
@@ -47,6 +50,7 @@ import {
   cantPlayLands,
   castRestriction,
   costReduction,
+  doesntUntap,
   entersTapped,
   entersTappedStatic,
   entersUntappedChoice,
@@ -63,10 +67,13 @@ import {
   foretellCost,
   colorsAmongPermanents,
   costReductions,
+  selfCostReduction,
   mostCommonCreatureType,
   hasCreatureType,
   typeLineHasCreatureType,
   sharesCreatureType,
+  legendRuleApplies,
+  enterAsCopyOf,
 } from "./statics.js";
 import { canAttack, canBlock, cantAttack, cantBlock, colorsOf, creatureStats, hasKeyword, hasLethalDamage, isCreature, lethalDamage, type CombatKeyword, type CombatState } from "./combat.js";
 import { MAX_HAND_SIZE, STEP_LABELS, STEP_PHRASES, TURN_STEPS, isTurnStep, stepIndex, type TurnStep } from "./turn.js";
@@ -483,10 +490,18 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     }
     // Cibles des effets que le moteur sait appliquer.
     const parsedEffects = g.settings.enforceRules ? spellEffectsOf(g, card, faceIndex, alternative ?? false) : null;
-    // Modes avec des cibles (Ashling's Command) : choisis en lançant le sort, leurs cibles s'ajoutent à celles du sort.
-    const earlyModes = parsedEffects && modesTargeted(parsedEffects) ? checkModes(g, actor.id, parsedEffects.modes!, modes ?? []) : undefined;
+    // Modes avec des cibles (Ashling's Command), un coût (Spree) ou un commandant (Akroma's Will) : choisis en lançant le sort,
+    // leurs cibles s'ajoutent à celles du sort. Sans choix envoyé, un sort comme Akroma's Will les choisit à la résolution.
+    const withCommander = controlsCommander(g, actor.id);
+    const spec = parsedEffects?.modes;
+    const atCast = !!spec && (modesTargeted(parsedEffects) || spec.list.some((m) => m.cost) || (modesAtCast(parsedEffects) && modes !== undefined));
+    const earlyModes = atCast ? checkModes(spec!, modes ?? [], withCommander) : undefined;
     const effects = parsedEffects && earlyModes ? flattenModes(parsedEffects, earlyModes) : parsedEffects;
     if (alternative && !effects?.alternativeCost) throw new ActionError("Ce sort n'a pas de coût alternatif.");
+    // Flawless Maneuver, Fierce Guardianship : gratuit si l'on contrôle un commandant.
+    if (alternative && effects?.alternativeIf === "commander" && !controlsCommander(g, actor.id)) {
+      throw new ActionError("Il faut contrôler un commandant pour lancer ce sort sans payer son coût.");
+    }
     if (effects?.castOnly === "opponentCombat" && (isActivePlayer(g, actor.id) || !["beginCombat", "declareAttackers", "declareBlockers", "combatDamage", "endCombat"].includes(g.turn.step))) {
       throw new ActionError("Ce sort ne se lance que pendant le combat, au tour d'un adversaire.");
     }
@@ -538,9 +553,12 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const reductions = g.settings.enforceRules
       ? costReductions(g, actor.id, { typeLine, colors: data.colors, oracleText: faceData?.oracleText ?? data.oracleText })
       : { generic: 0, colored: [] as string[] };
-    const reduction = permission?.free ? 0 : reductions.generic;
+    // Le sort lui-même (The Great Henge, Blasphemous Act) ; rien quand il est lancé sans payer son coût.
+    const selfReduction = g.settings.enforceRules && !permission?.free && !alternative && !evokeCost ? selfCostReduction(g, actor.id, card, faceIndex) : 0;
+    const reduction = permission?.free || (alternative && effects?.alternativeIf) ? 0 : reductions.generic + selfReduction;
     // Morophon : retire du coût le mana coloré indiqué (une fois chaque symbole).
-    let paidCost = costText;
+    // Spree : le coût supplémentaire de chaque mode choisi.
+    let paidCost = costText + modesCost(parsedEffects, earlyModes);
     for (const c of reductions.colored) paidCost = paidCost.replace(`{${c}}`, "");
     // Toxic Deluge : X PV payés en coût supplémentaire (on ne peut pas payer plus de PV qu'on n'en a).
     const lifeX = effects?.payLifeX ? xValue : 0;
@@ -581,6 +599,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     if (alternative) cast.alternative = true;
     if (evokeCost) cast.evoked = true;
     if (permission?.foretell) cast.foretold = true;
+    if (spec?.maxWithCommander !== undefined && withCommander) cast.castWithCommander = true;
     if (earlyModes) {
       cast.modes = { chosen: earlyModes };
       log(g, actor.id, `${actor.name} choisit : ${earlyModes.map((i) => `« ${parsedEffects!.modes!.list[i]!.label} »`).join(", ")}.`);
@@ -599,6 +618,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       cast.targets = effects.targets.length > 0 ? chosen.map((t) => ({ ...t })) : [];
       if (x !== undefined) cast.xValue = xValue;
     }
+    emitTargeted(g, cast);
     const paid = [payment.spent.length > 0 ? formatMana(payment.spent) : "rien", payment.life + lifeX > 0 ? `${payment.life + lifeX} PV` : ""]
       .filter(Boolean)
       .join(" et ");
@@ -609,6 +629,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       permission ? `${permission.reason}${permission.free ? ", sans payer son coût" : permission.foretell ? ` pour ${permission.foretell}` : ""}` : "",
       tax > 0 ? `taxe de commandant {${tax}}` : "",
       reduction > 0 ? `réduction de {${reduction}}` : "",
+      reduction < 0 ? `surcoût de {${-reduction}}` : "",
     ]
       .filter(Boolean)
       .join(", ");
@@ -812,6 +833,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     });
     card.targets = targets.map((t) => ({ ...t }));
     delete ability.needsTargets;
+    emitTargeted(g, card);
     log(g, actor.id, targets.length > 0 ? `${actor.name} vise ${targets.map((t) => targetName(g, t)).join(", ")} avec la capacité de ${ability.sourceName}.` : `${actor.name} ne choisit aucune cible pour la capacité de ${ability.sourceName}.`);
   },
 
@@ -911,7 +933,8 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const effects = card.ability ? abilityEffects(g, card) : spellEffectsOf(g, card);
     const spec = effects?.modes;
     if (!spec) throw new ActionError("Ce sort n'a pas de modes.");
-    const chosen = checkModes(g, actor.id, spec, modes);
+    // Akroma's Will : « if you control a commander as you cast this spell » (noté en lançant le sort).
+    const chosen = checkModes(spec, modes, card.ability ? controlsCommander(g, actor.id) : !!card.castWithCommander);
     card.modes.chosen = chosen;
     log(g, actor.id, `${actor.name} choisit : ${chosen.map((i) => `« ${spec.list[i]!.label} »`).join(", ")}.`);
     // Capacité déclenchée aux modes ciblés (Titan of Industry) : les modes sont choisis en la mettant sur la pile, puis ses cibles.
@@ -1126,14 +1149,21 @@ export function moveCardTo(
   cardId: CardInstanceId,
   to: Zone,
   position: "top" | "bottom" | number,
-  options: { controllerId?: PlayerId | undefined; tapped?: boolean | undefined; faceDown?: boolean | undefined; untapChoice?: boolean | undefined } = {},
+  options: { controllerId?: PlayerId | undefined; tapped?: boolean | undefined; faceDown?: boolean | undefined; untapChoice?: boolean | undefined; copyDataId?: string | undefined } = {},
 ): CardInstance {
   const card = getCard(g, cardId);
   const from = card.zone;
+  // Ses valeurs copiables au moment où il part (une copie reste une copie : Ratadrabik).
+  const lastDataId = card.originalCardId ?? card.cardId;
   // Une créature transformée par une aura retrouve sa vraie carte en quittant le champ de bataille.
   if (card.originalCardId) {
     card.cardId = card.originalCardId;
     delete card.originalCardId;
+  }
+  // Une copie (Clone, Sakashima) redevient elle-même hors du champ de bataille.
+  if (card.copyBaseId) {
+    card.cardId = card.copyBaseId;
+    delete card.copyBaseId;
   }
   const wasPublic = isVisibleToAll(card);
   removeFromZone(g, card);
@@ -1149,7 +1179,7 @@ export function moveCardTo(
           type: "dies",
           cardId: card.instanceId,
           controllerId: card.controllerId,
-          dataId: card.cardId,
+          dataId: lastDataId,
           faceIndex: card.faceIndex,
           isToken: card.isToken,
           ...(card.grantedTriggers ? { granted: [...card.grantedTriggers] } : {}),
@@ -1157,6 +1187,10 @@ export function moveCardTo(
       : null;
 
   if (to === "battlefield" && from !== "battlefield") {
+    if (options.copyDataId && g.cardData[options.copyDataId]) {
+      card.copyBaseId = card.cardId;
+      card.cardId = options.copyDataId;
+    }
     card.summoningSick = true;
     // Un planeswalker arrive avec ses marqueurs de loyauté.
     const data = g.cardData[card.cardId];
@@ -1186,7 +1220,7 @@ export function moveCardTo(
         type: "leaves",
         cardId: card.instanceId,
         controllerId: card.controllerId,
-        dataId: card.cardId,
+        dataId: lastDataId,
         faceIndex: card.faceIndex,
         to,
         ...(card.grantedTriggers ? { granted: [...card.grantedTriggers] } : {}),
@@ -1202,6 +1236,7 @@ export function moveCardTo(
     delete card.grantsUntil;
     delete card.grantedTriggers;
     delete card.usedAbilities;
+    delete card.controlReturnsTo;
     if (g.combat) {
       delete g.combat.attackers[card.instanceId];
       delete g.combat.blockers[card.instanceId];
@@ -1238,6 +1273,7 @@ export function moveCardTo(
     delete card.choices;
     delete card.scry;
     delete card.modes;
+    delete card.castWithCommander;
     delete card.alternative;
     delete card.castFromHand;
     delete card.foretold;
@@ -1654,8 +1690,15 @@ function flushTriggers(g: GameState): boolean {
     if (ev.type === "dies" || ev.type === "leaves") {
       instance.ability.eventCardId = ev.cardId;
       instance.ability.eventZone = ev.type === "dies" ? "graveyard" : ev.to;
+      // Ce qu'était la créature (Ratadrabik copie aussi un jeton ou une copie disparus).
+      if (ev.type === "dies") {
+        instance.ability.eventDataId = ev.dataId;
+        instance.ability.eventFaceIndex = ev.faceIndex;
+      }
     } else if (ev.type === "attacks" || ev.type === "enters" || ev.type === "combatDamage" || ev.type === "playerDamage") {
       instance.ability.eventCardId = ev.cardId;
+    } else if (ev.type === "targeted") {
+      instance.ability.eventCardId = ev.spellId;
     } else if (ev.type === "sacrificed") {
       instance.ability.eventCardId = ev.cardId;
       instance.ability.eventDataId = ev.dataId;
@@ -1683,6 +1726,8 @@ function flushTriggers(g: GameState): boolean {
     const aimed = (instance.targets ?? []).length > 0 ? ` (cible : ${instance.targets!.map((t) => targetName(g, t)).join(", ")})` : "";
     log(g, null, `Capacité de ${sourceName} : « ${trigger.text} »${aimed}.`);
   }
+  // Les capacités mises sur la pile ont pu viser un permanent avec la garde.
+  if ((g.events as TriggerEvent[] | undefined)?.length) flushTriggers(g);
   return added > 0;
 }
 
@@ -1791,7 +1836,18 @@ function assignAbilityTargets(g: GameState, instance: CardInstance, specs: Targe
     instance.targets = [];
     ability.needsTargets = true;
   }
+  emitTargeted(g, instance);
   return true;
+}
+
+/** Garde (ward) : chaque permanent visé par ce sort ou cette capacité « devient la cible » (règle 702.21). */
+function emitTargeted(g: GameState, instance: CardInstance): void {
+  const seen = new Set<string>();
+  for (const t of instance.targets ?? []) {
+    if (t.kind !== "card" || seen.has(t.id) || g.cards[t.id]?.zone !== "battlefield") continue;
+    seen.add(t.id);
+    emit(g, { type: "targeted", cardId: t.id, playerId: instance.controllerId, spellId: instance.instanceId });
+  }
 }
 
 function targetName(g: GameState, t: Target): string {
@@ -2076,6 +2132,22 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         // Le premier choisi finit sur le dessus.
         for (const id of [...chosen].reverse()) moveCardTo(g, id, "library", "top");
         log(g, null, `${caster.name} met ${plural(chosen.length, "carte")} de sa main sur le dessus de sa bibliothèque.`);
+        break;
+      }
+      case "chooseDrawn":
+        break;
+      case "payLifeOrTop": {
+        const index = effects.indexOf(effect);
+        const chosen = (source.choices?.[index - 1] ?? []).filter((id) => g.cards[id]?.zone === "hand");
+        const kept = (source.choices?.[index] ?? []).filter((id) => chosen.includes(id));
+        if (kept.length > 0) {
+          payLife(g, caster, effect.life * kept.length);
+          log(g, null, `${caster.name} paie ${effect.life * kept.length} points de vie pour garder ${plural(kept.length, "carte")}.`);
+        }
+        const back = chosen.filter((id) => !kept.includes(id));
+        // La première choisie finit sur le dessus.
+        for (const id of [...back].reverse()) moveCardTo(g, id, "library", "top");
+        if (back.length > 0) log(g, null, `${caster.name} remet ${plural(back.length, "carte")} sur le dessus de sa bibliothèque.`);
         break;
       }
       case "searchSharingType": {
@@ -2400,11 +2472,13 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         const entered = ability?.eventCardId ? g.cards[ability.eventCardId] : undefined;
         const dataId = ability?.eventDataId ?? (entered && !entered.faceDown ? entered.cardId : undefined);
         if (!dataId || !g.cardData[dataId]) break;
-        const instance = newInstance(g, dataId, caster.id, "battlefield");
-        instance.faceIndex = ability?.eventFaceIndex ?? entered?.faceIndex ?? 0;
+        const faceIndex = ability?.eventFaceIndex ?? entered?.faceIndex ?? 0;
+        const copyId = effect.except ? copyDataWith(g, dataId, faceIndex, effect.except) : dataId;
+        const instance = newInstance(g, copyId, caster.id, "battlefield");
+        instance.faceIndex = copyId === dataId ? faceIndex : 0;
         instance.isToken = true;
         instance.summoningSick = true;
-        if (effect.haste) instance.grants = ["haste"];
+        if (effect.haste || effect.except?.haste) instance.grants = ["haste"];
         if (effect.endStepUnless) instance.grantedTriggers = [`At the beginning of your end step, sacrifice this permanent unless you pay ${effect.endStepUnless}.`];
         if (effect.sacrificeAtEnd) instance.grantedTriggers = ["At the beginning of each end step, sacrifice this permanent."];
         caster.zones.battlefield.push(instance.instanceId);
@@ -2691,6 +2765,19 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         log(g, null, `${name} est contré(e).`);
         break;
       }
+      case "counterTriggering": {
+        // Garde : le sort ou la capacité qui ciblait le permanent, s'il est encore sur la pile.
+        const c = ability?.eventCardId ? g.cards[ability.eventCardId] : undefined;
+        if (!c || c.zone !== "stack") break;
+        const name = c.ability ? `la capacité de ${c.ability.sourceName}` : cardName(g, c);
+        if (!c.ability && /can't be countered/i.test(g.cardData[c.cardId]?.oracleText ?? "")) {
+          log(g, null, `${name} ne peut pas être contré(e).`);
+          break;
+        }
+        moveCardTo(g, c.instanceId, "graveyard", "top");
+        log(g, null, `${name.charAt(0).toUpperCase()}${name.slice(1)} est contré(e) par la garde.`);
+        break;
+      }
       case "mana":
         for (const m of effect.mana) caster.manaPool[m as ManaType] += 1;
         log(g, null, `${caster.name} ajoute ${formatMana(effect.mana as ManaType[])}.`);
@@ -2787,6 +2874,18 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         // « … you control » : le permanent doit toujours être à toi.
         if (effect.permanent === "self" ? c.controllerId !== caster.id : false) break;
         setController(g, c, p.id);
+        break;
+      }
+      case "takeControl": {
+        const targets = effect.target !== undefined ? [card(effect.target)].filter((c): c is CardInstance => !!c && c.zone === "battlefield") : allMatching(effect.filter!);
+        for (const c of targets) {
+          const previous = c.controllerId;
+          setController(g, c, caster.id);
+          // Le contrôle revient au nettoyage ; un contrôle déjà temporaire revient au même joueur.
+          if (effect.untilEndOfTurn && previous !== caster.id) c.controlReturnsTo ??= previous;
+          if (effect.untap) untap(g, c);
+          if (effect.haste) c.grants = [...new Set([...(c.grants ?? []), "haste"])];
+        }
         break;
       }
       case "exchangeControl": {
@@ -2921,6 +3020,33 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
       card.cardChoice = { index, options, min: effect.count, max: effect.count, label: `Choisis ${plural(effect.count, "carte")} de ta main à mettre sur le dessus de ta bibliothèque (la première choisie sera dessus)` };
       return true;
     }
+    // Sylvan Library : pioche en plus, puis les cartes piochées ce tour qui doivent être payées ou remises.
+    if (effect.type === "chooseDrawn") {
+      if (effect.drawFirst && !card.drewFirst) {
+        drawCards(g, controller, effect.drawFirst);
+        card.drewFirst = true;
+      }
+      const drawn = controller.drawnThisTurn?.turn === g.turn.number ? controller.drawnThisTurn.ids : [];
+      const options = drawn.filter((id) => g.cards[id]?.zone === "hand" && controller.zones.hand.includes(id));
+      if (options.length <= effect.count) {
+        card.choices = { ...(card.choices ?? {}), [index]: options };
+        continue;
+      }
+      card.cardChoice = { index, options, min: effect.count, max: effect.count, label: `Choisis ${plural(effect.count, "carte")} de ta main piochées ce tour (à payer en points de vie ou à remettre sur le dessus de ta bibliothèque)` };
+      return true;
+    }
+    if (effect.type === "payLifeOrTop") {
+      const options = (card.choices?.[index - 1] ?? []).filter((id) => g.cards[id]?.zone === "hand");
+      // On ne paie des points de vie que si on les a (règle 119.4).
+      const affordable = controller.life > 0 ? Math.floor(controller.life / effect.life) : 0;
+      const max = Math.min(options.length, affordable);
+      if (max === 0) {
+        card.choices = { ...(card.choices ?? {}), [index]: [] };
+        continue;
+      }
+      card.cardChoice = { index, options, min: 0, max, label: `Choisis les cartes que tu gardes en payant ${effect.life} points de vie chacune (les autres vont sur le dessus de ta bibliothèque)` };
+      return true;
+    }
     // Pyre of Heroes : une créature qui partage un type avec la sacrifiée, de valeur de mana +1.
     if (effect.type === "searchSharingType") {
       const sacrificed = card.ability?.eventDataId ? g.cardData[card.ability.eventDataId] : undefined;
@@ -3048,7 +3174,12 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
     const typeOk = (id: CardInstanceId, types: string[]) => {
       const data = g.cardData[g.cards[id]!.cardId];
       const typeLine = (data?.faces?.[0]?.typeLine ?? data?.typeLine ?? "").toLowerCase();
-      return types.length === 0 || types.some((t) => (t === "nonland" ? !/\bland\b/.test(typeLine) : new RegExp(`\\b${t}\\b`).test(typeLine)));
+      return (
+        types.length === 0 ||
+        types.some((t) =>
+          t === "nonland" ? !/\bland\b/.test(typeLine) : t === "permanent" ? !/\b(?:instant|sorcery)\b/.test(typeLine) : new RegExp(`\\b${t}\\b`).test(typeLine),
+        )
+      );
     };
     let options: CardInstanceId[] = [];
     let label = "";
@@ -3067,8 +3198,27 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
         chooser = g.players[id]!;
       }
       const isBasic = (id: CardInstanceId) => /\bBasic\b/.test(g.cardData[g.cards[id]!.cardId]?.typeLine ?? "");
-      options = chooser.zones.library.filter((id) => typeOk(id, effect.types) && (!effect.basic || isBasic(id)));
-      const what = effect.basic ? "terrain de base" : effect.types.join(", ");
+      // Tuteurs filtrés (Sisay) : légendaire, valeur de mana bornée (calculée maintenant, à la résolution).
+      const isLegendary = (id: CardInstanceId) => /\bLegendary\b/.test(g.cardData[g.cards[id]!.cardId]?.faces?.[0]?.typeLine ?? g.cardData[g.cards[id]!.cardId]?.typeLine ?? "");
+      const mv = effect.mv;
+      const self = card.ability ? g.cards[card.ability.sourceId] : undefined;
+      const bound = mv
+        ? resolveAmount(mv.amount, card.xValue ?? 0, 0, {
+            quantity: (q) => ("of" in q && q.of === "self" && self?.zone === "battlefield" ? Math.max(0, creatureStats(g, self)[q.stat]) : 0),
+          })
+        : 0;
+      const mvOk = (id: CardInstanceId) => {
+        if (!mv) return true;
+        const v = g.cardData[g.cards[id]!.cardId]?.manaValue ?? 0;
+        return mv.cmp === "lt" ? v < bound : v <= bound;
+      };
+      options = chooser.zones.library.filter((id) => typeOk(id, effect.types) && (!effect.basic || isBasic(id)) && (!effect.legendary || isLegendary(id)) && mvOk(id));
+      const what = [
+        effect.basic ? "terrain de base" : [effect.legendary ? "légendaire" : "", effect.types.join(", ")].filter(Boolean).join(" "),
+        mv ? `valeur de mana ${mv.cmp === "lt" ? "inférieure à" : "au plus"} ${bound}` : "",
+      ]
+        .filter(Boolean)
+        .join(", ");
       const n = effect.count ?? 1;
       label = `Choisis ${n > 1 ? `jusqu'à ${n} cartes` : "une carte"}${what ? ` (${what})` : ""} de ta bibliothèque${effect.split ? " : la première va sur le champ de bataille engagée, les autres en main" : ""}`;
       for (const id of options) addRevealed(g.cards[id]!, [chooser.id]);
@@ -3094,10 +3244,9 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
 }
 
 /** Les modes choisis, triés, s'ils respectent « Choose two — » et compagnie. */
-function checkModes(g: GameState, playerId: PlayerId, spec: NonNullable<SpellEffects["modes"]>, modes: number[]): number[] {
+function checkModes(spec: NonNullable<SpellEffects["modes"]>, modes: number[], withCommander: boolean): number[] {
   const chosen = [...new Set(modes)].sort((a, b) => a - b);
-  // Akroma's Will : « if you control a commander as you cast this spell » ; les modes se choisissent ici, à la résolution (approximation).
-  const max = modesMax(spec, controlsCommander(g, playerId));
+  const max = modesMax(spec, withCommander);
   if (chosen.length < Math.max(1, spec.min) || chosen.length > max || chosen.some((i) => !Number.isInteger(i) || i < 0 || i >= spec.list.length)) {
     throw new ActionError(spec.min === max ? `Choisis ${plural(spec.min, "mode")}.` : `Choisis entre ${Math.max(1, spec.min)} et ${max} modes.`);
   }
@@ -3156,6 +3305,9 @@ function finishSpell(g: GameState, card: CardInstance): void {
   moveCardTo(g, card.instanceId, "graveyard", "top");
 }
 
+/** Index du choix « enter as a copy » dans `choices` d'un sort de permanent. */
+const COPY_CHOICE = -1;
+
 function resolveTop(g: GameState, stackId?: CardInstanceId): void {
   const id = stackId ?? g.stack.at(-1)!;
   const card = g.cards[id]!;
@@ -3194,10 +3346,32 @@ function resolveTop(g: GameState, stackId?: CardInstanceId): void {
       log(g, null, `${name} n'a plus de cible valide : elle va au cimetière.`);
       return;
     }
+    // « You may have ~ enter as a copy of … » (Clone, Sakashima) : son contrôleur choisit d'abord la créature copiée.
+    const asCopy = !card.faceDown && g.settings.enforceRules ? enterAsCopyOf(g.cardData[card.cardId], card.faceIndex) : undefined;
+    let copyDataId: string | undefined;
+    if (asCopy) {
+      const chosen = card.choices?.[COPY_CHOICE];
+      if (!chosen) {
+        const options = Object.values(g.cards)
+          .filter((c) => c.zone === "battlefield" && !c.faceDown && isCreature(g, c) && (!asCopy.yours || c.controllerId === card.controllerId))
+          .map((c) => c.instanceId);
+        if (options.length > 0) {
+          card.cardChoice = { index: COPY_CHOICE, options, min: 0, max: 1, label: `Choisis la créature que ${name} copie en arrivant (ou aucune)` };
+          log(g, null, `${g.players[card.controllerId]!.name} choisit si ${name} arrive en copie d'une créature.`);
+          return;
+        }
+      } else if (chosen[0]) {
+        const copied = g.cards[chosen[0]];
+        if (copied && copied.zone === "battlefield" && !copied.faceDown) {
+          copyDataId = enterCopyData(g, card.cardId, copied.originalCardId ?? copied.cardId, copied.faceIndex, asCopy.keepOthers);
+          log(g, null, `${name} arrive en copie de ${cardName(g, copied)}.`);
+        }
+      }
+    }
     const evoked = card.evoked;
     // Évoquée : elle se sacrifie en arrivant (une capacité déclenchée, en même temps que les siennes).
     if (evoked) card.grantedTriggers = [...(card.grantedTriggers ?? []), EVOKE_TRIGGER];
-    const entered = moveCardTo(g, id, "battlefield", "top", { controllerId: card.controllerId });
+    const entered = moveCardTo(g, id, "battlefield", "top", { controllerId: card.controllerId, copyDataId });
     if (host?.kind === "card") {
       entered.attachedTo = host.id;
       log(g, null, `${name} enchante ${targetName(g, host)}.`);
@@ -3268,6 +3442,8 @@ function payMana(
 /** Le permanent passe sous le contrôle d'un autre joueur (il a de nouveau le mal d'invocation). */
 function setController(g: GameState, card: CardInstance, playerId: PlayerId): void {
   if (card.controllerId === playerId) return;
+  // Un changement de contrôle durable remplace un contrôle « jusqu'à la fin du tour ».
+  delete card.controlReturnsTo;
   removeFromZone(g, card);
   card.controllerId = playerId;
   card.summoningSick = true;
@@ -3527,6 +3703,7 @@ function activateAbility(
   instance.ability = stackAbility;
   instance.targets = targets.map((t) => ({ ...t }));
   g.stack.push(instance.instanceId);
+  emitTargeted(g, instance);
   const aimed = instance.targets.length > 0 ? ` sur ${instance.targets.map((t) => targetName(g, t)).join(", ")}` : "";
   const how2 = costParts.length > 0 ? ` (${costParts.join(", ")})` : "";
   log(g, actor.id, `${actor.name} active ${name}${aimed}${how2} : « ${ability.text} ».`);
@@ -4193,6 +4370,75 @@ function setCounter(card: CardInstance, kind: string, value: number): void {
 }
 
 /**
+ * Les données d'une copie modifiée (Ratadrabik : « except it's not legendary
+ * and it's a 2/2 black Zombie in addition to its other colors and types »),
+ * ajoutées une fois pour toutes à `g.cardData` ; rend leur identifiant.
+ */
+function copyDataWith(g: GameState, dataId: string, faceIndex: number, except: CopyExcept): string {
+  const id = `${dataId}#copie:${faceIndex}:${JSON.stringify(except)}`;
+  if (g.cardData[id]) return id;
+  const base = g.cardData[dataId]!;
+  const face = base.faces?.[faceIndex];
+  let typeLine = face?.typeLine ?? base.typeLine;
+  if (except.nonLegendary) typeLine = typeLine.replace(/\bLegendary\s+/, "");
+  let [types, subs] = typeLine.split(/\s+—\s+/) as [string, string | undefined];
+  for (const t of except.types ?? []) {
+    if (!new RegExp(`\\b${t}\\b`).test(types)) types = /\bCreature\b/.test(types) ? types.replace(/\bCreature\b/, `${t} Creature`) : `${types} ${t}`;
+  }
+  const subList = (subs ?? "").split(/\s+/).filter(Boolean);
+  for (const sub of except.subtypes ?? []) if (!subList.includes(sub)) subList.push(sub);
+  typeLine = subList.length > 0 ? `${types} — ${subList.join(" ")}` : types;
+  g.cardData[id] = {
+    ...base,
+    id,
+    name: face?.name ?? base.name,
+    manaCost: face?.manaCost ?? base.manaCost,
+    typeLine,
+    oracleText: face?.oracleText ?? base.oracleText,
+    power: except.power ?? face?.power ?? base.power,
+    toughness: except.toughness ?? face?.toughness ?? base.toughness,
+    colors: [...new Set([...base.colors, ...(except.colors ?? [])])],
+    faces: undefined,
+  } as CardData;
+  return id;
+}
+
+/**
+ * Les données d'une créature arrivée en copie d'une autre (Clone) ; avec
+ * `keepOthers`, elle garde aussi ses autres capacités (Sakashima).
+ */
+function enterCopyData(g: GameState, selfDataId: string, copiedId: string, copiedFace: number, keepOthers: boolean): string {
+  const copied = g.cardData[copiedId]!;
+  const face = copied.faces?.[copiedFace];
+  if (!keepOthers && !face) return copiedId;
+  const id = `${copiedId}#copie:${copiedFace}${keepOthers ? `+${selfDataId}` : ""}`;
+  if (g.cardData[id]) return id;
+  const self = g.cardData[selfDataId]!;
+  const name = face?.name ?? copied.name;
+  // Ses autres capacités : toutes ses lignes sauf « enter as a copy », son nom remplacé par celui de la copie.
+  const others = keepOthers
+    ? self.oracleText
+        .split("\n")
+        .filter((line) => !/enter as a copy of/i.test(line))
+        .map((line) => [self.name, self.name.split(",")[0]!].reduce((t, n) => t.split(n).join(name), line))
+    : [];
+  g.cardData[id] = {
+    ...copied,
+    id,
+    name,
+    manaCost: face?.manaCost ?? copied.manaCost,
+    typeLine: face?.typeLine ?? copied.typeLine,
+    oracleText: [face?.oracleText ?? copied.oracleText, ...others].filter(Boolean).join("\n"),
+    power: face?.power ?? copied.power,
+    toughness: face?.toughness ?? copied.toughness,
+    colors: copied.colors,
+    keywords: [...new Set([...copied.keywords, ...(keepOthers ? self.keywords : [])])],
+    faces: undefined,
+  } as CardData;
+  return id;
+}
+
+/**
  * Règle des légendes : un joueur qui contrôle deux permanents légendaires du
  * même nom garde le plus récent ; les autres vont au cimetière.
  */
@@ -4203,6 +4449,8 @@ function legendRule(g: GameState): void {
     for (const id of [...player.zones.battlefield].reverse()) {
       const card = g.cards[id]!;
       if (card.faceDown || !/\bLegendary\b/.test(currentTypeLine(g, card))) continue;
+      // Sakashima (tous ses permanents), Cadric (ses jetons) : la règle ne s'applique pas.
+      if (!legendRuleApplies(g, card)) continue;
       const name = cardName(g, card);
       if (seen.has(name)) {
         moveCardTo(g, id, "graveyard", "top");
@@ -4407,6 +4655,15 @@ function enterStep(g: GameState, step: TurnStep): void {
         delete card.grants;
         delete card.grantedTriggers;
       }
+      // Fin des contrôles « jusqu'à la fin du tour » (Dihada −11) : chaque permanent revient à son contrôleur d'avant.
+      for (const card of Object.values(g.cards)) {
+        if (card.controlReturnsTo === undefined) continue;
+        const back = card.controlReturnsTo;
+        delete card.controlReturnsTo;
+        const p = g.players[back];
+        if (card.zone !== "battlefield" || !p || p.hasConceded) continue;
+        setController(g, card, back);
+      }
       delete g.manaBonuses;
       break;
   }
@@ -4415,7 +4672,15 @@ function enterStep(g: GameState, step: TurnStep): void {
   switch (step) {
     case "untap":
       for (const p of players) {
-        for (const id of p.zones.battlefield) untap(g, g.cards[id]!);
+        for (const id of p.zones.battlefield) {
+          const c = g.cards[id]!;
+          // « doesn't untap during your untap step » (Traxos, Claustrophobia).
+          if (c.tapped && g.settings.enforceRules && doesntUntap(g, c)) {
+            log(g, null, `${cardName(g, c)} ne se dégage pas.`);
+            continue;
+          }
+          untap(g, c);
+        }
       }
       if (players.length > 0) log(g, null, `${names(players)} ${players.length > 1 ? "dégagent leurs" : "dégage ses"} permanents.`);
       break;
@@ -4468,9 +4733,11 @@ function drawCards(g: GameState, player: PlayerState, count: number): void {
   const library = player.zones.library;
   const drawn = Math.min(count, library.length);
   for (let i = 0; i < drawn; i++) {
-    moveCardTo(g, library[0]!, "hand", "top");
+    const drawnId = library[0]!;
+    moveCardTo(g, drawnId, "hand", "top");
     const before = player.drawsThisTurn?.turn === g.turn.number ? player.drawsThisTurn.count : 0;
     player.drawsThisTurn = { turn: g.turn.number, count: before + 1 };
+    player.drawnThisTurn = { turn: g.turn.number, ids: [...(player.drawnThisTurn?.turn === g.turn.number ? player.drawnThisTurn.ids : []), drawnId] };
     emit(g, { type: "draw", playerId: player.id, nth: before + 1 });
   }
   log(g, player.id, `${player.name} pioche ${plural(drawn, "carte")}.`);

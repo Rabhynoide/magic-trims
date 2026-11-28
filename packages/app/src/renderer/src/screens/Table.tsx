@@ -36,6 +36,8 @@ import { Modal } from "../components/Modal";
 import { Overlays } from "../components/Overlays";
 import { battlefieldRow, cardData, cardImage, cardManaOptions, cardName, cardText, manaSymbolUrl } from "../cards";
 import { CardLanguageSelect } from "../components/CardLanguage";
+import { SoundSettings } from "../components/SoundSettings";
+import { prioritySound } from "../sound";
 import { CardZoom } from "../components/CardZoom";
 import { cardMenu, libraryMenu, manaItems, playItems } from "../menus";
 import { session, useSession } from "../session";
@@ -117,8 +119,11 @@ function useCombatUi(view: GameView, isActive: boolean): CombatUi {
       props.onSelect = () =>
         setAttackPlan((plan) => {
           const next = { ...plan };
-          if (next[id]) delete next[id];
+          // Un clic sur une créature déjà prévue contre la cible courante l'annule ;
+          // sinon elle part (ou repart) vers la cible courante.
+          if (next[id] && next[id] === currentTarget) delete next[id];
           else if (currentTarget) next[id] = currentTarget;
+          else delete next[id];
           return next;
         });
     }
@@ -134,7 +139,8 @@ function useCombatUi(view: GameView, isActive: boolean): CombatUi {
             });
           } else setBlocker((b) => (b === id ? null : id));
         };
-      } else if (combat?.attackers[id] && pendingBlockers(view).includes(me)) {
+      } else if (combat?.attackers[id] && sameSide(view, combat.attackers[id], me)) {
+        // Seuls les attaquants qui visent mon camp peuvent être bloqués par moi.
         props.onSelect = () => {
           if (!blocker) return session.toast("Choisis d'abord une de tes créatures, puis l'attaquant à bloquer.", "info");
           setBlockPlan((plan) => ({ ...plan, [blocker]: id }));
@@ -175,17 +181,28 @@ function CombatPanel(props: { view: GameView; isActive: boolean; combat: CombatU
     return (
       <div className="combat-panel">
         <span className="combat-title">Attaque</span>
-        <label>
-          Cible{" "}
-          <select value={ui.target ?? ""} onChange={(e) => ui.setTarget(e.target.value)}>
-            {opponents(view).map((id) => (
-              <option key={id} value={id}>
+        <span className="attack-targets" role="radiogroup" aria-label="Joueur attaqué">
+          {opponents(view).map((id) => {
+            const count = planned.filter(([, d]) => d === id).length;
+            return (
+              <button
+                key={id}
+                role="radio"
+                aria-checked={ui.target === id}
+                className={`attack-target${ui.target === id ? " active" : ""}`}
+                onClick={() => ui.setTarget(id)}
+              >
                 {view.players[id]!.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <span className="hint">Clique sur tes créatures pour les faire attaquer la cible choisie.</span>
+                {count > 0 && <span className="attack-target-count">{count}</span>}
+              </button>
+            );
+          })}
+        </span>
+        <span className="hint">
+          {opponents(view).length > 1
+            ? `Clique sur tes créatures pour qu'elles attaquent ${ui.target ? view.players[ui.target]!.name : "le joueur choisi"}. Change de joueur pour envoyer les suivantes ailleurs.`
+            : "Clique sur tes créatures pour les faire attaquer."}
+        </span>
         <button
           className="primary"
           disabled={planned.length === 0}
@@ -770,6 +787,31 @@ function openCardMenu(e: React.MouseEvent, view: GameView, card: CardView) {
   if (items.length > 0) ui.openMenu(e.clientX, e.clientY, items);
 }
 
+/**
+ * Joue un son quand ce joueur (ou son équipe en tours partagés) reçoit la
+ * priorité : seulement au passage de « non » à « oui », jamais à l'ouverture
+ * de la table, et pas plus d'une fois par seconde et demie (voir sound.ts).
+ * Pas de son non plus quand on la garde juste après sa propre action (lancer
+ * un sort donne la priorité à celui qui l'a lancé), sauf si un autre joueur
+ * l'avait entre-temps.
+ */
+function usePrioritySound(view: GameView) {
+  const holder: "me" | "other" | null =
+    view.priority === null || view.outcome.winners
+      ? null
+      : hasPriority(view, view.viewerId)
+        ? "me"
+        : "other";
+  const previous = useRef<typeof holder | undefined>(undefined);
+  useEffect(() => {
+    const before = previous.current;
+    previous.current = holder;
+    if (before === undefined || before === "me" || holder !== "me") return;
+    const justActed = Date.now() - session.lastActAt < 2000;
+    if (before === "other" || !justActed) prioritySound.notify();
+  }, [holder]);
+}
+
 export function Table() {
   const s = useSession();
   const view = s.view!;
@@ -783,6 +825,7 @@ export function Table() {
   const isActive = sameSide(view, view.turn.activePlayerId, me);
   const combatUi = useCombatUi(view, isActive);
   const winners = view.outcome.winners;
+  usePrioritySound(view);
   const { targeting } = useUi();
   const trigger = useTriggerTargets(view);
 
@@ -1392,6 +1435,7 @@ function Toolbar(props: { view: GameView; isActive: boolean; onTokens: () => voi
         <button onClick={() => void act({ type: "setSchemeInMotion" })}>Machination ({me.zones.schemes.length})</button>
       )}
       <span className="spacer" />
+      <SoundSettings />
       <CardLanguageSelect />
       <button
         className="link danger"
