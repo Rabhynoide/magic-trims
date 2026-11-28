@@ -229,6 +229,27 @@ export function libraryMenu(view: GameView, ownerId: PlayerId): MenuItem[] {
   ];
 }
 
+/**
+ * Équipage : demande les créatures à engager, une par une, jusqu'à une force
+ * totale d'au moins `needed`. `null` si le joueur annule.
+ */
+async function chooseCrew(view: GameView, sourceName: string, sourceId: string, needed: number): Promise<string[] | null> {
+  const chosen: string[] = [];
+  let power = 0;
+  const all = Object.values(view.players).flatMap((p) => p.zones.battlefield);
+  while (power < needed) {
+    const filter: PermanentFilter = { types: ["creature"], notTypes: [], controller: "you", state: "untapped" };
+    const picked = await ui.chooseTargets(sourceName, sourceId, [{ label: `créature pour piloter (force ${power}/${needed})`, permanent: filter, choice: true }]);
+    const id = picked?.[0]?.id;
+    if (!id) return null;
+    if (chosen.includes(id)) continue;
+    const card = all.find((c) => c.instanceId === id);
+    chosen.push(id);
+    power += card ? Math.max(0, creaturePT(view, card)?.power ?? 0) : 0;
+  }
+  return chosen;
+}
+
 /** Demande le permanent à sacrifier pour un coût. `null` si le joueur annule. */
 async function chooseSacrifice(sourceName: string, sourceId: string, filter: PermanentFilter): Promise<string | null> {
   const chosen = await ui.chooseTargets(sourceName, sourceId, [{ label: `${permanentLabel(filter)} à sacrifier`, permanent: filter, choice: true }]);
@@ -249,6 +270,7 @@ function costLabel(cost: ActivationCost): string {
     cost.discardSelf ? "la défausser" : "",
     cost.sacrifice ? `sacrifier un(e) ${permanentLabel(cost.sacrifice).replace(/ que tu contrôles$/, "")}` : "",
     cost.exileFromGraveyard ? `exiler ${cost.exileFromGraveyard.count} × ${graveyardLabel(cost.exileFromGraveyard.filter)}` : "",
+    cost.crew !== undefined ? `engager des créatures de force totale ${cost.crew}` : "",
   ].filter(Boolean);
   return parts.join(", ") || "gratuit";
 }
@@ -283,7 +305,9 @@ export function abilityItems(view: GameView, card: CardView): MenuItem[] {
     const effect = translateLine(data, faceIndex, ability.text);
     const short = effect.slice(effect.indexOf(":") + 1).trim();
     const cost = costLabel(ability.cost);
-    const label = ability.equip
+    const label = ability.cost.crew !== undefined
+      ? `Équipage ${ability.cost.crew} (piloter)`
+      : ability.equip
       ? `Équiper${ability.effects.targets[0]?.permanent?.anySubtype || ability.effects.targets[0]?.permanent?.subtype || ability.effects.targets[0]?.permanent?.legendary ? ` (${ability.effects.targets[0]!.label.replace(/ que tu contrôles$/, "")})` : ""} ${ability.cost.mana || "{0}"}`
       : `Activer (${cost}) : ${short.length > 60 ? `${short.slice(0, 57)}…` : short}`;
     const activate = async (color?: ManaType) => {
@@ -302,6 +326,12 @@ export function abilityItems(view: GameView, card: CardView): MenuItem[] {
         if (!chosen) return;
         exile = chosen.map((t) => t.id);
       }
+      let crew: string[] | undefined;
+      if (ability.cost.crew !== undefined) {
+        const chosen = await chooseCrew(view, name, id, ability.cost.crew);
+        if (!chosen) return;
+        crew = chosen;
+      }
       let targets;
       if (ability.effects.targets.length > 0) {
         const chosen = await ui.chooseTargets(name, id, ability.effects.targets);
@@ -315,6 +345,7 @@ export function abilityItems(view: GameView, card: CardView): MenuItem[] {
         ...(targets ? { targets } : {}),
         ...(sacrifice ? { sacrifice } : {}),
         ...(exile ? { exile } : {}),
+        ...(crew ? { crew } : {}),
         ...(color ? { color } : {}),
       });
     };

@@ -26,6 +26,8 @@ export interface ActivationCost {
   sacrifice?: PermanentFilter;
   /** Loyauté ajoutée (+1) ou retirée (−2) d'un planeswalker. */
   loyalty?: number;
+  /** Équipage (« Crew 3 ») : engager d'autres créatures dégagées de force totale au moins égale, choisies à l'activation. */
+  crew?: number;
   /** « This ability costs {1} less to activate for each legendary creature you control » (Otawara). */
   reduction?: { amount: number; per: PermanentFilter };
 }
@@ -117,6 +119,21 @@ export function parseActivatedLine(line: string, isPlaneswalker: boolean): Activ
       effects: { targets: [], effects: [{ type: "encore" }], unknown: [] },
       zone: "graveyard",
       sorcery: true,
+      oncePerTurn: false,
+      mana: false,
+      equip: false,
+    };
+  }
+  // « Crew 3 » : le Véhicule devient une créature-artefact jusqu'à la fin du tour.
+  const crew = /^Crew (\d+)$/i.exec(line);
+  if (crew) {
+    return {
+      text: line,
+      costText: line,
+      cost: { mana: "", tap: false, life: 0, sacrificeSelf: false, crew: parseInt(crew[1]!, 10) },
+      effects: { targets: [], effects: [{ type: "crewed" }], unknown: [] },
+      zone: "battlefield",
+      sorcery: false,
       oncePerTurn: false,
       mana: false,
       equip: false,

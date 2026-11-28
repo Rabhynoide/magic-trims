@@ -7,7 +7,7 @@
  * vie, créer des jetons, contrer un sort. Ce qu'il ne reconnaît pas reste à
  * appliquer à la main, et le journal le rappelle.
  */
-import { COMBAT_KEYWORDS, creatureStats, hasKeyword, protectedFrom } from "./combat.js";
+import { COMBAT_KEYWORDS, creatureStats, crewedTypeLine, hasKeyword, protectedFrom } from "./combat.js";
 import { grantedManaAbility, manaOptions, manaTapEffect } from "./mana.js";
 import { parsePermanentAbilities, parseWard } from "./triggers.js";
 import { areTeammates } from "./modes.js";
@@ -141,7 +141,9 @@ export type Amount =
  */
 export type Quantity =
   | { stat: "power" | "toughness"; of: number | "self" }
-  | { greatest: "power" | "toughness"; filter: PermanentFilter };
+  | { greatest: "power" | "toughness"; filter: PermanentFilter }
+  /** Royal Talon Fighter Jet : « the number of +1/+1 counters on it » (la source). */
+  | { counters: string };
 
 /** Qui subit l'effet : « you », une cible, ou le joueur de l'événement déclencheur (« that player », « they »). */
 export type Who = "you" | "opponents" | "all" | "event" | { target: number } | { controllerOf: number };
@@ -288,6 +290,8 @@ type EffectBase =
   /** « tap ~ ». */
   | { type: "tapSelf" }
   | { type: "untapSelf" }
+  /** Équipage (« Crew N ») : le Véhicule devient une créature-artefact jusqu'à la fin du tour. */
+  | { type: "crewed" }
   /** Jinxed Choker : « deals damage to you equal to the number of charge counters on it ». */
   | { type: "selfCounterDamage"; kind: string }
   /** « it gets +2/+0 until end of turn » : la créature de l'événement (Crown of Doom). */
@@ -448,7 +452,7 @@ const HARMLESS = [/^rebound\.?$/i, /^foretell (?:\{[^}]+\})+\.?$/i, /^cascade(?:
 function parsePermanentFilter(text: string): PermanentFilter | null {
   // Un type de créature (« Elemental you control », « Plant creatures you control », « Elementals you control »).
   const sub = /^([A-Z][a-z]+?)s?( creatures?)?( you control| an opponent controls| you don't control)?$/.exec(text.trim());
-  if (sub && !/^(Artifact|Battle|Creature|Enchantment|Land|Planeswalker|Permanent|Legendary|Basic|Plains|Island|Swamp|Mountain|Forest|Token|Nonland|Noncreature|Other|Attacking|Blocking|Tapped|Untapped)$/.test(sub[1]!)) {
+  if (sub && !/^(Artifact|Battle|Creature|Enchantment|Land|Planeswalker|Permanent|Legendary|Basic|Plains|Island|Swamp|Mountain|Forest|Token|Nonland|Noncreature|Other|Attacking|Blocking|Tapped|Untapped|Vehicle)$/.test(sub[1]!)) {
     const base = parsePermanentFilter(`creature${sub[3] ?? ""}`);
     return base ? { ...base, subtype: sub[1]! } : null;
   }
@@ -522,6 +526,11 @@ function parsePermanentFilter(text: string): PermanentFilter | null {
       continue;
     }
     if (w === "permanent") continue;
+    // « target creature or Vehicle » (Nakia) : un sous-type d'artefact, lu dans la ligne de type comme un type.
+    if (w === "vehicle") {
+      filter.types.push(w);
+      continue;
+    }
     if (!CARD_TYPES.includes(w)) return null;
     filter.types.push(w);
   }
@@ -542,6 +551,7 @@ export function permanentLabel(f: PermanentFilter): string {
     land: "terrain",
     planeswalker: "planeswalker",
     legendary: "légendaire",
+    vehicle: "Véhicule",
   };
   let label = f.subtype ? (f.types.includes("creature") ? `créature ${f.subtype}` : f.subtype) : f.types.length > 0 ? f.types.map((t) => labels[t]).join(" ou ") : "permanent";
   if (f.anySubtype?.length) label += ` ${f.anySubtype.join(", ").replace(/, ([^,]+)$/, " ou $1")}`;
@@ -792,6 +802,7 @@ function quantityOf(text: string, lastTarget: number): Amount | null {
     const filter = parsePermanentFilter(m[2]!.replace(/ on the battlefield$/i, ""));
     return filter ? { q: { greatest: m[1]!.toLowerCase() as "power" | "toughness", filter } } : null;
   }
+  if ((m = /^the number of (\+1\/\+1|-1\/-1|\w+) counters on (?:it|~)$/i.exec(t))) return { q: { counters: counterKind(m[1]!) } };
   if ((m = /^the number of (.+)$/i.exec(t))) return countOf(m[1]!);
   return null;
 }
@@ -1727,7 +1738,7 @@ export function matchesPermanent(g: GameState, card: CardInstance, filter: Perma
   return permanentMatches(
     {
       ...(stats ?? {}),
-      typeLine: card.faceDown ? "Creature" : faceData(g, card).typeLine,
+      typeLine: card.faceDown ? "Creature" : crewedTypeLine(faceData(g, card).typeLine, card),
       changeling: !card.faceDown && isChangeling(g, card),
       colors: card.faceDown ? [] : (g.cardData[card.cardId]?.colors ?? []),
       controllerId: card.controllerId,

@@ -75,6 +75,8 @@ export type StaticAbility =
   | { kind: "triggerDoubler"; entering?: boolean; subtype?: string }
   /** « Players have no maximum hand size. » */
   | { kind: "noMaxHandSizeAll" }
+  /** « This Vehicle enters with X +1/+1 counters on it » : `count` est un nombre ou « X » (la valeur payée). */
+  | { kind: "entersWithCounters"; counter: string; count: number | "X" }
   /** « This land enters tapped. » */
   | {
       kind: "entersTapped";
@@ -409,6 +411,11 @@ export function parseStaticLine(line: string): StaticAbility | null {
   }
   if (/^players have no maximum hand size$/i.test(l)) return { kind: "noMaxHandSizeAll" };
   if (/^~ enters tapped$/i.test(l)) return { kind: "entersTapped" };
+  if ((m = /^~ enters with (a|an|one|two|three|four|five|six|seven|eight|nine|ten|x|\d+) (\+1\/\+1|-1\/-1) counters? on it$/i.exec(l))) {
+    const words: Record<string, number> = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+    const w = m[1]!.toLowerCase();
+    return { kind: "entersWithCounters", counter: m[2]!, count: w === "x" ? "X" : (words[w] ?? parseInt(w, 10)) };
+  }
   if ((m = /^~ (enters tapped and )?doesn't untap during your untap step$/i.exec(l))) return { kind: "doesntUntap", ...(m[1] ? { entersTapped: true } : {}) };
   if (/^(?:enchanted|equipped) (?:creature|permanent|artifact|land|planeswalker) doesn't untap during its controller's untap step$/i.test(l)) {
     return { kind: "doesntUntap", attached: true };
@@ -731,6 +738,11 @@ export function hasNoMaxHandSize(g: GameState, playerId: PlayerId): boolean {
 }
 
 /** Le permanent arrive-t-il engagé (« This land enters tapped ») ? Sans `g`, toute condition compte comme non remplie. */
+/** Les marqueurs avec lesquels le permanent arrive (« enters with X +1/+1 counters on it »). */
+export function entersWithCounters(data: CardData | undefined, faceIndex: number): { counter: string; count: number | "X" }[] {
+  return staticsOfData(data, faceIndex).flatMap((s) => (s.kind === "entersWithCounters" ? [{ counter: s.counter, count: s.count }] : []));
+}
+
 export function entersTapped(data: CardData | undefined, faceIndex: number): boolean {
   return staticsOfData(data, faceIndex).some((s) => s.kind === "entersTapped" || (s.kind === "doesntUntap" && s.entersTapped));
 }
