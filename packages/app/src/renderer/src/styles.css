@@ -1730,7 +1730,7 @@ textarea:focus {
   text-align: center;
   white-space: normal;
   line-height: 1.2;
-  min-width: 56px;
+  min-width: 42px;
   font-size: 12px;
   color: var(--text-dim);
 }
@@ -1843,4 +1843,50 @@ textarea:focus {
   display: inline;
   margin-left: 6px;
   font-style: normal;
+}
+
+/* Les colonnes courtes gardent leur largeur utile : la place libre va au nom
+   (et à sa miniature), qui passe ainsi moins souvent à la ligne. */
+.deck-table th.deck-mode-col,
+.deck-table th.deck-auto-col,
+.deck-table th.deck-colors-col {
+  width: 1px;
+}
+
+/* Miniature du commandant dans la liste des decks : placée en absolu dans la
+   cellule du nom, elle prend la hauteur de la ligne sans jamais l'agrandir. */
+.deck-table td.deck-name.with-thumbs {
+  position: relative;
+  padding-left: 50px;
+}
+.deck-table td.deck-name.with-thumbs.two {
+  padding-left: 54px;
+}
+.commander-thumbs {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  bottom: 6px;
+  align-items: center;
+}
+/* « .deck-name span » met les lignes du nom en bloc : la miniature reste en flex. */
+.deck-name .commander-thumbs {
+  display: flex;
+}
+.commander-thumbs img {
+  height: 100%;
+  max-height: 54px;
+  aspect-ratio: 488 / 680;
+  flex-shrink: 0;
+  border-radius: 4px;
+  object-fit: cover;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  cursor: zoom-in;
+}
+.commander-thumbs img + img {
+  margin-left: -33px;
+}
+.commander-thumbs img:hover {
+  position: relative;
+  z-index: 1;
 }

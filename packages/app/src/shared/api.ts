@@ -81,6 +81,11 @@ export interface MagicApi {
   searchCards(query: string): Promise<CardData[]>;
   /** Cherche les cartes imprimées dans une langue (`null` : on garde l'anglais). */
   localizeCards(cards: CardToLocalize[], lang: string): Promise<Record<string, LocalizedCard | null>>;
+  /**
+   * Cartes de lignes de deck (« 1 Sol Ring (c21) 263 »), dans le même ordre
+   * (`null` : introuvable). Sert aux commandants des préconstruits.
+   */
+  resolveCards(lines: string[]): Promise<(CardData | null)[]>;
   central: CentralApi;
   appInfo(): Promise<AppInfo>;
   updates: UpdatesApi;

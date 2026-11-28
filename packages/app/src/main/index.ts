@@ -10,8 +10,11 @@ import {
   resolveDeck,
   ScryfallClient,
   validateCommanderDeck,
+  type CardData,
   type CentralConnection,
+  type DeckEntry,
   type LocalizedCard,
+  type ParsedDeck,
   type ShareDeckInput,
 } from "@magic-trims/core";
 import { loadSnapshot, startHostServer, type HostServer } from "@magic-trims/host";
@@ -101,6 +104,19 @@ ipcMain.handle("deck:import", async (_e, text: string): Promise<DeckImportResult
 
 ipcMain.handle("cards:search", async (_e, query: string) => {
   return scryfall.search(query);
+});
+
+ipcMain.handle("cards:resolve", async (_e, lines: string[]): Promise<(CardData | null)[]> => {
+  const entries = lines.map((l) => parseDeckList(l).mainboard[0]);
+  const deck = (list: DeckEntry[]): ParsedDeck => ({ commanders: list, mainboard: [], other: [], errors: [] });
+  // Une requête groupée remplit le cache, puis chaque ligne est relue depuis le cache.
+  await resolveDeck(deck(entries.filter((e) => e !== undefined)), scryfall);
+  const result: (CardData | null)[] = [];
+  for (const e of entries) {
+    result.push(e ? ((await resolveDeck(deck([e]), scryfall)).deck.commanders[0] ?? null) : null);
+  }
+  await cardCache.flush();
+  return result;
 });
 
 ipcMain.handle(

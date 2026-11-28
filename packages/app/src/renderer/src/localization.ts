@@ -13,7 +13,8 @@ class Localizer {
   private asked = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private listeners = new Set<() => void>();
-  private version = 0;
+  /** Change à chaque traduction reçue ou changement de langue (pour useSyncExternalStore). */
+  version = 0;
   private cache: { view: GameView; size: number; version: number; result: GameView } | null = null;
 
   subscribe = (listener: () => void) => {
@@ -52,6 +53,14 @@ class Localizer {
     const result = { ...view, cardData };
     this.cache = { view, size, version: this.version, result };
     return result;
+  }
+
+  /** Une carte hors partie (liste des decks), traduite si on connaît déjà sa traduction. */
+  card(card: CardData): CardData {
+    if (this.lang === "en" || !window.magic) return card;
+    const localized = this.found.get(card.id);
+    if (localized === undefined && !this.asked.has(card.id)) this.queue(card);
+    return applyLocalization(card, localized);
   }
 
   private queue(card: CardData) {

@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
-import { GAME_MODES, type DeckSupport, type GameModeType } from "@magic-trims/core";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { GAME_MODES, type CardData, type DeckSupport, type GameModeType } from "@magic-trims/core";
+import { commanderCards } from "../commander-cards";
 import {
   addPrecon,
   loadPreconOracle,
@@ -12,7 +13,8 @@ import {
 } from "../precons";
 import { session } from "../session";
 import type { SavedDeck } from "../storage";
-import { LegalityMark, MODES, MODE_SHORT, SupportMark } from "./DeckBrowser";
+import { CommanderThumbs } from "./CommanderThumbs";
+import { LegalityMark, MODES, MODE_SHORT, SupportMark, thumbClass } from "./DeckBrowser";
 import { ManaText } from "./ManaText";
 
 /**
@@ -32,6 +34,8 @@ export function PreconTable(props: {
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [, refresh] = useState(0);
+  // Miniatures des commandants : cherchées sur Scryfall pour toute la liste d'un coup.
+  useSyncExternalStore(commanderCards.subscribe, () => commanderCards.version);
 
   useEffect(() => {
     let alive = true;
@@ -105,7 +109,7 @@ export function PreconTable(props: {
             <thead>
               <tr>
                 <th>Nom</th>
-                <th>Couleurs</th>
+                <th className="deck-colors-col">Couleurs</th>
                 <th
                   className="deck-auto-col"
                   title="Part des cartes que le moteur gère entièrement en mode automatique (détail au survol de chaque valeur)"
@@ -127,9 +131,14 @@ export function PreconTable(props: {
             <tbody>
               {shown.map((p) => {
                 const saved = savedPrecon(p);
+                const commanders = p.commanders.flatMap((l) => {
+                  const card = commanderCards.get(l);
+                  return card ? [card] : ([] as CardData[]);
+                });
                 return (
                   <tr key={p.id}>
-                    <td className="deck-name" title={p.note}>
+                    <td className={`deck-name ${thumbClass(p.commanders.length)}`} title={p.note}>
+                      <CommanderThumbs cards={commanders} />
                       <strong>{p.name}</strong>
                       <span>{preconCommanders(p)}</span>
                       <span className="deck-set">

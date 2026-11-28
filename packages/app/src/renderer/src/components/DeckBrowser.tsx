@@ -13,6 +13,7 @@ import {
   type SharedDeck,
 } from "@magic-trims/core";
 import type { SavedDeck } from "../storage";
+import { CommanderThumbs } from "./CommanderThumbs";
 import { ManaText } from "./ManaText";
 import { PreconTable } from "./PreconTable";
 import { loadPrecons } from "../precons";
@@ -49,7 +50,7 @@ const CATEGORIES: { id: DeckCategory; label: string; empty: string; available: b
 
 /** Intitulés courts des colonnes de légalité (le nom complet est en infobulle). */
 export const MODE_SHORT: Record<GameModeType, string> = {
-  freeForAll: "Chacun pour soi",
+  freeForAll: "Chacun pour\u00a0soi",
   duel: "Duel",
   teams: "Équipes",
   twoHeadedGiant: "2 têtes",
@@ -173,7 +174,7 @@ export function DeckBrowser(props: Props) {
             <thead>
               <tr>
                 <th>Nom</th>
-                <th>Couleurs</th>
+                <th className="deck-colors-col">Couleurs</th>
                 <th>Format</th>
                 <th
                   className="deck-auto-col"
@@ -235,7 +236,8 @@ function DeckRow(props: {
       className={`${props.selected ? "selected" : ""} ${onSelect ? "selectable" : ""}`}
       onClick={onSelect}
     >
-      <td className="deck-name">
+      <td className={`deck-name ${thumbClass(deck.deck.commanders.length)}`}>
+        <CommanderThumbs cards={deck.deck.commanders} />
         <strong>{deck.name}</strong>
         {commanders && commanders !== deck.name && <span>{commanders}</span>}
         {props.subtitle && <span className="deck-owner">{props.subtitle}</span>}
@@ -262,6 +264,11 @@ function DeckRow(props: {
       )}
     </tr>
   );
+}
+
+/** Place réservée à gauche du nom pour les miniatures des commandants. */
+export function thumbClass(count: number): string {
+  return count === 0 ? "" : count === 1 ? "with-thumbs" : "with-thumbs two";
 }
 
 export function LegalityMark(props: { issues: DeckIssue[]; mode: GameModeType }) {

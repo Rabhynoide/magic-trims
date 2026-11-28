@@ -41,6 +41,13 @@ export function cardImage(
   return images ? images[size] : null;
 }
 
+/** Image d'une carte hors partie (première face, traduite si `data` l'est). */
+export function dataImage(data: CardData, size: "small" | "normal" | "large" = "normal"): string | null {
+  const l = data.localized;
+  const images = l ? (l.faces?.[0]?.image ?? l.image) : (data.faces?.[0]?.image ?? data.image);
+  return images ? images[size] : null;
+}
+
 export function cardName(view: GameView, card: CardView): string {
   const data = cardData(view, card);
   if (!data || card.hidden) return "Carte cachée";

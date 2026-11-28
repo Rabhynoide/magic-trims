@@ -1,4 +1,4 @@
-import { abilityReport, type AbilityReportItem, type CardView, type GameView, type VisibleCardView } from "@magic-trims/core";
+import { abilityReport, type AbilityReportItem, type CardData, type CardView, type GameView, type VisibleCardView } from "@magic-trims/core";
 import { cardData } from "../cards";
 import { ManaText } from "./ManaText";
 
@@ -25,7 +25,27 @@ export function AbilityPanel(props: { view: GameView; card: CardView; className?
   if (card.hidden || card.faceDown) return null;
   const data = cardData(view, card);
   if (!data) return null;
-  const faceIndex = (card as VisibleCardView).faceIndex;
+  return (
+    <CardAbilities
+      data={data}
+      faceIndex={(card as VisibleCardView).faceIndex}
+      rulesOff={!view.settings.enforceRules}
+      {...(props.className ? { className: props.className } : {})}
+      {...(props.style ? { style: props.style } : {})}
+    />
+  );
+}
+
+/** Même encart pour une carte hors partie (liste des decks…). */
+export function CardAbilities(props: {
+  data: CardData;
+  faceIndex?: number;
+  rulesOff?: boolean;
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  const { data } = props;
+  const faceIndex = props.faceIndex ?? 0;
   const items = abilityReport(data, faceIndex);
   if (items.length === 0) return null;
 
@@ -37,7 +57,7 @@ export function AbilityPanel(props: { view: GameView; card: CardView; className?
     const i = english.indexOf(text);
     return i >= 0 ? french[i]! : text;
   };
-  const rulesOff = !view.settings.enforceRules;
+  const rulesOff = Boolean(props.rulesOff);
 
   return (
     <div className={`ability-panel ${props.className ?? ""}`} style={props.style}>
