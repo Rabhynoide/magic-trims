@@ -27,6 +27,8 @@ import {
   resolveAmount,
   spellEffectsOf,
   flattenModes,
+  modesAtCast,
+  modesCost,
   modesMax,
   modesTargeted,
   auraTarget,
@@ -491,8 +493,12 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     }
     // Cibles des effets que le moteur sait appliquer.
     const parsedEffects = g.settings.enforceRules ? spellEffectsOf(g, card, faceIndex, alternative ?? false) : null;
-    // Modes avec des cibles (Ashling's Command) : choisis en lançant le sort, leurs cibles s'ajoutent à celles du sort.
-    const earlyModes = parsedEffects && modesTargeted(parsedEffects) ? checkModes(g, actor.id, parsedEffects.modes!, modes ?? []) : undefined;
+    // Modes avec des cibles (Ashling's Command), un coût (Spree) ou un commandant (Akroma's Will) : choisis en lançant le sort,
+    // leurs cibles s'ajoutent à celles du sort. Sans choix envoyé, un sort comme Akroma's Will les choisit à la résolution.
+    const withCommander = controlsCommander(g, actor.id);
+    const spec = parsedEffects?.modes;
+    const atCast = !!spec && (modesTargeted(parsedEffects) || spec.list.some((m) => m.cost) || (modesAtCast(parsedEffects) && modes !== undefined));
+    const earlyModes = atCast ? checkModes(spec!, modes ?? [], withCommander) : undefined;
     const effects = parsedEffects && earlyModes ? flattenModes(parsedEffects, earlyModes) : parsedEffects;
     if (alternative && !effects?.alternativeCost) throw new ActionError("Ce sort n'a pas de coût alternatif.");
     // Flawless Maneuver, Fierce Guardianship : gratuit si l'on contrôle un commandant.
@@ -554,7 +560,8 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const selfReduction = g.settings.enforceRules && !permission?.free && !alternative && !evokeCost ? selfCostReduction(g, actor.id, card, faceIndex) : 0;
     const reduction = permission?.free || (alternative && effects?.alternativeIf) ? 0 : reductions.generic + selfReduction;
     // Morophon : retire du coût le mana coloré indiqué (une fois chaque symbole).
-    let paidCost = costText;
+    // Spree : le coût supplémentaire de chaque mode choisi.
+    let paidCost = costText + modesCost(parsedEffects, earlyModes);
     for (const c of reductions.colored) paidCost = paidCost.replace(`{${c}}`, "");
     // Toxic Deluge : X PV payés en coût supplémentaire (on ne peut pas payer plus de PV qu'on n'en a).
     const lifeX = effects?.payLifeX ? xValue : 0;
@@ -594,6 +601,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     if (alternative) cast.alternative = true;
     if (evokeCost) cast.evoked = true;
     if (permission?.foretell) cast.foretold = true;
+    if (spec?.maxWithCommander !== undefined && withCommander) cast.castWithCommander = true;
     if (earlyModes) {
       cast.modes = { chosen: earlyModes };
       log(g, actor.id, `${actor.name} choisit : ${earlyModes.map((i) => `« ${parsedEffects!.modes!.list[i]!.label} »`).join(", ")}.`);
@@ -927,7 +935,8 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
     const effects = card.ability ? abilityEffects(g, card) : spellEffectsOf(g, card);
     const spec = effects?.modes;
     if (!spec) throw new ActionError("Ce sort n'a pas de modes.");
-    const chosen = checkModes(g, actor.id, spec, modes);
+    // Akroma's Will : « if you control a commander as you cast this spell » (noté en lançant le sort).
+    const chosen = checkModes(spec, modes, card.ability ? controlsCommander(g, actor.id) : !!card.castWithCommander);
     card.modes.chosen = chosen;
     log(g, actor.id, `${actor.name} choisit : ${chosen.map((i) => `« ${spec.list[i]!.label} »`).join(", ")}.`);
     // Capacité déclenchée aux modes ciblés (Titan of Industry) : les modes sont choisis en la mettant sur la pile, puis ses cibles.
@@ -1229,6 +1238,7 @@ export function moveCardTo(
     delete card.grantsUntil;
     delete card.grantedTriggers;
     delete card.usedAbilities;
+    delete card.controlReturnsTo;
     if (g.combat) {
       delete g.combat.attackers[card.instanceId];
       delete g.combat.blockers[card.instanceId];
@@ -1265,6 +1275,7 @@ export function moveCardTo(
     delete card.choices;
     delete card.scry;
     delete card.modes;
+    delete card.castWithCommander;
     delete card.alternative;
     delete card.castFromHand;
     delete card.foretold;
@@ -2125,6 +2136,22 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         log(g, null, `${caster.name} met ${plural(chosen.length, "carte")} de sa main sur le dessus de sa bibliothèque.`);
         break;
       }
+      case "chooseDrawn":
+        break;
+      case "payLifeOrTop": {
+        const index = effects.indexOf(effect);
+        const chosen = (source.choices?.[index - 1] ?? []).filter((id) => g.cards[id]?.zone === "hand");
+        const kept = (source.choices?.[index] ?? []).filter((id) => chosen.includes(id));
+        if (kept.length > 0) {
+          payLife(g, caster, effect.life * kept.length);
+          log(g, null, `${caster.name} paie ${effect.life * kept.length} points de vie pour garder ${plural(kept.length, "carte")}.`);
+        }
+        const back = chosen.filter((id) => !kept.includes(id));
+        // La première choisie finit sur le dessus.
+        for (const id of [...back].reverse()) moveCardTo(g, id, "library", "top");
+        if (back.length > 0) log(g, null, `${caster.name} remet ${plural(back.length, "carte")} sur le dessus de sa bibliothèque.`);
+        break;
+      }
       case "searchSharingType": {
         const [id] = source.choices?.[effects.indexOf(effect)] ?? [];
         const c = id ? g.cards[id] : undefined;
@@ -2865,6 +2892,18 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         setController(g, c, p.id);
         break;
       }
+      case "takeControl": {
+        const targets = effect.target !== undefined ? [card(effect.target)].filter((c): c is CardInstance => !!c && c.zone === "battlefield") : allMatching(effect.filter!);
+        for (const c of targets) {
+          const previous = c.controllerId;
+          setController(g, c, caster.id);
+          // Le contrôle revient au nettoyage ; un contrôle déjà temporaire revient au même joueur.
+          if (effect.untilEndOfTurn && previous !== caster.id) c.controlReturnsTo ??= previous;
+          if (effect.untap) untap(g, c);
+          if (effect.haste) c.grants = [...new Set([...(c.grants ?? []), "haste"])];
+        }
+        break;
+      }
       case "exchangeControl": {
         const a = card(effect.a);
         const b = card(effect.b);
@@ -2995,6 +3034,33 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
         continue;
       }
       card.cardChoice = { index, options, min: effect.count, max: effect.count, label: `Choisis ${plural(effect.count, "carte")} de ta main à mettre sur le dessus de ta bibliothèque (la première choisie sera dessus)` };
+      return true;
+    }
+    // Sylvan Library : pioche en plus, puis les cartes piochées ce tour qui doivent être payées ou remises.
+    if (effect.type === "chooseDrawn") {
+      if (effect.drawFirst && !card.drewFirst) {
+        drawCards(g, controller, effect.drawFirst);
+        card.drewFirst = true;
+      }
+      const drawn = controller.drawnThisTurn?.turn === g.turn.number ? controller.drawnThisTurn.ids : [];
+      const options = drawn.filter((id) => g.cards[id]?.zone === "hand" && controller.zones.hand.includes(id));
+      if (options.length <= effect.count) {
+        card.choices = { ...(card.choices ?? {}), [index]: options };
+        continue;
+      }
+      card.cardChoice = { index, options, min: effect.count, max: effect.count, label: `Choisis ${plural(effect.count, "carte")} de ta main piochées ce tour (à payer en points de vie ou à remettre sur le dessus de ta bibliothèque)` };
+      return true;
+    }
+    if (effect.type === "payLifeOrTop") {
+      const options = (card.choices?.[index - 1] ?? []).filter((id) => g.cards[id]?.zone === "hand");
+      // On ne paie des points de vie que si on les a (règle 119.4).
+      const affordable = controller.life > 0 ? Math.floor(controller.life / effect.life) : 0;
+      const max = Math.min(options.length, affordable);
+      if (max === 0) {
+        card.choices = { ...(card.choices ?? {}), [index]: [] };
+        continue;
+      }
+      card.cardChoice = { index, options, min: 0, max, label: `Choisis les cartes que tu gardes en payant ${effect.life} points de vie chacune (les autres vont sur le dessus de ta bibliothèque)` };
       return true;
     }
     // Pyre of Heroes : une créature qui partage un type avec la sacrifiée, de valeur de mana +1.
@@ -3194,10 +3260,9 @@ function startCardChoice(g: GameState, card: CardInstance, effects: Effect[], ta
 }
 
 /** Les modes choisis, triés, s'ils respectent « Choose two — » et compagnie. */
-function checkModes(g: GameState, playerId: PlayerId, spec: NonNullable<SpellEffects["modes"]>, modes: number[]): number[] {
+function checkModes(spec: NonNullable<SpellEffects["modes"]>, modes: number[], withCommander: boolean): number[] {
   const chosen = [...new Set(modes)].sort((a, b) => a - b);
-  // Akroma's Will : « if you control a commander as you cast this spell » ; les modes se choisissent ici, à la résolution (approximation).
-  const max = modesMax(spec, controlsCommander(g, playerId));
+  const max = modesMax(spec, withCommander);
   if (chosen.length < Math.max(1, spec.min) || chosen.length > max || chosen.some((i) => !Number.isInteger(i) || i < 0 || i >= spec.list.length)) {
     throw new ActionError(spec.min === max ? `Choisis ${plural(spec.min, "mode")}.` : `Choisis entre ${Math.max(1, spec.min)} et ${max} modes.`);
   }
@@ -3393,6 +3458,8 @@ function payMana(
 /** Le permanent passe sous le contrôle d'un autre joueur (il a de nouveau le mal d'invocation). */
 function setController(g: GameState, card: CardInstance, playerId: PlayerId): void {
   if (card.controllerId === playerId) return;
+  // Un changement de contrôle durable remplace un contrôle « jusqu'à la fin du tour ».
+  delete card.controlReturnsTo;
   removeFromZone(g, card);
   card.controllerId = playerId;
   card.summoningSick = true;
@@ -4623,6 +4690,15 @@ function enterStep(g: GameState, step: TurnStep): void {
         delete card.grants;
         delete card.grantedTriggers;
       }
+      // Fin des contrôles « jusqu'à la fin du tour » (Dihada −11) : chaque permanent revient à son contrôleur d'avant.
+      for (const card of Object.values(g.cards)) {
+        if (card.controlReturnsTo === undefined) continue;
+        const back = card.controlReturnsTo;
+        delete card.controlReturnsTo;
+        const p = g.players[back];
+        if (card.zone !== "battlefield" || !p || p.hasConceded) continue;
+        setController(g, card, back);
+      }
       delete g.manaBonuses;
       break;
   }
@@ -4692,9 +4768,11 @@ function drawCards(g: GameState, player: PlayerState, count: number): void {
   const library = player.zones.library;
   const drawn = Math.min(count, library.length);
   for (let i = 0; i < drawn; i++) {
-    moveCardTo(g, library[0]!, "hand", "top");
+    const drawnId = library[0]!;
+    moveCardTo(g, drawnId, "hand", "top");
     const before = player.drawsThisTurn?.turn === g.turn.number ? player.drawsThisTurn.count : 0;
     player.drawsThisTurn = { turn: g.turn.number, count: before + 1 };
+    player.drawnThisTurn = { turn: g.turn.number, ids: [...(player.drawnThisTurn?.turn === g.turn.number ? player.drawnThisTurn.ids : []), drawnId] };
     emit(g, { type: "draw", playerId: player.id, nth: before + 1 });
   }
   log(g, player.id, `${player.name} pioche ${plural(drawn, "carte")}.`);

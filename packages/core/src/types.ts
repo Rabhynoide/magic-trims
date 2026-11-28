@@ -187,6 +187,8 @@ export interface CardInstance {
   hasLoyalty?: boolean;
   /** Bonus de force et d'endurance jusqu'à la fin du tour (+3/+3 d'une Croissance gigantesque…). */
   ptBoost?: { power: number; toughness: number };
+  /** Contrôle pris « until end of turn » (Dihada −11, Threaten) : le joueur qui le récupère au nettoyage. */
+  controlReturnsTo?: PlayerId;
   /** Mots-clés gagnés jusqu'à la fin du tour (en minuscules : « lifelink »…). */
   grants?: string[];
   /** Mots-clés gagnés « until your next turn » : ils durent jusqu'au début du prochain tour de `playerId`. */
@@ -202,6 +204,8 @@ export interface CardInstance {
   choices?: Record<number, CardInstanceId[]>;
   /** Sort ou capacité modale sur la pile : les modes choisis (absents tant que le contrôleur n'a pas choisi). */
   modes?: { chosen?: number[] };
+  /** Akroma's Will : son lanceur contrôlait un commandant en le lançant. */
+  castWithCommander?: boolean;
   /** Saga avec lecture anticipée : le chapitre de départ choisi en la lançant. */
   chapter?: number;
   /** Sort lancé pour son coût alternatif (Baleful Mastery). */
@@ -321,6 +325,8 @@ export interface PlayerState {
   lifeLost?: { turn: number; amount: number };
   /** Cartes piochées ce tour (Gixian Puppeteer). */
   drawsThisTurn?: { turn: number; count: number };
+  /** Les cartes piochées ce tour, dans l'ordre (Sylvan Library : « cards in your hand drawn this turn »). */
+  drawnThisTurn?: { turn: number; ids: CardInstanceId[] };
   /** Sorts lancés ce tour (Moderation…). */
   spellsCast?: { turn: number; count: number };
   /** Sorts lancés ce tour, dans l'ordre (« your first noncreature spell each turn », Esper Sentinel). */
