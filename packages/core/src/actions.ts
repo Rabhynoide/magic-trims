@@ -147,6 +147,8 @@ export type GameAction =
   // Joueurs
   | { type: "adjustLife"; playerId: PlayerId; delta: number }
   | { type: "adjustPoison"; playerId: PlayerId; delta: number }
+  /** Désigner le monarque à la main (null : plus de monarque). */
+  | { type: "setMonarch"; playerId: PlayerId | null }
   | {
       type: "adjustCommanderDamage";
       playerId: PlayerId;
