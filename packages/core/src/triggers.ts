@@ -12,7 +12,7 @@
 import { parseActivatedLine, type ActivatedAbility } from "./activated.js";
 import { KEYWORD_HELP, parseSpellEffects, selfToTilde, type Effect, type SpellEffects } from "./effects.js";
 import { joinModes, keywordList, NUMBER_WORDS } from "./text.js";
-import { hasCreatureType, parseStaticLine, typeLineHasCreatureType, type StaticAbility } from "./statics.js";
+import { hasCreatureType, isCreatureSubtype, parseStaticLine, typeLineHasCreatureType, type StaticAbility } from "./statics.js";
 import { creatureStats } from "./combat.js";
 import { areTeammates, isActivePlayer } from "./modes.js";
 import type { TurnStep } from "./turn.js";
@@ -238,7 +238,8 @@ function castFilterMatches(f: CastFilter, spell: CastRecord): boolean {
   if (f.colorless && spell.colors.length > 0) return false;
   if (f.subtypes) {
     const sub = (spell.typeLine.split("—")[1] ?? "").split("//")[0]!;
-    if (!f.subtypes.some((s) => new RegExp(`\\b${s}\\b`, "i").test(sub))) return false;
+    const changeling = !!spell.changeling && /\b(Creature|Kindred|Tribal)\b/.test(spell.typeLine);
+    if (!f.subtypes.some((s) => new RegExp(`\\b${s}\\b`, "i").test(sub) || (changeling && isCreatureSubtype(s)))) return false;
   }
   if (f.minManaValue !== undefined && spell.manaValue < f.minManaValue) return false;
   if (f.from === "hand" && !spell.fromHand) return false;
@@ -862,7 +863,7 @@ export function conditionMatches(
       return c.anyCreature ? true : event.cardId === source.instanceId;
     case "sacrificed":
       if (c.on !== "sacrificed" || (c.nontoken && event.isToken)) return false;
-      if (c.subtype && !new RegExp(`\\b${c.subtype}\\b`, "i").test(event.typeLine)) return false;
+      if (c.subtype && !sacrificedHasType(g, event, c.subtype)) return false;
       return whoseMatches(g, c.whose, source.controllerId, event.controllerId);
     case "controlChanged":
       return c.on === "controlledByNonOwner" && event.cardId === source.instanceId && g.cards[source.instanceId]?.ownerId !== event.controllerId;
@@ -955,4 +956,10 @@ export function triggerConditionHolds(g: GameState, onlyIf: TriggeredAbility["on
     return g.turnOrder.some((id) => id !== controllerId && !g.players[id]!.hasConceded && !areTeammates(g, id, controllerId) && lands(id) > mine);
   }
   return true;
+}
+
+/** Le permanent sacrifié avait-il ce type ? Changelin compris (Morophon sacrifié par Ashling). */
+function sacrificedHasType(g: GameState, event: Extract<TriggerEvent, { type: "sacrificed" }>, subtype: string): boolean {
+  const data = g.cardData[event.dataId];
+  return typeLineHasCreatureType(event.typeLine, data?.faces?.[event.faceIndex]?.oracleText ?? data?.oracleText ?? "", subtype);
 }

@@ -810,6 +810,21 @@ export function costReductions(g: GameState, playerId: PlayerId, spell: { typeLi
   return { generic, colored };
 }
 
+/** Types de terrain de base : un changelin n'en a aucun (seulement des types de créature). */
+const LAND_SUBTYPES = /^(plains|island|swamp|mountain|forest|desert|gate|locus|cave|sphere|town|lair|mine|power-plant|tower|urza's)$/i;
+
+/** Ce sous-type peut-il être un type de créature (et donc venir d'un changelin) ? */
+export function isCreatureSubtype(subtype: string): boolean {
+  return !LAND_SUBTYPES.test(subtype) && !/^(creature|artifact|enchantment|land|planeswalker|battle|instant|sorcery|legendary|basic|snow|kindred|tribal)$/i.test(subtype);
+}
+
+/** Le permanent est-il un changelin (« Changeling » : tous les types de créature) ? */
+export function isChangeling(g: GameState, card: CardInstance): boolean {
+  const data = g.cardData[card.cardId];
+  const face = data?.faces?.[card.faceIndex];
+  return /^Changeling\b/m.test(face?.oracleText ?? data?.oracleText ?? "");
+}
+
 /**
  * Ce que le sort lui-même change à son coût (The Great Henge, Blasphemous Act) : positif, il coûte moins.
  * `card` : la carte lancée, vue comme si elle était contrôlée par `playerId`.
@@ -827,7 +842,7 @@ export function selfCostReduction(g: GameState, playerId: PlayerId, card: CardIn
 /** La ligne de type a-t-elle ce type de créature ? Changelin : tous les types de créature. */
 export function typeLineHasCreatureType(typeLine: string, oracleText: string, subtype: string): boolean {
   if (new RegExp(`\\b${subtype}\\b`, "i").test(typeLine)) return true;
-  return /\b(Creature|Kindred|Tribal)\b/.test(typeLine) && /^Changeling\b/m.test(oracleText);
+  return isCreatureSubtype(subtype) && /\b(Creature|Kindred|Tribal)\b/.test(typeLine) && /^Changeling\b/m.test(oracleText);
 }
 
 /** Deux cartes partagent-elles un type de créature (Changelin compris) ? */

@@ -57,6 +57,8 @@ export interface CastRecord {
   fromHand: boolean;
   /** « with {X} in its mana cost ». */
   hasX: boolean;
+  /** Changelin : un sort de chaque type de créature (« Whenever you cast an Elemental spell »). */
+  changeling?: boolean;
 }
 
 export interface CardFace {
