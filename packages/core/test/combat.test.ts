@@ -50,6 +50,36 @@ describe("Combat", () => {
     expect(g.combat).toBeNull();
   });
 
+  it("une créature sur chaque adversaire : seul le joueur attaqué bloque", () => {
+    let g = newTestGame(4);
+    let a2: string, a3: string, a4: string, b2: string, b3: string;
+    [g, a2] = creature(g, "p1", bear("Vers Bruno"));
+    [g, a3] = creature(g, "p1", bear("Vers p3"));
+    [g, a4] = creature(g, "p1", bear("Vers p4"));
+    [g, b2] = creature(g, "p2", bear("Garde de Bruno"));
+    [g, b3] = creature(g, "p3", bear("Garde de p3"));
+    g = toAttackers(g);
+    g = act(g, "p1", {
+      type: "declareAttackers",
+      attackers: [
+        { cardId: a2, defender: "p2" },
+        { cardId: a3, defender: "p3" },
+        { cardId: a4, defender: "p4" },
+      ],
+    });
+    expect(g.combat!.attackers).toEqual({ [a2]: "p2", [a3]: "p3", [a4]: "p4" });
+    g = act(g, "p1", { type: "nextStep", to: "main2" });
+    expect(g.turn.step).toBe("declareBlockers");
+    // Bruno ne peut pas bloquer la créature qui attaque p3.
+    expect(refuse(g, "p2", { type: "declareBlockers", blocks: [{ cardId: b2, attackerId: a3 }] })).toMatch(/n'attaque pas ton camp/);
+    g = act(g, "p2", { type: "declareBlockers", blocks: [{ cardId: b2, attackerId: a2 }] });
+    g = act(g, "p3", { type: "declareBlockers", blocks: [{ cardId: b3, attackerId: a3 }] });
+    g = act(g, "p1", { type: "nextStep", to: "main2" });
+    expect(g.players.p2!.life).toBe(40);
+    expect(g.players.p3!.life).toBe(40);
+    expect(g.players.p4!.life).toBe(38);
+  });
+
   it("attend les bloqueurs, et une créature bloquée meurt", () => {
     let g = newTestGame(3);
     let a: string, b: string;

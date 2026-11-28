@@ -10,13 +10,13 @@
  * gérer à la main (et la carte porte sa pastille).
  */
 import { parseActivatedLine, type ActivatedAbility } from "./activated.js";
-import { parseSpellEffects, selfToTilde, type Effect, type SpellEffects } from "./effects.js";
-import { joinModes } from "./text.js";
+import { KEYWORD_HELP, parseSpellEffects, selfToTilde, type Effect, type SpellEffects } from "./effects.js";
+import { joinModes, keywordList, NUMBER_WORDS } from "./text.js";
 import { hasCreatureType, parseStaticLine, typeLineHasCreatureType, type StaticAbility } from "./statics.js";
 import { creatureStats } from "./combat.js";
 import { areTeammates, isActivePlayer } from "./modes.js";
 import type { TurnStep } from "./turn.js";
-import type { CardData, CardInstanceId, CastRecord, GameState, PlayerId, StackAbility, Zone } from "./types.js";
+import type { CardData, CardInstance, CardInstanceId, CastRecord, GameState, PlayerId, StackAbility, Zone } from "./types.js";
 
 export type TriggerEvent =
   /** `cast` : le permanent arrive depuis la pile (il a été lancé). */
@@ -38,12 +38,16 @@ export type TriggerEvent =
   | { type: "sacrificed"; cardId: CardInstanceId; controllerId: PlayerId; dataId: string; faceIndex: number; isToken: boolean; typeLine: string }
   /** Un permanent change de contrôleur. */
   | { type: "controlChanged"; cardId: CardInstanceId; controllerId: PlayerId }
+  /** Un permanent devient la cible d'un sort ou d'une capacité (`spellId`) contrôlé par `playerId` (garde). */
+  | { type: "targeted"; cardId: CardInstanceId; playerId: PlayerId; spellId: CardInstanceId }
   /** Un permanent engagé se dégage. */
   | { type: "untapped"; cardId: CardInstanceId }
   /** Un permanent subit des blessures (Body of Knowledge). */
   | { type: "damaged"; cardId: CardInstanceId; amount: number }
   /** Une créature inflige des blessures de combat à un joueur. */
   | { type: "combatDamage"; cardId: CardInstanceId; controllerId: PlayerId; playerId: PlayerId; amount: number }
+  /** Un permanent inflige des blessures hors combat à un joueur (Keen Sense : « deals damage to an opponent »). */
+  | { type: "playerDamage"; cardId: CardInstanceId; controllerId: PlayerId; playerId: PlayerId; amount: number }
   /** Des marqueurs de savoir arrivent sur une saga : de `from` à `to`. */
   | { type: "lore"; cardId: CardInstanceId; from: number; to: number }
   /** `auras` : les auras attachées au permanent quand il est parti (Kaya's Ghostform). */
@@ -63,9 +67,28 @@ type Whose = "you" | "opponent" | "any";
 
 export type TriggerCondition =
   /** `ifCast` : « When ~ enters, if it was cast, … » (Wedding Ring). */
-  | { on: "enters"; self: boolean; another: boolean; creature: boolean; whose: Whose; ifCast?: boolean; land?: boolean; minPower?: number; subtype?: string; orSelf?: boolean }
+  /**
+   * `legendary`, `nontoken`, `token` : « another legendary permanent » (Yoshimaru), « a nontoken creature » (The Great Henge) ;
+   * `types` : « an artifact enters », « an artifact creature » (tous ces types à la fois).
+   */
+  | {
+      on: "enters";
+      self: boolean;
+      another: boolean;
+      creature: boolean;
+      whose: Whose;
+      ifCast?: boolean;
+      land?: boolean;
+      minPower?: number;
+      subtype?: string;
+      orSelf?: boolean;
+      legendary?: boolean;
+      nontoken?: boolean;
+      token?: boolean;
+      types?: string[];
+    }
   /** `batched` : « one or more … die » se déclenche une fois par action, quel que soit le nombre de morts. */
-  | { on: "dies"; self: boolean; others: boolean; whose: Whose; batched?: boolean; subtype?: string }
+  | { on: "dies"; self: boolean; others: boolean; whose: Whose; batched?: boolean; subtype?: string; legendary?: boolean; nontoken?: boolean }
   /** `nth` : « draw your second card each turn ». */
   /** `controlsSameName` : « an opponent who controls an artifact named ~ » ; `theirTurn` : « during their turn ». */
   /** `legendary` : « play a legendary land » (Shanid). */
@@ -83,10 +106,28 @@ export type TriggerCondition =
   | { on: "exploits" }
   /** « Whenever ~ becomes untapped ». */
   | { on: "untapped" }
-  /** « Whenever a creature deals combat damage to one of your opponents », « Whenever ~ deals combat damage to a player ». */
-  | { on: "combatDamage"; self: boolean; creature: Whose; player: Whose; batched?: boolean }
+  /**
+   * « Whenever a creature deals combat damage to one of your opponents », « Whenever ~ deals combat damage to a player ».
+   * `attached` : « equipped creature », « enchanted creature » (Robe of the Archmagi, Keen Sense) ;
+   * `anyDamage` : « deals damage » (combat ou non) ; `token`, `nontoken`, `legendary`, `types` : filtre de la créature.
+   */
+  | {
+      on: "combatDamage";
+      self: boolean;
+      creature: Whose;
+      player: Whose;
+      batched?: boolean;
+      attached?: boolean;
+      anyDamage?: boolean;
+      token?: boolean;
+      nontoken?: boolean;
+      legendary?: boolean;
+      types?: string[];
+    }
   /** « Whenever ~ is dealt damage ». */
   | { on: "damaged" }
+  /** Garde (ward) : « Whenever ~ becomes the target of a spell or ability an opponent controls ». */
+  | { on: "targeted" }
   /** Chapitre d'une saga (« I, II — … »). */
   | { on: "chapter"; chapters: number[] }
   /** « When ~ leaves the battlefield » ; `enchanted` : « When enchanted permanent dies or is put into exile » (`to` : zones visées). */
@@ -244,7 +285,7 @@ export interface TriggeredAbility {
   /** « This ability triggers only once each turn. » */
   oncePerTurn?: boolean;
   /** Condition vérifiée au déclenchement et à la résolution (« if an opponent controls more lands than you », Land Tax). */
-  onlyIf?: "opponentMoreLands";
+  onlyIf?: "opponentMoreLands" | "uniqueName";
 }
 
 export interface PermanentAbilities {
@@ -278,19 +319,27 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   if (/^~ enters(?: the battlefield)?$/i.test(t)) {
     return { on: "enters", self: true, another: false, creature: false, whose: "you" };
   }
-  if ((m = /^(a|another|~ or another) (creature|permanent|land|[A-Z][a-z]+)( you control| an opponent controls)?(?: with power (\d+) or greater)? enters(?: the battlefield)?(?: under your control)?$/.exec(t))) {
-    const controls = (m[3] ?? "").trim().toLowerCase();
-    const kind = m[2]!;
+  if ((m = /^(an?|another|~ or another) ((?:(?:nontoken|token|legendary|artifact|enchantment) )*)(creature|permanent|land|artifact|enchantment|planeswalker|[A-Z][a-z]+)( token)?( you control| an opponent controls)?(?: with power (\d+) or greater)? enters(?: the battlefield)?(?: under your control)?$/.exec(t))) {
+    const controls = (m[5] ?? "").trim().toLowerCase();
+    const kind = m[3]!;
     const subtype = /^[A-Z]/.test(kind) ? kind : undefined;
+    const adj = (m[2] ?? "").trim().split(/\s+/).filter(Boolean);
+    const types = [...adj.filter((a) => a === "artifact" || a === "enchantment"), ...(["artifact", "enchantment", "planeswalker"].includes(kind) ? [kind] : [])];
+    const token = adj.includes("token") || !!m[4];
+    if (token && adj.includes("nontoken")) return null;
     return {
       on: "enters",
       self: false,
-      another: m[1] !== "a",
+      another: !/^an?$/.test(m[1]!),
       creature: kind === "creature" || !!subtype,
       ...(kind === "land" ? { land: true } : {}),
       ...(subtype ? { subtype } : {}),
-      ...(m[4] ? { minPower: parseInt(m[4], 10) } : {}),
+      ...(m[6] ? { minPower: parseInt(m[6], 10) } : {}),
       ...(m[1] === "~ or another" ? { orSelf: true } : {}),
+      ...(adj.includes("legendary") ? { legendary: true } : {}),
+      ...(adj.includes("nontoken") ? { nontoken: true } : {}),
+      ...(token ? { token: true } : {}),
+      ...(types.length > 0 ? { types } : {}),
       whose: controls === "you control" || /under your control/i.test(t) ? "you" : controls ? "opponent" : "any",
     };
   }
@@ -299,10 +348,19 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
     const controls = (m[1] ?? "").trim().toLowerCase();
     return { on: "dies", self: false, others: true, whose: controls === "you control" ? "you" : controls ? "opponent" : "any", batched: true };
   }
-  if ((m = /^(~ or another|another|a) (creature|[A-Z][a-z]+)( you control| an opponent controls)? dies$/.exec(t))) {
-    const controls = (m[3] ?? "").trim().toLowerCase();
+  if ((m = /^(~ or another|another|a) ((?:(?:nontoken|legendary) )*)(creature|[A-Z][a-z]+)( you control| an opponent controls)? dies$/.exec(t))) {
+    const controls = (m[4] ?? "").trim().toLowerCase();
     const who: Whose = controls === "you control" ? "you" : controls ? "opponent" : "any";
-    return { on: "dies", self: m[1]!.startsWith("~"), others: true, whose: who, ...(m[2] !== "creature" ? { subtype: m[2]! } : {}) };
+    const adj = (m[2] ?? "").trim().split(/\s+/);
+    return {
+      on: "dies",
+      self: m[1]!.startsWith("~"),
+      others: true,
+      whose: who,
+      ...(m[3] !== "creature" ? { subtype: m[3]! } : {}),
+      ...(adj.includes("legendary") ? { legendary: true } : {}),
+      ...(adj.includes("nontoken") ? { nontoken: true } : {}),
+    };
   }
   if ((m = /^(you|an opponent|a player) draws? a card$/i.exec(t))) return { on: "draw", whose: whose(m[1]!)! };
   if ((m = /^(you|an opponent|a player) draws? (?:your|their|his or her) (second|third) card each turn$/i.exec(t))) {
@@ -333,18 +391,28 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
   if (/^one or more creatures you control deal combat damage to a player$/i.test(t)) {
     return { on: "combatDamage", self: false, creature: "you", player: "any", batched: true };
   }
-  if ((m = /^(~|a creature|a creature you control|a creature an opponent controls) deals combat damage to (a player|an opponent|one of your opponents|you)$/i.exec(t))) {
-    const who = m[1]!.toLowerCase();
-    const to = m[2]!.toLowerCase();
+  // « ~ », « equipped creature », « a nontoken creature you control », « an artifact creature you control », « a creature token you control »…
+  if ((m = /^(~|equipped creature|enchanted creature|an? ((?:(?:nontoken|token|legendary|artifact) )*)creature( token)?( you control| an opponent controls)?) deals (combat )?damage to (a player|an opponent|one of your opponents|you)$/.exec(t))) {
+    const who = m[1]!;
+    const to = m[6]!.toLowerCase();
+    const adj = (m[2] ?? "").trim().split(/\s+/);
+    const token = adj.includes("token") || !!m[3];
+    if (token && adj.includes("nontoken")) return null;
     return {
       on: "combatDamage",
       self: who === "~",
       creature: who.endsWith("you control") ? "you" : who.endsWith("opponent controls") ? "opponent" : "any",
       player: to === "a player" ? "any" : to === "you" ? "you" : "opponent",
+      ...(/^(?:equipped|enchanted) /.test(who) ? { attached: true } : {}),
+      ...(!m[5] ? { anyDamage: true } : {}),
+      ...(token ? { token: true } : {}),
+      ...(adj.includes("nontoken") ? { nontoken: true } : {}),
+      ...(adj.includes("legendary") ? { legendary: true } : {}),
+      ...(adj.includes("artifact") ? { types: ["artifact"] } : {}),
     };
   }
   if (/^~ leaves the battlefield$/i.test(t)) return { on: "leaves" };
-  if ((m = /^enchanted (?:permanent|creature) (dies|is put into exile|dies or is put into exile|leaves the battlefield)$/i.exec(t))) {
+  if ((m = /^(?:enchanted (?:permanent|creature)|equipped creature) (dies|is put into exile|dies or is put into exile|leaves the battlefield)$/i.exec(t))) {
     const what = m[1]!.toLowerCase();
     const to: Zone[] = what.startsWith("leaves") ? [] : [...(what.includes("dies") ? (["graveyard"] as Zone[]) : []), ...(what.includes("exile") ? (["exile"] as Zone[]) : [])];
     return { on: "leaves", enchanted: true, ...(to.length > 0 ? { to } : {}) };
@@ -353,6 +421,7 @@ export function parseTriggerCondition(text: string): TriggerCondition | null {
     return { on: "step", step: "main1", whose: whose(m[1]!)! };
   }
   if (/^the beginning of combat on your turn$/i.test(t)) return { on: "step", step: "beginCombat", whose: "you" };
+  if (/^the beginning of each combat$/i.test(t)) return { on: "step", step: "beginCombat", whose: "any" };
   if (/^the beginning of enchanted player's first upkeep each turn$/i.test(t)) return { on: "step", step: "upkeep", whose: "any", enchanted: true, first: true };
   if (/^the beginning of enchanted player's upkeep$/i.test(t)) return { on: "step", step: "upkeep", whose: "any", enchanted: true };
   if ((m = /^the beginning of (your|each|each player's|each opponent's) (upkeep|draw step|end step)$/i.exec(t))) {
@@ -388,6 +457,16 @@ export interface Unless {
   perAge?: boolean;
   /** « {X}, where X is this creature's power » : X vaut la force de la source au moment de payer (Esper Sentinel). */
   xPower?: boolean;
+}
+
+/** Coût de la garde (« ward {2} », « Ward—Pay 3 life. », « Ward—Discard a card. »), payé par le contrôleur du sort ; null sinon. */
+export function parseWard(part: string): Unless | null {
+  const p = part.trim().replace(/\.$/, "");
+  let m: RegExpExecArray | null;
+  if ((m = /^ward ((?:\{[^}]+\})+)$/i.exec(p))) return { payer: "event", mana: m[1]! };
+  if ((m = /^ward\s*[—-]\s*pay (\d+) life$/i.exec(p))) return { payer: "event", life: parseInt(m[1]!, 10) };
+  if (/^ward\s*[—-]\s*discard a card$/i.test(p)) return { payer: "event", discard: 1 };
+  return null;
 }
 
 /** Lit le corps d'une capacité déclenchée : ses effets, et si elle est facultative. */
@@ -428,6 +507,16 @@ function parseTriggerBody(text: string): { effects: SpellEffects; optional: bool
   if (/^you may look at the top X cards of your library, where X is that creature's power\. If you do, put one of those cards on top of your library and the rest on the bottom of your library in any order\.?$/i.test(text)) {
     return fixed({ type: "lookTopKeepOne" }, true);
   }
+  // Sylvan Library : piocher en plus, puis pour chacune des cartes choisies parmi celles piochées ce tour, payer des PV ou la remettre dessus.
+  const library = /^you may draw (\w+) additional cards?\. If you do, choose (\w+) cards? in your hand drawn this turn\. For each of those cards, pay (\d+) life or put the card on top of your library\.?$/i.exec(text);
+  const drawn = library ? NUMBER_WORDS[library[1]!.toLowerCase()] : undefined;
+  const count = library ? NUMBER_WORDS[library[2]!.toLowerCase()] : undefined;
+  if (library && drawn && count) {
+    return {
+      effects: { targets: [], effects: [{ type: "chooseDrawn", count, drawFirst: drawn }, { type: "payLifeOrTop", life: parseInt(library[3]!, 10) }], unknown: [] },
+      optional: true,
+    };
+  }
   // Descendants' Fury : sacrifier une des créatures qui ont infligé les blessures, puis révéler jusqu'à une créature de même type.
   if (/^you may sacrifice one of them\. If you do, reveal cards from the top of your library until you reveal a creature card that shares a creature type with the sacrificed creature\. Put that card onto the battlefield and the rest on the bottom of your library in a random order\.?$/i.test(text)) {
     return fixed({ type: "sacrificeOneReveal" }, true);
@@ -454,6 +543,12 @@ function parseTriggerBody(text: string): { effects: SpellEffects; optional: bool
     return { effects: { targets: [spec, spec, spec, spec], effects: [{ type: "goad", targets: [0, 1, 2, 3], countersFromPower: true }], unknown: [] }, optional: false };
   }
   if (/^its controller may draw a card if its power is greater than each other creature's power\.?$/i.test(text)) return fixed({ type: "drawIfGreatestPower" });
+  // Odric, Lunarch Marshal : chaque mot-clé qu'a une de vos créatures est donné à toutes.
+  const share = /^creatures you control gain ([a-z ]+) until end of turn if a creature you control has \1\. The same is true for (.+?)\.?$/i.exec(text);
+  if (share) {
+    const keywords = [share[1]!.toLowerCase(), ...keywordList(share[2]!)];
+    if (keywords.every((k) => KEYWORD_HELP[k])) return fixed({ type: "shareKeywords", keywords });
+  }
   const may = /^you may (.+)$/i.exec(text);
   if (may) return { effects: parseSpellEffects(cap(may[1]!), "~"), optional: true };
   if (/\bmay\b/i.test(text)) return null;
@@ -496,6 +591,23 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
           effects: { targets: [], effects: [{ type: "cascade" }], unknown: [] },
           ifUntapped: false,
           optional: false,
+        });
+      }
+      continue;
+    }
+    // Garde (ward) : « Vigilance, ward {2} », « Ward—Pay 3 life. » : contrer le sort ou la capacité
+    // d'un adversaire qui cible ce permanent, sauf si son contrôleur paie le coût.
+    const wards = line.split(/,\s*/).map(parseWard);
+    if (wards.some(Boolean)) {
+      for (const unless of wards) {
+        if (!unless) continue;
+        result.triggers.push({
+          text: `Ward ${unless.mana ?? (unless.life ? `— Pay ${unless.life} life` : "— Discard a card")}`,
+          condition: { on: "targeted" },
+          effects: { targets: [], effects: [{ type: "counterTriggering" }], unknown: [] },
+          ifUntapped: false,
+          optional: false,
+          unless,
         });
       }
       continue;
@@ -589,6 +701,12 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         onlyIf = "opponentMoreLands";
         body = moreLands[1]!;
       }
+      // Guardian Project : « if it doesn't have the same name as another creature you control or a creature card in your graveyard ».
+      const unique = /^if it doesn't have the same name as another creature you control or a creature card in your graveyard, (.+)$/i.exec(body);
+      if (unique && condition?.on === "enters") {
+        onlyIf = "uniqueName";
+        body = unique[1]!;
+      }
       const wasCast = /^if it was cast, (.+)$/i.exec(body);
       if (wasCast && condition?.on === "enters") {
         condition.ifCast = true;
@@ -599,6 +717,8 @@ export function parsePermanentAbilities(oracleText: string, cardName: string, ty
         ifUntapped = true;
         body = untapped[1]!;
       }
+      // « Whenever ~ attacks, put a +1/+1 counter on it » : « it » est la source elle-même.
+      if (/^~ /.test(m[2]!)) body = body.replace(/^put (an? [^ ]+ counter) on it\b/i, "put $1 on ~");
       const parsed = parseTriggerBody(body);
       if (!condition || !parsed || parsed.effects.unknown.length > 0 || (parsed.effects.effects.length === 0 && !parsed.effects.modes)) {
         result.unknown.push(line);
@@ -688,17 +808,23 @@ export function conditionMatches(
       if (c.self) return event.cardId === source.instanceId;
       if (c.orSelf && event.cardId === source.instanceId) return true;
       if (c.another && event.cardId === source.instanceId) return false;
-      if (c.subtype || c.minPower !== undefined) {
+      if (c.subtype || c.minPower !== undefined || c.legendary || c.nontoken || c.token || c.types) {
         const entered = g.cards[event.cardId];
         if (!entered || entered.zone !== "battlefield") return false;
         if (c.subtype && !hasCreatureType(g, entered, c.subtype)) return false;
         if (c.minPower !== undefined && creatureStats(g, entered).power < c.minPower) return false;
+        if (!permanentMatches(g, entered, c)) return false;
       }
       if (c.creature && !event.creature) return false;
       if (c.land && !event.land) return false;
       return whoseMatches(g, c.whose, source.controllerId, event.controllerId);
     case "dies":
       if (c.on !== "dies") return false;
+      if (event.cardId !== source.instanceId && (c.legendary || c.nontoken)) {
+        if (c.nontoken && event.isToken) return false;
+        const data = g.cardData[event.dataId];
+        if (c.legendary && !/\bLegendary\b/.test(data?.faces?.[event.faceIndex]?.typeLine ?? data?.typeLine ?? "")) return false;
+      }
       if (c.subtype && event.cardId !== source.instanceId) {
         const data = g.cardData[event.dataId];
         const face = data?.faces?.[event.faceIndex];
@@ -727,6 +853,8 @@ export function conditionMatches(
       }
       return true;
     }
+    case "targeted":
+      return c.on === "targeted" && event.cardId === source.instanceId && whoseMatches(g, "opponent", source.controllerId, event.playerId);
     case "attacks":
     case "blocks":
       if (c.on !== "combat" || !(event.type === "attacks" ? c.attacks : c.blocks)) return false;
@@ -745,9 +873,19 @@ export function conditionMatches(
     case "damaged":
       return c.on === "damaged" && event.cardId === source.instanceId;
     case "combatDamage":
+    case "playerDamage": {
       if (c.on !== "combatDamage") return false;
+      if (event.type === "playerDamage" && !c.anyDamage) return false;
       if (c.self && event.cardId !== source.instanceId) return false;
-      return whoseMatches(g, c.creature, source.controllerId, event.controllerId) && whoseMatches(g, c.player, source.controllerId, event.playerId);
+      if (c.attached && g.cards[source.instanceId]?.attachedTo !== event.cardId) return false;
+      if (c.token || c.nontoken || c.legendary || c.types) {
+        const dealer = g.cards[event.cardId];
+        if (!dealer || !permanentMatches(g, dealer, c)) return false;
+      }
+      // « equipped creature … you draw » : la créature équipée peut être à un autre joueur.
+      const creatureOk = c.attached || whoseMatches(g, c.creature, source.controllerId, event.controllerId);
+      return creatureOk && whoseMatches(g, c.player, source.controllerId, event.playerId);
+    }
     case "lore":
       return c.on === "chapter" && event.cardId === source.instanceId && c.chapters.some((n) => n > event.from && n <= event.to);
     case "draw":
@@ -772,8 +910,44 @@ export function conditionMatches(
   }
 }
 
+/** Type actuel d'un permanent (face visible). */
+function typeLineOf(g: GameState, card: CardInstance): string {
+  const data = g.cardData[card.cardId];
+  return data?.faces?.[card.faceIndex]?.typeLine ?? data?.typeLine ?? "";
+}
+
+/** Le permanent a-t-il les qualités demandées (légendaire, jeton ou non, types) ? */
+function permanentMatches(g: GameState, card: CardInstance, f: { legendary?: boolean; nontoken?: boolean; token?: boolean; types?: string[] }): boolean {
+  if (f.nontoken && card.isToken) return false;
+  if (f.token && !card.isToken) return false;
+  const type = typeLineOf(g, card);
+  if (f.legendary && !/\bLegendary\b/.test(type)) return false;
+  if (f.types && !f.types.every((t) => new RegExp(`\\b${t}\\b`, "i").test(type))) return false;
+  return true;
+}
+
+/** Nom de la face visible d'une carte. */
+function nameOf(g: GameState, card: CardInstance): string | undefined {
+  const data = g.cardData[card.cardId];
+  return data?.faces?.[card.faceIndex]?.name ?? data?.name;
+}
+
 /** La condition « if … » d'une capacité déclenchée est-elle remplie pour ce joueur ? */
-export function triggerConditionHolds(g: GameState, onlyIf: TriggeredAbility["onlyIf"], controllerId: PlayerId): boolean {
+export function triggerConditionHolds(g: GameState, onlyIf: TriggeredAbility["onlyIf"], controllerId: PlayerId, eventCardId?: CardInstanceId): boolean {
+  // Guardian Project : la créature arrivée n'a pas le nom d'une autre de vos créatures ni d'une carte de créature de votre cimetière.
+  if (onlyIf === "uniqueName") {
+    const entered = eventCardId ? g.cards[eventCardId] : undefined;
+    const name = entered && nameOf(g, entered);
+    if (!name) return false;
+    const player = g.players[controllerId]!;
+    const clash = (id: CardInstanceId, zone: "battlefield" | "graveyard") => {
+      if (id === eventCardId) return false;
+      const other = g.cards[id];
+      if (!other || other.faceDown) return false;
+      return /\bCreature\b/.test(zone === "battlefield" ? typeLineOf(g, other) : (g.cardData[other.cardId]?.typeLine ?? "")) && nameOf(g, other) === name;
+    };
+    return !player.zones.battlefield.some((id) => clash(id, "battlefield")) && !player.zones.graveyard.some((id) => clash(id, "graveyard"));
+  }
   if (onlyIf === "opponentMoreLands") {
     const lands = (id: PlayerId) =>
       g.players[id]!.zones.battlefield.filter((c) => /\bLand\b/.test(g.cardData[g.cards[c]!.cardId]?.typeLine ?? "")).length;

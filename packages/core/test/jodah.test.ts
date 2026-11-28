@@ -181,11 +181,9 @@ describe("Deck Jodah : bonus jusqu'à la fin du tour", () => {
     [g, a] = put(g, "p1", bear());
     [g, spell] = inHand(g, "p1", real("Akroma's Will"), 1);
     g = mana(g, "p1", "WCCC");
-    g = act(g, "p1", { type: "castSpell", cardId: spell });
-    g = resolveAll(g);
-    expect(refuse(g, "p1", { type: "chooseModes", cardId: spell, modes: [0, 1] })).toMatch(/Choisis 1 mode/);
+    expect(refuse(g, "p1", { type: "castSpell", cardId: spell, modes: [0, 1] })).toMatch(/Choisis 1 mode/);
     g.cards[a]!.isCommander = true;
-    g = act(g, "p1", { type: "chooseModes", cardId: spell, modes: [0, 1] });
+    g = act(g, "p1", { type: "castSpell", cardId: spell, modes: [0, 1] });
     g = resolveAll(g);
     for (const k of ["Flying", "Vigilance", "Double strike", "Lifelink", "Indestructible"] as const) expect(kw(g, a, k)).toBe(true);
     expect(protectionColors(g, g.cards[a]!).sort()).toEqual(["B", "G", "R", "U", "W"]);
