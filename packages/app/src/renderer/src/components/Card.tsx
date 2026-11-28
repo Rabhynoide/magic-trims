@@ -13,6 +13,8 @@ export function Card(props: {
   onDoubleClick?: (e: React.MouseEvent) => void;
   draggable?: boolean;
   attachments?: CardView[];
+  /** Menu, choix de cible… d'une carte attachée (Aura, Équipement). */
+  attachmentProps?: (a: CardView) => AttachmentProps;
   /** Mode sélection (par exemple pour un mulligan) : un clic choisit la carte. */
   selected?: boolean;
   onSelect?: () => void;
@@ -120,11 +122,75 @@ export function Card(props: {
       {props.attachments && props.attachments.length > 0 && (
         <div className="card-attachments">
           {props.attachments.map((a) => (
-            <span key={a.instanceId ?? ""}>{cardName(view, a)}</span>
+            <Attachment key={a.instanceId ?? ""} view={view} card={a} host={card} {...props.attachmentProps?.(a)} />
           ))}
         </div>
       )}
     </div>
+  );
+}
+
+export interface AttachmentProps {
+  onMenu?: (e: React.MouseEvent) => void;
+  selected?: boolean;
+  onSelect?: () => void;
+}
+
+/**
+ * Étiquette d'une carte attachée, posée sur la carte hôte : le survol agrandit
+ * l'Aura ou l'Équipement lui-même (pas l'hôte), le clic droit ouvre son menu,
+ * on peut la glisser ailleurs et la choisir comme cible.
+ */
+function Attachment(props: { view: GameView; card: CardView; host: CardView } & AttachmentProps) {
+  const { view, card, host } = props;
+  const id = card.instanceId;
+  const name = cardName(view, card);
+  return (
+    <span
+      className={`card-attachment ${props.onSelect ? "selectable" : ""} ${props.selected ? "selected" : ""}`}
+      title={name}
+      draggable={Boolean(id)}
+      onDragStart={(e) => {
+        e.stopPropagation();
+        if (!id) return;
+        e.dataTransfer.setData(DRAG_TYPE, id);
+        e.dataTransfer.effectAllowed = "move";
+        ui.setPreview(null);
+        ui.cancelZoom();
+      }}
+      onMouseEnter={(e) => {
+        if (card.hidden) return;
+        ui.setPreview(card);
+        ui.hoverCard(card, e.currentTarget);
+      }}
+      onMouseLeave={(e) => {
+        ui.cancelZoom();
+        // De retour sur la carte hôte : c'est elle qu'on agrandit de nouveau.
+        const hostEl = e.currentTarget.closest(".card");
+        if (hostEl instanceof HTMLElement && e.relatedTarget instanceof Node && hostEl.contains(e.relatedTarget)) {
+          ui.setPreview(host);
+          ui.hoverCard(host, hostEl);
+        } else ui.setPreview(null);
+      }}
+      onMouseDown={(e) => {
+        e.stopPropagation();
+        ui.cancelZoom();
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (props.onSelect && e.button === 0) return props.onSelect();
+        if (props.onMenu && e.button === 0 && e.altKey) props.onMenu(e);
+      }}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        props.onMenu?.(e);
+      }}
+    >
+      {card.tapped && <span className="card-attachment-tapped" aria-label="engagée">↷</span>}
+      {name}
+    </span>
   );
 }
 
