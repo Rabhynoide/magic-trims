@@ -223,7 +223,8 @@ type EffectBase =
   | { type: "bounce"; target: number }
   /** « Return each nonland permanent you don't control to its owner's hand » (Cyclonic Rift surchargé). */
   | { type: "bounceAll"; filter: PermanentFilter }
-  | { type: "damage"; target: number | "event" | "you"; amount: Amount }
+  /** `eventCard` : la créature de l'événement (« deals damage … to that creature », Storm). */
+  | { type: "damage"; target: number | "event" | "you" | "eventCard"; amount: Amount }
   | { type: "damageEach"; who: "opponents" | "players" | "creatures" | "yourOtherCreatures"; amount: Amount }
   | { type: "life"; who: Who; amount: Amount }
   /** `attacking` : « tapped and attacking » (même défenseur que la source) ; `exileEndOfCombat` : « Exile that token at end of combat » (Kari Zev). */
@@ -274,7 +275,8 @@ type EffectBase =
   | { type: "counterAll"; filter: PermanentFilter; kind: string; count: number }
   /** « Target creature gets +2/+2 and gains haste until end of turn. » */
   /** `untilNextTurn` : « until your next turn » (Dihada) au lieu de la fin du tour. */
-  | { type: "pumpTarget"; target: number; power: number; toughness: number; keywords: string[]; untilNextTurn?: boolean }
+  /** `x` : « gets +X/+X, where X is … » (Bast) : X s'ajoute à la force et/ou à l'endurance, lu à la résolution. */
+  | { type: "pumpTarget"; target: number; power: number; toughness: number; keywords: string[]; untilNextTurn?: boolean; x?: { amount: Amount; power: boolean; toughness: boolean } }
   /** « Creatures you control gain lifelink until end of turn. » */
   /** « Legendary creatures you control get +1/+0 and gain indestructible until end of turn. » ; `others` : sauf la source. */
   /** `power`/`toughness` : un nombre, ou X (Toxic Deluge : « All creatures get -X/-X »). */
@@ -297,7 +299,8 @@ type EffectBase =
   /** Odric, Lunarch Marshal : chaque mot-clé qu'a une de vos créatures est donné à toutes jusqu'à la fin du tour. */
   | { type: "shareKeywords"; keywords: string[] }
   /** « Target opponent gains control of target permanent you control » ; `permanent` : une cible, ou la source. */
-  | { type: "gainControl"; permanent: number | "self"; player: number }
+  /** `player` : une cible, ou le joueur de l'événement (Coveted Jewel : « that player … gains control of ~ »). */
+  | { type: "gainControl"; permanent: number | "self"; player: number | "event" }
   /** « Exchange control of target land you control and target land an opponent controls. » */
   | { type: "exchangeControl"; a: number; b: number; relation?: ExchangeRelation }
   /**
@@ -583,6 +586,13 @@ function parseTriggerSentence(s: string, target: (spec: TargetSpec) => number, l
   if ((m = new RegExp(`^that player draws ${NUM} (?:additional )?cards?$`, "i").exec(s))) {
     return [{ type: "draw", who: "event", count: amount(m[1]!) }];
   }
+  // Coveted Jewel : « that player draws three cards and gains control of ~ ».
+  if ((m = new RegExp(`^that player draws ${NUM} cards? and gains control of ~$`, "i").exec(s))) {
+    return [
+      { type: "draw", who: "event", count: amount(m[1]!) },
+      { type: "gainControl", permanent: "self", player: "event" },
+    ];
+  }
   if ((m = /^(?:return|put) (.+? from (?:your|a) graveyard) (?:to|onto|on top of) (the battlefield|your hand|your library)(?: under your control)?$/i.exec(s))) {
     const filter = parseGraveyardTarget(m[1]!);
     if (filter) {
@@ -783,9 +793,9 @@ function countOf(text: string): Amount | null {
 function quantityOf(text: string, lastTarget: number): Amount | null {
   const t = text.trim();
   let m: RegExpExecArray | null;
-  if ((m = /^(its|that creature's|~'s) (power|toughness)$/i.exec(t))) {
+  if ((m = /^(its|that creature's|~'s|her|his) (power|toughness)$/i.exec(t))) {
     const stat = m[2]!.toLowerCase() as "power" | "toughness";
-    if (m[1]!.toLowerCase() === "~'s") return { q: { stat, of: "self" } };
+    if (/^(~'s|her|his)$/i.test(m[1]!)) return { q: { stat, of: "self" } };
     return lastTarget >= 0 ? { q: { stat, of: lastTarget } } : null;
   }
   if ((m = /^the greatest (power|toughness) among (.+)$/i.exec(t))) {
@@ -865,6 +875,7 @@ function parseVariableSentence(s: string, target: (spec: TargetSpec) => number, 
     const q = quantityOf(qText, lastTarget());
     if (!q) return null;
     if (/^each opponent$/i.test(who)) return [{ type: "damageEach", who: "opponents", amount: q }];
+    if (/^that creature$/i.test(who) && lastTarget() < 0) return [{ type: "damage", target: "eventCard", amount: q }];
     const spec = damageTarget(who);
     return spec ? [{ type: "damage", target: target(spec), amount: q }] : null;
   }
@@ -1075,6 +1086,22 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
     }
     let m: RegExpExecArray | null;
     let dig: RegExpExecArray | null;
+    // Shuri : « Then if you control six or more artifacts, … » ; « draw a card if you control three or more artifacts ».
+    s = s.replace(/^then (?=if )/i, "");
+    if ((m = /^(draw (?:a|an|one|two|three) cards?) if you control (\w+ or more .+)$/i.exec(s))) s = `If you control ${m[2]!}, ${m[1]!}`;
+    // Storm : « until end of turn, another target attacking creature gains flying and gets +X/+0 » : l'ordre habituel.
+    if ((m = /^until end of turn, ((?:another |up to one )?target .+?) gains ([a-z ]+?) and gets ([+-]\w+\/[+-]\w+)(, where X is .+)?$/i.exec(s))) {
+      s = `${m[1]!} gets ${m[3]!} and gains ${m[2]!} until end of turn${m[4] ?? ""}`;
+    }
+    // Bast : « target attacking creature gets +X/+X until end of turn, where X is the number of creatures you control ».
+    let pumpX: { amount: Amount; power: boolean; toughness: boolean } | null = null;
+    if ((m = /^((?:another |up to one )?target .+? gets )\+(X|\d+)\/\+(X|\d+)(.* until end of turn), where X is (.+)$/i.exec(s)) && (/x/i.test(m[2]!) || /x/i.test(m[3]!))) {
+      const q = quantityOf(m[5]!, result.targets.length - 1);
+      if (q !== null && typeof q !== "number") {
+        pumpX = { amount: q, power: /x/i.test(m[2]!), toughness: /x/i.test(m[3]!) };
+        s = `${m[1]!}+${/x/i.test(m[2]!) ? 0 : m[2]!}/+${/x/i.test(m[3]!) ? 0 : m[3]!}${m[4]!}`;
+      }
+    }
     // « If you control eight or more lands, draw a card. »
     if ((m = /^if you control (\w+) or more (.+?), (.+)$/i.exec(s))) {
       const filter = parsePermanentFilter(`${m[2]!} you control`);
@@ -1261,6 +1288,11 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
         continue;
       }
     }
+    // Coveted Jewel : « … gains control of ~. Untap it. »
+    if (/^untap (?:it|~)$/i.test(s) && prev?.type === "gainControl" && prev.permanent === "self") {
+      result.effects.push({ type: "untapSelf" });
+      continue;
+    }
     // Ashling : « create a token that's a copy of it. The token gains haste until end of turn.
     // At the beginning of your next end step, sacrifice it unless you pay {W}{U}{B}{R}{G}. »
     if (/^create a token that's a copy of it$/i.test(s)) {
@@ -1411,6 +1443,7 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
         toughness: m[4] ? parseInt(m[4], 10) : 0,
         keywords: m[5] ?? m[6] ? keywordList(m[5] ?? m[6]!) : [],
         ...(/next turn/i.test(m[7]!) ? { untilNextTurn: true } : {}),
+        ...(pumpX ? { x: pumpX } : {}),
       });
     } else if ((m = new RegExp(`^you gain ${NUM} life and draw ${NUM} cards?$`, "i").exec(s))) {
       result.effects.push({ type: "life", who: "you", amount: amount(m[1]!) }, { type: "draw", who: "you", count: amount(m[2]!) });
