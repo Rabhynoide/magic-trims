@@ -29,6 +29,11 @@ jobs:
       contents: write
     env:
       PUBLIER: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    # Deux fusions rapprochées ne publient pas en même temps : la seconde
+    # attend la fin de la première.
+    concurrency:
+      group: installateur-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -42,15 +47,30 @@ jobs:
       - name: Numéro de version
         if: env.PUBLIER == 'true'
         run: npm pkg set version=0.1.${{ github.run_number }} -w @magic-trims/app
+      # L'installateur est construit sans publication : electron-builder
+      # envoyait ses fichiers en parallèle et créait la release deux fois
+      # (erreur 422 « Published releases must have a valid tag », release
+      # restée en brouillon). La release est créée ensuite en une seule fois.
       - name: Installateur
-        if: env.PUBLIER != 'true'
         run: npm run dist
-      - name: Installateur et publication de la release
+      - name: Publication de la release
         if: env.PUBLIER == 'true'
-        working-directory: packages/app
-        run: npx electron-vite build && npx electron-builder --win --publish always
+        shell: bash
+        working-directory: packages/app/release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: 0.1.${{ github.run_number }}
+        run: |
+          ls -la
+          test -f latest.yml
+          gh release create "v$VERSION" \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "Magic Trims $VERSION" \
+            --generate-notes \
+            "MagicTrims-Setup-$VERSION.exe" \
+            "MagicTrims-Setup-$VERSION.exe.blockmap" \
+            latest.yml
       - uses: actions/upload-artifact@v4
         with:
           name: MagicTrims-installateur-windows

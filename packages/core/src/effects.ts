@@ -12,7 +12,7 @@ import { grantedManaAbility, manaOptions, manaTapEffect } from "./mana.js";
 import { parsePermanentAbilities, parseWard } from "./triggers.js";
 import { areTeammates } from "./modes.js";
 import { joinModes, keywordList, NUMBER_WORDS, selfToTilde } from "./text.js";
-import { playerHasHexproof, playerHasShroud, printedEvoke, typeLineHasCreatureType } from "./statics.js";
+import { isChangeling, isCreatureSubtype, playerHasHexproof, playerHasShroud, printedEvoke, typeLineHasCreatureType } from "./statics.js";
 
 export { selfToTilde };
 import type { CardData, CardInstance, GameState, PlayerId } from "./types.js";
@@ -1552,6 +1552,8 @@ export interface PermanentFacts {
   power?: number;
   colors?: string[];
   toughness?: number;
+  /** Changelin : a tous les types de créature (« target Elemental », « for each Elemental you control »). */
+  changeling?: boolean;
 }
 
 export function permanentMatches(facts: PermanentFacts, filter: PermanentFilter, casterId: PlayerId): boolean {
@@ -1564,8 +1566,9 @@ export function permanentMatches(facts: PermanentFacts, filter: PermanentFilter,
   if (filter.state === "blocking" && !facts.blocking) return false;
   if (filter.maxTotalPT !== undefined && (facts.power ?? 0) + (facts.toughness ?? 0) > filter.maxTotalPT) return false;
   if (filter.notColors?.some((c) => facts.colors?.includes(c))) return false;
-  if (filter.subtype && !new RegExp(`\\b${filter.subtype}\\b`).test(facts.typeLine.split("—")[1] ?? "")) return false;
-  if (filter.anySubtype && !filter.anySubtype.some((s) => new RegExp(`\\b${s}\\b`).test(facts.typeLine.split("—")[1] ?? ""))) return false;
+  const subtypeOk = (s: string) => new RegExp(`\\b${s}\\b`).test(facts.typeLine.split("—")[1] ?? "") || (!!facts.changeling && isCreatureSubtype(s) && /\b(Creature|Kindred|Tribal)\b/.test(facts.typeLine));
+  if (filter.subtype && !subtypeOk(filter.subtype)) return false;
+  if (filter.anySubtype && !filter.anySubtype.some(subtypeOk)) return false;
   if (filter.legendary && !/\bLegendary\b/.test(facts.typeLine)) return false;
   return true;
 }
@@ -1582,6 +1585,7 @@ export function matchesPermanent(g: GameState, card: CardInstance, filter: Perma
     {
       ...(stats ?? {}),
       typeLine: card.faceDown ? "Creature" : faceData(g, card).typeLine,
+      changeling: !card.faceDown && isChangeling(g, card),
       colors: card.faceDown ? [] : (g.cardData[card.cardId]?.colors ?? []),
       controllerId: card.controllerId,
       tapped: card.tapped,

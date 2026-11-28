@@ -100,6 +100,20 @@ describe("Deck Ashling : évocation", () => {
     expect(g.players.p1!.zones.graveyard).toContain(endurance);
   });
 
+  it("Ashling copie Morophon (changelin) évoqué : le jeton arrive avec la célérité", () => {
+    let g = toMain(newTestGame(2));
+    let morophon: string;
+    [g] = put(g, "p1", real("Ashling, the Limitless"));
+    [g, morophon] = inHand(g, "p1", real("Morophon, the Boundless"), 1);
+    g = mana(g, "p1", "CCCC");
+    g = act(g, "p1", { type: "castSpell", cardId: morophon, evoke: "granted" });
+    g = resolveAll(g);
+    expect(g.players.p1!.zones.graveyard).toContain(morophon);
+    const token = g.players.p1!.zones.battlefield.find((id) => g.cards[id]!.isToken);
+    expect(token && g.cardData[g.cards[token]!.cardId]!.name).toBe("Morophon, the Boundless");
+    expect(hasKeyword(g, g.cards[token!]!, "Haste")).toBe(true);
+  });
+
   it("Ashling donne l'évocation {4} et copie l'Élémental sacrifié, qui part à la fin du tour sans paiement", () => {
     let g = toMain(newTestGame(2));
     let ashling: string, drifter: string;
@@ -468,6 +482,32 @@ describe("Deck Ashling : atterrissage", () => {
     for (const name of ["Avenger of Zendikar", "Omnath, Locus of Rage", "Omnath, Locus of the Roil"]) {
       expect(cardSupport(real(name)).level, name).toBe("full");
     }
+  });
+
+  it("Morophon (changelin) compte comme Élémental : Omnath, Locus of the Roil, Ashling's Command, Soulstoke", () => {
+    let g = toMain(newTestGame(2));
+    let omnath: string, forest: string;
+    [g] = put(g, "p1", real("Morophon, the Boundless"));
+    const morophon = g.players.p1!.zones.battlefield.at(-1)!;
+    g.cards[morophon]!.chosenType = "Goblin";
+    [g] = put(g, "p1", real("Incandescent Soulstoke"));
+    // Seigneur « Other Elemental creatures » : Morophon (6/6) passe à 7/7.
+    expect(creatureStats(g, g.cards[morophon]!)).toEqual({ power: 7, toughness: 7 });
+    [g, forest] = inHand(g, "p1", basic("Forest"), 0);
+    [g, omnath] = inHand(g, "p1", real("Omnath, Locus of the Roil", { colors: ["G", "U", "R"] }), 1);
+    g = mana(g, "p1", "GURU");
+    g = act(g, "p1", { type: "castSpell", cardId: omnath });
+    g = resolveAll(g);
+    const life = g.players.p2!.life;
+    g = act(g, "p1", { type: "chooseTargets", cardId: waiting(g).instanceId, targets: [{ kind: "player", id: "p2" }] });
+    g = resolveAll(g);
+    // Omnath, Soulstoke et Morophon : trois Élémentaux.
+    expect(g.players.p2!.life).toBe(life - 3);
+    // « target Elemental you control » : Morophon est une cible valable.
+    g = act(g, "p1", { type: "playLand", cardId: forest });
+    g = act(g, "p1", { type: "chooseTargets", cardId: waiting(g).instanceId, targets: [{ kind: "card", id: morophon }] });
+    g = resolveAll(g);
+    expect(g.cards[morophon]!.counters["+1/+1"]).toBe(1);
   });
 });
 
