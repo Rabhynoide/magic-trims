@@ -8,6 +8,7 @@ const api: MagicApi = {
   importDeck: (text) => ipcRenderer.invoke("deck:import", text),
   searchCards: (query) => ipcRenderer.invoke("cards:search", query),
   localizeCards: (cards, lang) => ipcRenderer.invoke("cards:localize", cards, lang),
+  resolveCards: (lines) => ipcRenderer.invoke("cards:resolve", lines),
   central: {
     join: (url, code, name) => ipcRenderer.invoke("central:join", url, code, name),
     listDecks: (conn) => ipcRenderer.invoke("central:listDecks", conn),
