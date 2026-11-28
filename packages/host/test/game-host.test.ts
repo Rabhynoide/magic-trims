@@ -157,6 +157,25 @@ describe("partie", () => {
     return s;
   }
 
+  /** Partie lancée où tout le monde a gardé sa main de départ. */
+  function kept(playerCount = 3) {
+    const s = started(playerCount);
+    for (const c of s.conns) c.send({ type: "action", action: { type: "keepHand" } });
+    return s;
+  }
+
+  it("attend que tous gardent leur main ; seul l'hôte peut forcer", () => {
+    const { host, conns, welcomes } = started(2);
+    conns[0]!.send({ type: "action", requestId: "r0", action: { type: "keepHand" } });
+    conns[0]!.send({ type: "action", requestId: "r1", action: { type: "nextStep" } });
+    expect(conns[0]!.last("actionResult").error).toMatch(/tout le monde a gardé sa main/);
+    conns[1]!.send({ type: "action", requestId: "r2", action: { type: "forceKeep", playerId: welcomes[0]!.playerId } });
+    expect(conns[1]!.last("actionResult").error).toMatch(/Seul l'hôte/);
+    conns[0]!.send({ type: "action", requestId: "r3", action: { type: "forceKeep", playerId: welcomes[1]!.playerId } });
+    expect(conns[0]!.last("actionResult").ok).toBe(true);
+    expect(host.state!.players[welcomes[1]!.playerId]!.handKept).toBe(true);
+  });
+
   it("envoie à chacun sa propre vue de la partie", () => {
     const { conns, welcomes } = started();
     const view = conns[1]!.last("state").view;
@@ -167,12 +186,13 @@ describe("partie", () => {
   });
 
   it("applique les actions, répond et diffuse le nouvel état", () => {
-    const { host, conns, welcomes } = started();
+    const { host, conns, welcomes } = kept();
     const active = host.state!.turn.activePlayerId;
     const i = welcomes.findIndex((w) => w.playerId === active);
+    const version = host.state!.version;
     conns[i]!.send({ type: "action", requestId: "r1", action: { type: "draw", count: 1 } });
     expect(conns[i]!.last("actionResult")).toEqual({ type: "actionResult", requestId: "r1", ok: true });
-    for (const c of conns) expect(c.last("state").view.version).toBe(1);
+    for (const c of conns) expect(c.last("state").view.version).toBe(version + 1);
     const other = conns[(i + 1) % 3]!;
     other.send({ type: "action", requestId: "r2", action: { type: "passTurn" } });
     expect(other.last("actionResult")).toEqual({
@@ -238,6 +258,10 @@ describe("bots", () => {
       ["Bot", true, true],
     ]);
     alice.send({ type: "start" });
+    // Le bot garde sa main tout de suite ; Alice garde la sienne.
+    expect(host.stepBots()).toBe(true);
+    expect(host.state!.players[lobby.players[1]!.id]!.handKept).toBe(true);
+    alice.send({ type: "action", action: { type: "keepHand" } });
     const game = host.state!;
     const botId = lobby.players[1]!.id;
     const aliceId = lobby.players[0]!.id;

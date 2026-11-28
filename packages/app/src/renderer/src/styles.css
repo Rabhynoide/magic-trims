@@ -674,6 +674,38 @@ textarea:focus {
   background: var(--danger);
   color: #fff;
 }
+.opening-hands {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--accent);
+}
+.opening-hands-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.opening-hands-players {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-dim);
+}
+.opening-hands-players li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.opening-hands-players li.kept {
+  color: var(--ok);
+}
 .targeting-banner {
   flex: none;
   display: flex;

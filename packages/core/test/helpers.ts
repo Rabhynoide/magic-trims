@@ -35,6 +35,11 @@ export function fakeDeck(prefix: string): ResolvedDeck {
  * (`stops: true` pour garder les arrêts par défaut).
  */
 export function newTestGame(playerCount = 4, seed = 42, stops = false): GameState {
+  return keepAllHands(openingTestGame(playerCount, seed, stops));
+}
+
+/** Partie de test au moment des mains de départ (personne n'a encore gardé). */
+export function openingTestGame(playerCount = 4, seed = 42, stops = false): GameState {
   const names = ["Alice", "Bruno", "Chloé", "David", "Emma", "Farid"];
   const players: NewGamePlayer[] = Array.from({ length: playerCount }, (_, i) => ({
     id: `p${i + 1}`,
@@ -43,6 +48,12 @@ export function newTestGame(playerCount = 4, seed = 42, stops = false): GameStat
     ...(stops ? {} : { priorityStops: [] }),
   }));
   return createGame({ id: "test", players, seed, randomTurnOrder: false });
+}
+
+/** Tous les joueurs gardent leur main de départ : la partie peut commencer. */
+export function keepAllHands(g: GameState): GameState {
+  for (const p of Object.values(g.players)) p.handKept = true;
+  return g;
 }
 
 /**

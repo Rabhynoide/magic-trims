@@ -5,19 +5,19 @@ import { applyAction } from "../src/reducer.js";
 import { createGame, type NewGameOptions } from "../src/setup.js";
 import type { GameModeType, GameState } from "../src/types.js";
 import { viewFor } from "../src/view.js";
-import { fakeCard, fakeDeck, endTurn } from "./helpers.js";
+import { fakeCard, fakeDeck, endTurn, keepAllHands } from "./helpers.js";
 
 const NAMES = ["Alice", "Bruno", "Chloé", "David", "Emma"];
 
 function game(mode: GameModeType, count: number, extra: Partial<NewGameOptions> = {}): GameState {
-  return createGame({
+  return keepAllHands(createGame({
     id: "t",
     seed: 1,
     mode,
     randomTurnOrder: false,
     players: NAMES.slice(0, count).map((name, i) => ({ id: `p${i + 1}`, name, deck: fakeDeck(name), priorityStops: [] })),
     ...extra,
-  });
+  }));
 }
 
 function act(g: GameState, actorId: string, action: GameAction): GameState {

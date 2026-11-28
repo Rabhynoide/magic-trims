@@ -4,7 +4,7 @@ import type { GameAction } from "../src/actions.js";
 import { createGame } from "../src/setup.js";
 import { viewFor } from "../src/view.js";
 import type { CardData, GameState } from "../src/types.js";
-import { fakeCard, fakeDeck, newTestGame } from "./helpers.js";
+import { fakeCard, fakeDeck, newTestGame, keepAllHands } from "./helpers.js";
 
 function act(g: GameState, actorId: string, action: GameAction): GameState {
   const r = applyAction(g, { actorId, action });
@@ -85,13 +85,13 @@ describe("Priorité et pile", () => {
 
   it("en tours partagés, l'équipe passe la priorité en bloc", () => {
     const names = ["Alice", "Bruno", "Chloé", "David"];
-    let g = createGame({
+    let g = keepAllHands(createGame({
       id: "t",
       seed: 1,
       mode: "twoHeadedGiant",
       randomTurnOrder: false,
       players: names.map((name, i) => ({ id: `p${i + 1}`, name, deck: fakeDeck(name), priorityStops: [] })),
-    });
+    }));
     const [a, b] = g.teams[0]!;
     const [c] = g.teams[1]!;
     [g] = cast(g, a!, bear);

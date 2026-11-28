@@ -390,6 +390,9 @@ export class GameHost {
     if (!action || typeof action !== "object" || typeof (action as { type?: unknown }).type !== "string") {
       return reply(false, "Action invalide.");
     }
+    if ((action as { type: string }).type === "forceKeep" && !player.isHost) {
+      return reply(false, "Seul l'hôte peut faire garder sa main à un joueur.");
+    }
     let result;
     try {
       result = applyAction(this.game, { actorId: player.id, action: action as never });
