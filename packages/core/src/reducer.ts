@@ -632,7 +632,7 @@ const handlers: { [T in GameAction["type"]]: Handler<T> } = {
       .join(" et ");
     const details = [
       x !== undefined ? `X = ${xValue}` : "",
-      alternative ? "coût alternatif" : "",
+      alternative ? (effects?.overload ? "surcharge" : "coût alternatif") : "",
       evokeCost ? "évocation" : "",
       permission ? `${permission.reason}${permission.free ? ", sans payer son coût" : permission.foretell ? ` pour ${permission.foretell}` : ""}` : "",
       tax > 0 ? `taxe de commandant {${tax}}` : "",
@@ -2297,6 +2297,13 @@ function applySpellEffects(g: GameState, source: CardInstance, effects: Effect[]
         log(g, null, effect.type === "exile" ? `${name} est exilé(e).` : `${name} retourne dans la main de son propriétaire.`);
         break;
       }
+      case "bounceAll":
+        for (const c of allMatching(effect.filter)) {
+          const name = cardName(g, c);
+          moveCardTo(g, c.instanceId, "hand", "top");
+          log(g, null, `${name} retourne dans la main de son propriétaire.`);
+        }
+        break;
       case "exileAll":
         for (const c of allMatching(effect.filter)) {
           const name = cardName(g, c);

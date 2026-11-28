@@ -471,6 +471,8 @@ export function playItems(view: GameView, card: CardView): MenuItem[] {
       const altEffects = view.settings.enforceRules && /\b(Instant|Sorcery)\b/.test(f.typeLine) ? parseSpellEffects(faceText, f.name) : undefined;
       const alt = altEffects?.alternativeCost;
       if (alt && altEffects?.alternativeIf === "commander") items.push({ label: `Lancer ${f.name} sans payer son coût (si tu contrôles un commandant)`, onClick: cast(true) });
+      // Surcharge (Cyclonic Rift) : « target » devient « each », sans cible à choisir.
+      else if (alt && altEffects?.overload) items.push({ label: `Lancer ${f.name} avec surcharge ${alt}`, onClick: cast(true) });
       else if (alt) items.push({ label: `Lancer ${f.name} pour ${alt} (coût alternatif)`, onClick: cast(true) });
       // Évocation : la sienne, et celle que donne Ashling (sacrifiée en arrivant).
       if (view.settings.enforceRules && card.zone === "hand") {

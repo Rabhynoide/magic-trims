@@ -210,6 +210,8 @@ type EffectBase =
   /** Teferi's Protection : « Until your next turn, your life total can't change and you gain protection from everything. » */
   | { type: "playerUntilNextTurn"; lifeCantChange: boolean; protection: boolean }
   | { type: "bounce"; target: number }
+  /** « Return each nonland permanent you don't control to its owner's hand » (Cyclonic Rift surchargé). */
+  | { type: "bounceAll"; filter: PermanentFilter }
   | { type: "damage"; target: number | "event" | "you"; amount: Amount }
   | { type: "damageEach"; who: "opponents" | "players" | "creatures" | "yourOtherCreatures"; amount: Amount }
   | { type: "life"; who: Who; amount: Amount }
@@ -373,6 +375,8 @@ export interface SpellEffects {
   sacrifice?: PermanentFilter;
   /** Coût alternatif (« You may pay {1}{B} rather than pay this spell's mana cost »). */
   alternativeCost?: string;
+  /** Le coût alternatif est une surcharge : « target » devient « each » (Cyclonic Rift). */
+  overload?: boolean;
   /** Le coût alternatif n'est permis que si l'on contrôle un commandant (Flawless Maneuver : « {0} »). */
   alternativeIf?: "commander";
   /** Coût supplémentaire : payer X PV (Toxic Deluge), X choisi en lançant le sort. */
@@ -947,7 +951,31 @@ export function parseCopyExcept(text: string): CopyExcept | null {
 }
 
 /** Lit les effets d'un éphémère ou d'un rituel. */
+/** Coût de surcharge (« Overload {6}{U} »), s'il y en a un. */
+export function overloadCost(oracleText: string): string | undefined {
+  return /^overload ((?:\{[^}]+\})+)/im.exec(oracleText)?.[1];
+}
+
+/**
+ * Le texte du sort lancé avec surcharge : sans la ligne de surcharge,
+ * « target » remplacé par « each » (règle 702.96b).
+ */
+export function overloadedText(oracleText: string): string {
+  return oracleText
+    .split("\n")
+    .filter((line) => !/^overload \{/i.test(line))
+    .join("\n")
+    .replace(/\btarget\b/g, "each")
+    .replace(/\bTarget\b/g, "Each");
+}
+
 export function parseSpellEffects(oracleText: string, cardName: string, options: { alternative?: boolean } = {}): SpellEffects {
+  // Surcharge : le coût alternatif change le texte du sort, qui n'a alors plus de cible.
+  const overload = overloadCost(oracleText);
+  if (overload) {
+    const parsed = parseSpellEffects(options.alternative ? overloadedText(oracleText) : oracleText.split("\n").filter((l) => !/^overload \{/i.test(l)).join("\n"), cardName);
+    return { ...parsed, alternativeCost: overload, overload: true };
+  }
   // Spree (Trash the Town) : « Spree » puis une ligne par mode, « + {2} — effet ». Au moins un mode, chacun ajoute son coût.
   const lines = oracleText.replace(/\([^)]*\)/g, "").split("\n").map((l) => l.trim()).filter(Boolean);
   const spreeAt = lines.findIndex((l) => /^spree$/i.test(l));
@@ -1483,13 +1511,20 @@ export function parseSpellEffects(oracleText: string, cardName: string, options:
       (result.effects.at(-1) as Extract<Effect, { type: "takeControl" }>).untap = true;
     } else if (/^(?:they|it|that creature) gains? haste until end of turn$/i.test(s) && result.effects.at(-1)?.type === "takeControl") {
       (result.effects.at(-1) as Extract<Effect, { type: "takeControl" }>).haste = true;
-    } else if ((m = /^(destroy|exile) all (.+)$/i.exec(s))) {
+    } else if ((m = /^(destroy|exile) (?:all|each) (.+)$/i.exec(s))) {
       const filter = parsePermanentFilter(m[2]!.replace(/^(\w+) and (\w+)$/, "$1 or $2"));
       if (!filter) {
         result.unknown.push(sentence);
         continue;
       }
       result.effects.push({ type: m[1]!.toLowerCase() === "destroy" ? "destroyAll" : "exileAll", filter });
+    } else if ((m = /^return (?:each|all) (.+?) to (?:its|their) owners?'s? hands?$/i.exec(s))) {
+      const filter = parsePermanentFilter(m[1]!);
+      if (!filter) {
+        result.unknown.push(sentence);
+        continue;
+      }
+      result.effects.push({ type: "bounceAll", filter });
     } else if ((m = /^return target (.+?) to its owner's hand$/i.exec(s))) {
       const filter = parsePermanentFilter(m[1]!);
       if (!filter) {
@@ -1889,9 +1924,11 @@ function permanentLineStatus(line: string, typeLine: string, name: string): Line
 function faceSupport(typeLine: string, oracleText: string, name: string): { known: number; unknown: string[] } {
   if (/\b(Instant|Sorcery)\b/.test(typeLine)) {
     const parsed = parseSpellEffects(oracleText, name, { alternative: true });
+    // Surcharge : le sort doit être géré avec et sans.
+    const normal = parsed.overload ? parseSpellEffects(oracleText, name) : null;
     return {
       known: parsed.effects.length + (parsed.sacrifice ? 1 : 0) + (parsed.alternativeCost ? 1 : 0) + (parsed.modes?.list.length ?? 0),
-      unknown: parsed.unknown,
+      unknown: normal ? [...new Set([...normal.unknown, ...parsed.unknown])] : parsed.unknown,
     };
   }
   let known = 0;
@@ -1987,6 +2024,7 @@ export function abilityReport(data: CardData, faceIndex = 0): AbilityReportItem[
   const name = face?.name ?? data.name;
   const items: AbilityReportItem[] = [];
   const spell = /\b(Instant|Sorcery)\b/.test(typeLine);
+  const overload = spell && overloadCost(oracleText) !== undefined;
   for (const raw of joinModes(oracleText).split("\n")) {
     const line = raw.replace(/\([^)]*\)/g, "").trim();
     if (!line) continue;
@@ -2025,11 +2063,18 @@ export function abilityReport(data: CardData, faceIndex = 0): AbilityReportItem[
       continue;
     }
     if (spell) {
+      if (overload && /^overload \{/i.test(line)) {
+        items.push({ title: "Surcharge", text: `${line} : peut se lancer pour ce coût ; « cible » devient alors « chaque ».`, status: "auto" });
+        continue;
+      }
       const parsed = parseSpellEffects(line, name, { alternative: true });
+      // Surcharge : la ligne doit aussi marcher avec « each » à la place de « target ».
+      const over = overload ? parseSpellEffects(overloadedText(line), name) : null;
+      const unknown = over ? [...new Set([...parsed.unknown, ...over.unknown])] : parsed.unknown;
       const known = parsed.effects.length + (parsed.sacrifice ? 1 : 0) + (parsed.alternativeCost ? 1 : 0) + (parsed.modes?.list.length ?? 0);
-      const status = known === 0 ? "manual" : parsed.unknown.length === 0 ? "auto" : "partial";
+      const status = known === 0 ? "manual" : unknown.length === 0 ? "auto" : "partial";
       const title = parsed.alternativeCost && parsed.effects.length === 0 ? "Coût alternatif" : parsed.sacrifice && parsed.effects.length === 0 ? "Coût supplémentaire" : "Effet du sort";
-      items.push({ title, text: line, status, ...(status === "partial" ? { manual: parsed.unknown } : {}) });
+      items.push({ title, text: line, status, ...(status === "partial" ? { manual: unknown } : {}) });
       continue;
     }
     const st = permanentLineStatus(line, typeLine, name);
